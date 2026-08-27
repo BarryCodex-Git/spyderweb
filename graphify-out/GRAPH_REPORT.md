@@ -1,21 +1,22 @@
 # Graph Report - SpyderWeb  (2026-08-27)
 
 ## Corpus Check
-- Corpus is ~43,374 words - fits in a single context window. You may not need a graph.
+- 1 files · ~44,387 words
+- Verdict: corpus is large enough that graph structure adds value.
 
 ## Summary
-- 147 nodes · 137 edges · 16 communities (12 shown, 4 thin omitted)
+- 159 nodes · 150 edges · 16 communities (12 shown, 4 thin omitted)
 - Extraction: 99% EXTRACTED · 1% INFERRED · 0% AMBIGUOUS · INFERRED: 2 edges (avg confidence: 0.9)
 - Token cost: 0 input · 0 output
 
 ## Community Hubs (Navigation)
 - App Dependencies
 - TypeScript Compiler
+- Multi-View Dashboard
 - Product Operations
 - Launch Workflow
 - Project Scripts
 - TypeScript Inputs
-- Dashboard UI
 - Runtime Dependencies
 - App Shell Metadata
 - Build Approval
@@ -35,50 +36,51 @@
 6. `lib` - 4 edges
 7. `Three-Step Launch Build Flow` - 4 edges
 8. `PNPM Workspace Build Configuration` - 4 edges
-9. `Home()` - 3 edges
+9. `Home()` - 4 edges
 10. `types` - 3 edges
 
 ## Surprising Connections (you probably didn't know these)
-- None detected - all connections are within the same source files.
+- `types` --extends--> `@cloudflare/workers-types`  [EXTRACTED]
+  tsconfig.json → package.json
 
 ## Import Cycles
 - None detected.
 
 ## Hyperedges (group relationships)
-- **Website Production Coordination** — docs_project_overview_spyderweb, docs_project_overview_barry, docs_project_overview_clive, docs_project_overview_codex [EXTRACTED 1.00]
+- **Allowed Build Dependencies** — pnpm_workspace_esbuild, pnpm_workspace_sharp, pnpm_workspace_unrs_resolver, pnpm_workspace_workerd [EXTRACTED 1.00]
 - **Portable Deployment Strategy** — docs_project_overview_spyderweb, docs_project_overview_github, docs_project_overview_portable_exports, docs_project_overview_user_owned_hosting [EXTRACTED 1.00]
 - **SpyderWeb Build Assignment** — readme_launch_build_flow, readme_barry_template_builds, readme_clive_custom_builds [EXTRACTED 1.00]
-- **Allowed Build Dependencies** — pnpm_workspace_esbuild, pnpm_workspace_sharp, pnpm_workspace_unrs_resolver, pnpm_workspace_workerd [EXTRACTED 1.00]
+- **Website Production Coordination** — docs_project_overview_spyderweb, docs_project_overview_barry, docs_project_overview_clive, docs_project_overview_codex [EXTRACTED 1.00]
 
 ## Communities (16 total, 4 thin omitted)
 
 ### Community 0 - "App Dependencies"
 Cohesion: 0.06
-Nodes (35): @cloudflare/vite-plugin, @cloudflare/workers-types, eslint, eslint-config-next, @openai/sites-vite-plugin, devDependencies, @cloudflare/vite-plugin, @cloudflare/workers-types (+27 more)
+Nodes (33): @cloudflare/vite-plugin, eslint, eslint-config-next, @openai/sites-vite-plugin, devDependencies, @cloudflare/vite-plugin, eslint, eslint-config-next (+25 more)
 
 ### Community 1 - "TypeScript Compiler"
 Cohesion: 0.09
-Nodes (22): @cloudflare/workers-types, dom, dom.iterable, esnext, node, compilerOptions, allowJs, esModuleInterop (+14 more)
+Nodes (23): @cloudflare/workers-types, @cloudflare/workers-types, dom, dom.iterable, esnext, node, compilerOptions, allowJs (+15 more)
 
-### Community 2 - "Product Operations"
+### Community 2 - "Multi-View Dashboard"
+Cohesion: 0.10
+Nodes (12): activities, columns, Developer, Domain, domains, DomainStatus, Home(), navItems (+4 more)
+
+### Community 3 - "Product Operations"
 Cohesion: 0.17
 Nodes (13): Barry, Client Intake and Uploaded Assets, Clive, Codex, Configurable Build-Stage Pipeline, Development-Domain Inventory, GitHub, Human Approval Gates (+5 more)
 
-### Community 3 - "Launch Workflow"
+### Community 4 - "Launch Workflow"
 Cohesion: 0.17
 Nodes (13): Barry Template-Based WordPress Builds, Build Assignment Model, Clive Custom Builds, Development Domain Kanban Board, Human Approval for Consequential Actions, Three-Step Launch Build Flow, Managed Deployment Followed by User-Owned Infrastructure, Website Project Management and Reporting Platform (+5 more)
 
-### Community 4 - "Project Scripts"
+### Community 5 - "Project Scripts"
 Cohesion: 0.17
 Nodes (11): engines, node, name, private, scripts, build, dev, lint (+3 more)
 
-### Community 5 - "TypeScript Inputs"
+### Community 6 - "TypeScript Inputs"
 Cohesion: 0.20
 Nodes (9): **/*.mts, .next/dev/types/**/*.ts, next-env.d.ts, .next/types/**/*.ts, node_modules, **/*.ts, **/*.tsx, exclude (+1 more)
-
-### Community 6 - "Dashboard UI"
-Cohesion: 0.25
-Nodes (5): columns, Domain, domains, DomainStatus, Home()
 
 ### Community 7 - "Runtime Dependencies"
 Cohesion: 0.29
@@ -101,22 +103,24 @@ Cohesion: 0.67
 Nodes (3): Blue Four-Tile Favicon, Multi-Tone Blue Palette, Rounded Square Tile Layout
 
 ## Knowledge Gaps
-- **85 isolated node(s):** `geistSans`, `geistMono`, `metadata`, `DomainStatus`, `Domain` (+80 more)
+- **90 isolated node(s):** `@cloudflare/vite-plugin`, `eslint`, `eslint-config-next`, `@openai/sites-vite-plugin`, `react-server-dom-webpack` (+85 more)
   These have ≤1 connection - possible missing edges or undocumented components.
 - **4 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
 
 ## Suggested Questions
 _Questions this graph is uniquely positioned to answer:_
 
-- **Why does `devDependencies` connect `App Dependencies` to `Project Scripts`?**
-  _High betweenness centrality (0.112) - this node is a cross-community bridge._
+- **Why does `devDependencies` connect `App Dependencies` to `TypeScript Compiler`, `Project Scripts`?**
+  _High betweenness centrality (0.223) - this node is a cross-community bridge._
 - **Why does `compilerOptions` connect `TypeScript Compiler` to `TypeScript Inputs`?**
-  _High betweenness centrality (0.039) - this node is a cross-community bridge._
-- **Why does `dependencies` connect `Runtime Dependencies` to `Project Scripts`?**
-  _High betweenness centrality (0.028) - this node is a cross-community bridge._
-- **What connects `geistSans`, `geistMono`, `metadata` to the rest of the system?**
-  _85 weakly-connected nodes found - possible documentation gaps or missing edges._
+  _High betweenness centrality (0.153) - this node is a cross-community bridge._
+- **Why does `@cloudflare/workers-types` connect `TypeScript Compiler` to `App Dependencies`?**
+  _High betweenness centrality (0.134) - this node is a cross-community bridge._
+- **What connects `@cloudflare/vite-plugin`, `eslint`, `eslint-config-next` to the rest of the system?**
+  _90 weakly-connected nodes found - possible documentation gaps or missing edges._
 - **Should `App Dependencies` be split into smaller, more focused modules?**
-  _Cohesion score 0.05714285714285714 - nodes in this community are weakly interconnected._
+  _Cohesion score 0.06060606060606061 - nodes in this community are weakly interconnected._
 - **Should `TypeScript Compiler` be split into smaller, more focused modules?**
-  _Cohesion score 0.09090909090909091 - nodes in this community are weakly interconnected._
+  _Cohesion score 0.08695652173913043 - nodes in this community are weakly interconnected._
+- **Should `Multi-View Dashboard` be split into smaller, more focused modules?**
+  _Cohesion score 0.09523809523809523 - nodes in this community are weakly interconnected._
