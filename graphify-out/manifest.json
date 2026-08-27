@@ -7,73 +7,73 @@
   },
   "app/layout.tsx": {
     "mtime": 1787856890.029656,
-    "seen": 1787859955.6331732,
+    "seen": 1787862407.8565977,
     "ast_hash": "8a6180ccfc712f353b76495c65838da2",
     "semantic_hash": "8a6180ccfc712f353b76495c65838da2"
   },
   "app/page.tsx": {
-    "mtime": 1787859888.0517383,
-    "seen": 1787859955.6331732,
-    "ast_hash": "9edfdfb6b39d77aa19f24b89ecf56cd3",
+    "mtime": 1787862329.2383876,
+    "seen": 1787862407.8565977,
+    "ast_hash": "84f083d0b8af2b9f9aa5dd10f5cc21e8",
     "semantic_hash": ""
   },
   "eslint.config.mjs": {
     "mtime": 1787856542.8203075,
-    "seen": 1787859955.6331732,
+    "seen": 1787862407.8565977,
     "ast_hash": "1db8c689e2dc9b68d8535cf62572375d",
     "semantic_hash": "1db8c689e2dc9b68d8535cf62572375d"
   },
   "next.config.ts": {
     "mtime": 1787856542.8587937,
-    "seen": 1787859955.6331732,
+    "seen": 1787862407.8565977,
     "ast_hash": "3921ec810fe855174bf481cf23f86516",
     "semantic_hash": "3921ec810fe855174bf481cf23f86516"
   },
   "package.json": {
     "mtime": 1787857303.689077,
-    "seen": 1787859955.6331732,
+    "seen": 1787862407.8565977,
     "ast_hash": "caae3d6815df87456e09488cd7926abd",
     "semantic_hash": "caae3d6815df87456e09488cd7926abd"
   },
   "tsconfig.json": {
     "mtime": 1787856542.807309,
-    "seen": 1787859955.6331732,
+    "seen": 1787862407.8565977,
     "ast_hash": "8a5f55e150d7367b23df64394919f6e0",
     "semantic_hash": "8a5f55e150d7367b23df64394919f6e0"
   },
   "vite.config.ts": {
     "mtime": 1787856542.8709404,
-    "seen": 1787859955.6331732,
+    "seen": 1787862407.8565977,
     "ast_hash": "68058f123ca97ddc67092901725b7e31",
     "semantic_hash": "68058f123ca97ddc67092901725b7e31"
   },
   "README.md": {
     "mtime": 1787857605.690545,
-    "seen": 1787859955.6331732,
+    "seen": 1787862407.8565977,
     "ast_hash": "e1c947010dad37efcf9cb13894e42d42",
     "semantic_hash": "e1c947010dad37efcf9cb13894e42d42"
   },
   "docs/PROJECT_OVERVIEW.md": {
     "mtime": 1787855834.7528846,
-    "seen": 1787859955.6331732,
+    "seen": 1787862407.8565977,
     "ast_hash": "47c9efdf58b3ad85fcead89da6e61f61",
     "semantic_hash": "47c9efdf58b3ad85fcead89da6e61f61"
   },
   "pnpm-workspace.yaml": {
     "mtime": 1787857344.9637513,
-    "seen": 1787859955.6331732,
+    "seen": 1787862407.8565977,
     "ast_hash": "1ac9af669e822266df8032baca4a2de7",
     "semantic_hash": "1ac9af669e822266df8032baca4a2de7"
   },
   "public/favicon.svg": {
     "mtime": 1787856542.8273044,
-    "seen": 1787859955.6331732,
+    "seen": 1787862407.8565977,
     "ast_hash": "65d2d7d0b0f2cb5580c3808f8282568d",
     "semantic_hash": "65d2d7d0b0f2cb5580c3808f8282568d"
   },
   "public/spyderweb-logo.png": {
     "mtime": 1787856877.511349,
-    "seen": 1787859955.6331732,
+    "seen": 1787862407.8565977,
     "ast_hash": "d74b047384355afaaf4dd423d1a30190",
     "semantic_hash": "d74b047384355afaaf4dd423d1a30190"
   }

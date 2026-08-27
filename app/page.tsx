@@ -3,9 +3,10 @@
 import Image from 'next/image';
 import { useState } from 'react';
 
-type View = 'Dashboard' | 'Domains' | 'Projects' | 'Agent Activity';
+type View = 'Dashboard' | 'Domains' | 'Projects' | 'Agent Activity' | 'Settings';
 type Developer = 'Barry' | 'Clive';
 type DomainStatus = 'Available' | 'Template Loaded' | 'Busy Working' | 'Final Stages';
+type HostingProvider = 'cPanel' | 'Hostinger';
 
 type Domain = {
   id: number;
@@ -37,6 +38,7 @@ const navItems: { label: View; icon: string }[] = [
   { label: 'Domains', icon: '◇' },
   { label: 'Projects', icon: '▤' },
   { label: 'Agent Activity', icon: '◉' },
+  { label: 'Settings', icon: '⚙' },
 ];
 
 const viewCopy: Record<View, { eyebrow: string; title: string; subtitle: string }> = {
@@ -59,6 +61,11 @@ const viewCopy: Record<View, { eyebrow: string; title: string; subtitle: string 
     eyebrow: 'Codex reporting',
     title: 'Barry & Clive activity',
     subtitle: 'A simple view of agent availability and reported build progress.',
+  },
+  Settings: {
+    eyebrow: 'Platform administration',
+    title: 'Settings',
+    subtitle: 'Manage your owner account, future users, and hosting connections.',
   },
 };
 
@@ -114,6 +121,8 @@ export default function Home() {
   const [launchStep, setLaunchStep] = useState(1);
   const [notice, setNotice] = useState('');
   const [activityFilter, setActivityFilter] = useState<'All' | Developer>('All');
+  const [hostingProvider, setHostingProvider] = useState<HostingProvider | null>(null);
+  const [hostingNotice, setHostingNotice] = useState('');
 
   const copy = viewCopy[activeView];
   const selectedStageIndex = selectedProject
@@ -124,6 +133,7 @@ export default function Home() {
     setActiveView(view);
     setSelectedDomain(null);
     setSelectedProject(null);
+    setHostingProvider(null);
     setNotice('');
   }
 
@@ -179,7 +189,7 @@ export default function Home() {
         <header className="topbar">
           <div><p className="eyebrow">{copy.eyebrow}</p><h1>{copy.title}</h1><p className="subheading">{copy.subtitle}</p></div>
           <div className="topbar-actions">
-            <div className="user-chip"><span>BC</span><div><strong>Barry Codex</strong><small>Administrator</small></div></div>
+            <div className="user-chip"><span>AO</span><div><strong>Owner Account</strong><small>Admin / Owner</small></div></div>
             <button className="primary-button" onClick={openLaunch}><span>＋</span> Launch Build</button>
           </div>
         </header>
@@ -188,7 +198,54 @@ export default function Home() {
         {activeView === 'Domains' && <DomainsView onDomain={setSelectedDomain} onNotice={setNotice} notice={notice} />}
         {activeView === 'Projects' && <ProjectsView onProject={setSelectedProject} />}
         {activeView === 'Agent Activity' && <AgentActivity filter={activityFilter} onFilter={setActivityFilter} />}
+        {activeView === 'Settings' && <SettingsView onConnect={(provider) => { setHostingNotice(''); setHostingProvider(provider); }} />}
       </section>
+
+      {hostingProvider && !launchOpen && (
+        <div className="project-modal-backdrop" onClick={() => setHostingProvider(null)}>
+          <section className="hosting-setup-modal" onClick={(event) => event.stopPropagation()}>
+            <button className="close-button" onClick={() => setHostingProvider(null)}>×</button>
+            <header className="hosting-modal-header">
+              <span className={`provider-logo ${hostingProvider.toLowerCase()}`}>{hostingProvider === 'cPanel' ? 'cP' : 'H'}</span>
+              <div><p className="eyebrow">Hosting connection</p><h2>Connect {hostingProvider}</h2><p>Follow the guide, then prepare the account for its first read-only discovery.</p></div>
+              <span className="setup-status">Connector required</span>
+            </header>
+            <div className="hosting-modal-body">
+              <section className="connection-guide">
+                <p className="eyebrow">Step-by-step guide</p>
+                <h3>Before entering anything</h3>
+                <div className="guide-steps">
+                  {(hostingProvider === 'cPanel' ? [
+                    ['Open cPanel', 'Sign in to the cPanel account that owns your development subdomains.'],
+                    ['Create an API token', 'Open Security → Manage API Tokens and create one named “SpyderWeb Local Connector”.'],
+                    ['Copy the account details', 'Keep the secure cPanel URL, username and new token ready. Do not use your normal password.'],
+                    ['Start read-only', 'The first connection will only discover domains and available hosting features.'],
+                  ] : [
+                    ['Open hPanel', 'Sign in to the Hostinger account that owns your development websites.'],
+                    ['Create an API token', 'Open Account settings → API and create a token named “SpyderWeb Local Connector”.'],
+                    ['Copy the token', 'Hostinger only displays the token once, so keep it ready for the secure connector.'],
+                    ['Start read-only', 'The first connection will inventory websites and supported API actions without changing them.'],
+                  ]).map(([title, description], index) => (
+                    <div className="guide-step" key={title}><span>{index + 1}</span><div><strong>{title}</strong><p>{description}</p></div></div>
+                  ))}
+                </div>
+                <div className="security-callout"><strong>Local-first security</strong><p>Credentials will be stored by the encrypted local connector—not in this browser screen or in the hosted project database.</p></div>
+              </section>
+
+              <form className="hosting-form" onSubmit={(event) => { event.preventDefault(); setHostingNotice('Setup fields checked. Nothing was saved or sent. The secure local connector must be installed before the live connection test.'); }}>
+                <div><p className="eyebrow">Connection details</p><h3>{hostingProvider} account</h3><p>These fields show exactly what the secure connection will require.</p></div>
+                <label>Connection name<input required placeholder={hostingProvider === 'cPanel' ? 'Main DEV cPanel' : 'Hostinger DEV account'} /></label>
+                {hostingProvider === 'cPanel' && <><label>Secure cPanel URL<input required type="url" placeholder="https://server.example.com:2083" /></label><label>cPanel username<input required autoComplete="username" placeholder="Account username" /></label></>}
+                <label>{hostingProvider === 'cPanel' ? 'cPanel API token' : 'Hostinger API token'}<input required type="password" autoComplete="new-password" placeholder="Paste token when the local connector is ready" /></label>
+                <label>Primary development domain<input required placeholder="dev.example.co.za" /></label>
+                <label className="read-only-option"><input type="checkbox" defaultChecked /><span><strong>Read-only first synchronisation</strong><small>Discover domains and capabilities without changing hosting data.</small></span></label>
+                {hostingNotice && <p className="notice">{hostingNotice}</p>}
+                <div className="hosting-form-actions"><button className="text-button" type="button" onClick={() => setHostingProvider(null)}>Cancel</button><button className="primary-button" type="submit">Check setup</button></div>
+              </form>
+            </div>
+          </section>
+        </div>
+      )}
 
       {selectedDomain && !launchOpen && (
         <div className="drawer-backdrop" onClick={() => setSelectedDomain(null)}>
@@ -421,6 +478,44 @@ function AgentActivity({ filter, onFilter }: { filter: 'All' | Developer; onFilt
           ))}
         </div>
       </section>
+    </div>
+  );
+}
+
+function SettingsView({ onConnect }: { onConnect: (provider: HostingProvider) => void }) {
+  return (
+    <div className="settings-stack">
+      <section className="settings-account-grid">
+        <div className="owner-card">
+          <span className="owner-avatar">AO</span>
+          <div><p className="eyebrow">Your account</p><h2>Owner Account</h2><p>Full access to projects, agents, hosting connections and future user permissions.</p></div>
+          <span className="owner-role">Admin / Owner</span>
+        </div>
+        <div className="future-users-card">
+          <div><p className="eyebrow">User access</p><h2>Team dashboards</h2><p>Additional users will receive their own dashboard and only the access you assign.</p></div>
+          <button className="outline-button" disabled>＋ Add user · Later</button>
+        </div>
+      </section>
+
+      <section className="panel hosting-settings-panel">
+        <div className="section-heading"><div><p className="eyebrow">Hosting accounts</p><h2>Connect your development hosting</h2><p>Start with read-only discovery. Live server actions will always show an approval step.</p></div><span className="connection-count">0 connected</span></div>
+        <div className="hosting-provider-grid">
+          <article className="hosting-provider-card">
+            <div className="provider-card-top"><span className="provider-logo cpanel">cP</span><span className="not-connected">Not connected</span></div>
+            <h3>cPanel</h3><p>Connect the shared hosting account that manages your main development domain and WordPress subdomains.</p>
+            <ul><li>Discover development domains</li><li>Check WordPress and PHP</li><li>Prepare safe hosting actions</li></ul>
+            <button className="primary-button" onClick={() => onConnect('cPanel')}>Set up cPanel</button>
+          </article>
+          <article className="hosting-provider-card">
+            <div className="provider-card-top"><span className="provider-logo hostinger">H</span><span className="not-connected">Not connected</span></div>
+            <h3>Hostinger</h3><p>Connect Hostinger through its API and discover which website-management actions your account supports.</p>
+            <ul><li>Inventory hosted websites</li><li>Detect WordPress installations</li><li>Show available API controls</li></ul>
+            <button className="primary-button" onClick={() => onConnect('Hostinger')}>Set up Hostinger</button>
+          </article>
+        </div>
+      </section>
+
+      <section className="settings-note"><span>⌁</span><div><strong>Local connector comes next</strong><p>The connector will keep hosting tokens on this computer, communicate with cPanel and Hostinger, and send only domain status information back to SpyderWeb.</p></div></section>
     </div>
   );
 }

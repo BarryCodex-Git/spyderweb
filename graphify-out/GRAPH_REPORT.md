@@ -1,16 +1,16 @@
 # Graph Report - SpyderWeb  (2026-08-27)
 
 ## Corpus Check
-- 10 files · ~44,650 words
+- 10 files · ~45,274 words
 - Verdict: corpus is large enough that graph structure adds value.
 
 ## Summary
-- 162 nodes · 152 edges · 17 communities (12 shown, 5 thin omitted)
+- 164 nodes · 154 edges · 17 communities (12 shown, 5 thin omitted)
 - Extraction: 99% EXTRACTED · 1% INFERRED · 0% AMBIGUOUS · INFERRED: 2 edges (avg confidence: 0.9)
 - Token cost: 0 input · 0 output
 
 ## Graph Freshness
-- Built from commit: `612d8c96`
+- Built from commit: `ccd070db`
 - Run `git rev-parse HEAD` and compare to check if the graph is stale.
 - Run `graphify update .` after code changes (no API cost).
 
@@ -64,8 +64,8 @@ Cohesion: 0.06
 Nodes (35): @cloudflare/vite-plugin, @cloudflare/workers-types, eslint, eslint-config-next, @openai/sites-vite-plugin, devDependencies, @cloudflare/vite-plugin, @cloudflare/workers-types (+27 more)
 
 ### Community 1 - "Multi-View Dashboard"
-Cohesion: 0.11
-Nodes (12): activities, buildStages, columns, Developer, Domain, domains, DomainStatus, navItems (+4 more)
+Cohesion: 0.10
+Nodes (13): activities, buildStages, columns, Developer, Domain, domains, DomainStatus, HostingProvider (+5 more)
 
 ### Community 2 - "TypeScript Compiler"
 Cohesion: 0.09
@@ -108,7 +108,7 @@ Cohesion: 0.67
 Nodes (3): Blue Four-Tile Favicon, Multi-Tone Blue Palette, Rounded Square Tile Layout
 
 ## Knowledge Gaps
-- **93 isolated node(s):** `geistSans`, `geistMono`, `metadata`, `View`, `Developer` (+88 more)
+- **94 isolated node(s):** `geistSans`, `geistMono`, `metadata`, `View`, `Developer` (+89 more)
   These have ≤1 connection - possible missing edges or undocumented components.
 - **5 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
 
@@ -116,16 +116,16 @@ Nodes (3): Blue Four-Tile Favicon, Multi-Tone Blue Palette, Rounded Square Tile 
 _Questions this graph is uniquely positioned to answer:_
 
 - **Why does `devDependencies` connect `App Dependencies` to `Project Scripts`?**
-  _High betweenness centrality (0.092) - this node is a cross-community bridge._
+  _High betweenness centrality (0.090) - this node is a cross-community bridge._
 - **Why does `compilerOptions` connect `TypeScript Compiler` to `TypeScript Inputs`?**
-  _High betweenness centrality (0.032) - this node is a cross-community bridge._
+  _High betweenness centrality (0.031) - this node is a cross-community bridge._
 - **Why does `dependencies` connect `Runtime Dependencies` to `Project Scripts`?**
-  _High betweenness centrality (0.023) - this node is a cross-community bridge._
+  _High betweenness centrality (0.022) - this node is a cross-community bridge._
 - **What connects `geistSans`, `geistMono`, `metadata` to the rest of the system?**
-  _93 weakly-connected nodes found - possible documentation gaps or missing edges._
+  _94 weakly-connected nodes found - possible documentation gaps or missing edges._
 - **Should `App Dependencies` be split into smaller, more focused modules?**
   _Cohesion score 0.05714285714285714 - nodes in this community are weakly interconnected._
 - **Should `Multi-View Dashboard` be split into smaller, more focused modules?**
-  _Cohesion score 0.1111111111111111 - nodes in this community are weakly interconnected._
+  _Cohesion score 0.1 - nodes in this community are weakly interconnected._
 - **Should `TypeScript Compiler` be split into smaller, more focused modules?**
   _Cohesion score 0.09090909090909091 - nodes in this community are weakly interconnected._
