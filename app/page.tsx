@@ -135,6 +135,21 @@ export default function Home() {
     setLaunchOpen(true);
   }
 
+  function openDashboardDomain(domain: Domain) {
+    setNotice('');
+    const project = projects.find((item) => item.domain === domain.domain);
+    const isActive = domain.status === 'Busy Working' || domain.status === 'Final Stages';
+
+    if (isActive && project) {
+      setSelectedDomain(null);
+      setSelectedProject(project);
+      return;
+    }
+
+    setSelectedProject(null);
+    setSelectedDomain(domain);
+  }
+
   function continueLaunch() {
     if (launchStep < 3) {
       setLaunchStep((step) => step + 1);
@@ -169,7 +184,7 @@ export default function Home() {
           </div>
         </header>
 
-        {activeView === 'Dashboard' && <Dashboard onDomain={setSelectedDomain} onLaunch={openLaunch} />}
+        {activeView === 'Dashboard' && <Dashboard onDomain={openDashboardDomain} onLaunch={openLaunch} />}
         {activeView === 'Domains' && <DomainsView onDomain={setSelectedDomain} onNotice={setNotice} notice={notice} />}
         {activeView === 'Projects' && <ProjectsView onProject={setSelectedProject} />}
         {activeView === 'Agent Activity' && <AgentActivity filter={activityFilter} onFilter={setActivityFilter} />}

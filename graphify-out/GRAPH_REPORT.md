@@ -1,13 +1,18 @@
 # Graph Report - SpyderWeb  (2026-08-27)
 
 ## Corpus Check
-- 1 files · ~44,613 words
+- 10 files · ~44,650 words
 - Verdict: corpus is large enough that graph structure adds value.
 
 ## Summary
-- 160 nodes · 151 edges · 17 communities (13 shown, 4 thin omitted)
+- 162 nodes · 152 edges · 17 communities (12 shown, 5 thin omitted)
 - Extraction: 99% EXTRACTED · 1% INFERRED · 0% AMBIGUOUS · INFERRED: 2 edges (avg confidence: 0.9)
 - Token cost: 0 input · 0 output
+
+## Graph Freshness
+- Built from commit: `612d8c96`
+- Run `git rev-parse HEAD` and compare to check if the graph is stale.
+- Run `graphify update .` after code changes (no API cost).
 
 ## Community Hubs (Navigation)
 - App Dependencies
@@ -32,17 +37,16 @@
 1. `compilerOptions` - 17 edges
 2. `SpyderWeb Hosted Control Center` - 8 edges
 3. `include` - 7 edges
-4. `scripts` - 5 edges
-5. `SpyderWeb` - 5 edges
-6. `lib` - 4 edges
-7. `Three-Step Launch Build Flow` - 4 edges
-8. `PNPM Workspace Build Configuration` - 4 edges
-9. `Home()` - 4 edges
+4. `Home()` - 5 edges
+5. `scripts` - 5 edges
+6. `SpyderWeb` - 5 edges
+7. `lib` - 4 edges
+8. `Three-Step Launch Build Flow` - 4 edges
+9. `PNPM Workspace Build Configuration` - 4 edges
 10. `types` - 3 edges
 
 ## Surprising Connections (you probably didn't know these)
-- `types` --extends--> `@cloudflare/workers-types`  [EXTRACTED]
-  tsconfig.json → package.json
+- None detected - all connections are within the same source files.
 
 ## Import Cycles
 - None detected.
@@ -53,19 +57,19 @@
 - **SpyderWeb Build Assignment** — readme_launch_build_flow, readme_barry_template_builds, readme_clive_custom_builds [EXTRACTED 1.00]
 - **Website Production Coordination** — docs_project_overview_spyderweb, docs_project_overview_barry, docs_project_overview_clive, docs_project_overview_codex [EXTRACTED 1.00]
 
-## Communities (17 total, 4 thin omitted)
+## Communities (17 total, 5 thin omitted)
 
 ### Community 0 - "App Dependencies"
 Cohesion: 0.06
-Nodes (33): @cloudflare/vite-plugin, eslint, eslint-config-next, @openai/sites-vite-plugin, devDependencies, @cloudflare/vite-plugin, eslint, eslint-config-next (+25 more)
+Nodes (35): @cloudflare/vite-plugin, @cloudflare/workers-types, eslint, eslint-config-next, @openai/sites-vite-plugin, devDependencies, @cloudflare/vite-plugin, @cloudflare/workers-types (+27 more)
 
 ### Community 1 - "Multi-View Dashboard"
-Cohesion: 0.09
-Nodes (13): activities, buildStages, columns, Developer, Domain, domains, DomainStatus, Home() (+5 more)
+Cohesion: 0.11
+Nodes (12): activities, buildStages, columns, Developer, Domain, domains, DomainStatus, navItems (+4 more)
 
 ### Community 2 - "TypeScript Compiler"
-Cohesion: 0.11
-Nodes (19): dom, dom.iterable, esnext, compilerOptions, allowJs, esModuleInterop, incremental, isolatedModules (+11 more)
+Cohesion: 0.09
+Nodes (22): @cloudflare/workers-types, dom, dom.iterable, esnext, node, compilerOptions, allowJs, esModuleInterop (+14 more)
 
 ### Community 3 - "Product Operations"
 Cohesion: 0.17
@@ -99,33 +103,29 @@ Nodes (5): PNPM Workspace Build Configuration, esbuild, sharp, unrs-resolver, wo
 Cohesion: 0.50
 Nodes (5): Blue-to-Purple Gradient, Graph Nodes and Edges Motif, SpyderWeb Logo, Network-Shaped Spider Web, Stylized Spider
 
-### Community 11 - "Worker Types"
-Cohesion: 0.50
-Nodes (4): @cloudflare/workers-types, @cloudflare/workers-types, node, types
-
 ### Community 12 - "Favicon Assets"
 Cohesion: 0.67
 Nodes (3): Blue Four-Tile Favicon, Multi-Tone Blue Palette, Rounded Square Tile Layout
 
 ## Knowledge Gaps
-- **91 isolated node(s):** `@cloudflare/vite-plugin`, `eslint`, `eslint-config-next`, `@openai/sites-vite-plugin`, `react-server-dom-webpack` (+86 more)
+- **93 isolated node(s):** `geistSans`, `geistMono`, `metadata`, `View`, `Developer` (+88 more)
   These have ≤1 connection - possible missing edges or undocumented components.
-- **4 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
+- **5 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
 
 ## Suggested Questions
 _Questions this graph is uniquely positioned to answer:_
 
-- **Why does `devDependencies` connect `App Dependencies` to `Worker Types`, `Project Scripts`?**
-  _High betweenness centrality (0.221) - this node is a cross-community bridge._
-- **Why does `compilerOptions` connect `TypeScript Compiler` to `Worker Types`, `TypeScript Inputs`?**
-  _High betweenness centrality (0.151) - this node is a cross-community bridge._
-- **Why does `@cloudflare/workers-types` connect `Worker Types` to `App Dependencies`?**
-  _High betweenness centrality (0.132) - this node is a cross-community bridge._
-- **What connects `@cloudflare/vite-plugin`, `eslint`, `eslint-config-next` to the rest of the system?**
-  _91 weakly-connected nodes found - possible documentation gaps or missing edges._
+- **Why does `devDependencies` connect `App Dependencies` to `Project Scripts`?**
+  _High betweenness centrality (0.092) - this node is a cross-community bridge._
+- **Why does `compilerOptions` connect `TypeScript Compiler` to `TypeScript Inputs`?**
+  _High betweenness centrality (0.032) - this node is a cross-community bridge._
+- **Why does `dependencies` connect `Runtime Dependencies` to `Project Scripts`?**
+  _High betweenness centrality (0.023) - this node is a cross-community bridge._
+- **What connects `geistSans`, `geistMono`, `metadata` to the rest of the system?**
+  _93 weakly-connected nodes found - possible documentation gaps or missing edges._
 - **Should `App Dependencies` be split into smaller, more focused modules?**
-  _Cohesion score 0.06060606060606061 - nodes in this community are weakly interconnected._
+  _Cohesion score 0.05714285714285714 - nodes in this community are weakly interconnected._
 - **Should `Multi-View Dashboard` be split into smaller, more focused modules?**
-  _Cohesion score 0.09090909090909091 - nodes in this community are weakly interconnected._
+  _Cohesion score 0.1111111111111111 - nodes in this community are weakly interconnected._
 - **Should `TypeScript Compiler` be split into smaller, more focused modules?**
-  _Cohesion score 0.10526315789473684 - nodes in this community are weakly interconnected._
+  _Cohesion score 0.09090909090909091 - nodes in this community are weakly interconnected._
