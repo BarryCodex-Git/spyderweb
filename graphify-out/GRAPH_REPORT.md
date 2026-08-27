@@ -1,18 +1,18 @@
 # Graph Report - SpyderWeb  (2026-08-27)
 
 ## Corpus Check
-- 1 files · ~44,387 words
+- 1 files · ~44,613 words
 - Verdict: corpus is large enough that graph structure adds value.
 
 ## Summary
-- 159 nodes · 150 edges · 16 communities (12 shown, 4 thin omitted)
+- 160 nodes · 151 edges · 17 communities (13 shown, 4 thin omitted)
 - Extraction: 99% EXTRACTED · 1% INFERRED · 0% AMBIGUOUS · INFERRED: 2 edges (avg confidence: 0.9)
 - Token cost: 0 input · 0 output
 
 ## Community Hubs (Navigation)
 - App Dependencies
-- TypeScript Compiler
 - Multi-View Dashboard
+- TypeScript Compiler
 - Product Operations
 - Launch Workflow
 - Project Scripts
@@ -21,6 +21,7 @@
 - App Shell Metadata
 - Build Approval
 - SpyderWeb Branding
+- Worker Types
 - Favicon Assets
 - Hosting Runtime
 - Deployment Portability
@@ -52,19 +53,19 @@
 - **SpyderWeb Build Assignment** — readme_launch_build_flow, readme_barry_template_builds, readme_clive_custom_builds [EXTRACTED 1.00]
 - **Website Production Coordination** — docs_project_overview_spyderweb, docs_project_overview_barry, docs_project_overview_clive, docs_project_overview_codex [EXTRACTED 1.00]
 
-## Communities (16 total, 4 thin omitted)
+## Communities (17 total, 4 thin omitted)
 
 ### Community 0 - "App Dependencies"
 Cohesion: 0.06
 Nodes (33): @cloudflare/vite-plugin, eslint, eslint-config-next, @openai/sites-vite-plugin, devDependencies, @cloudflare/vite-plugin, eslint, eslint-config-next (+25 more)
 
-### Community 1 - "TypeScript Compiler"
+### Community 1 - "Multi-View Dashboard"
 Cohesion: 0.09
-Nodes (23): @cloudflare/workers-types, @cloudflare/workers-types, dom, dom.iterable, esnext, node, compilerOptions, allowJs (+15 more)
+Nodes (13): activities, buildStages, columns, Developer, Domain, domains, DomainStatus, Home() (+5 more)
 
-### Community 2 - "Multi-View Dashboard"
-Cohesion: 0.10
-Nodes (12): activities, columns, Developer, Domain, domains, DomainStatus, Home(), navItems (+4 more)
+### Community 2 - "TypeScript Compiler"
+Cohesion: 0.11
+Nodes (19): dom, dom.iterable, esnext, compilerOptions, allowJs, esModuleInterop, incremental, isolatedModules (+11 more)
 
 ### Community 3 - "Product Operations"
 Cohesion: 0.17
@@ -98,29 +99,33 @@ Nodes (5): PNPM Workspace Build Configuration, esbuild, sharp, unrs-resolver, wo
 Cohesion: 0.50
 Nodes (5): Blue-to-Purple Gradient, Graph Nodes and Edges Motif, SpyderWeb Logo, Network-Shaped Spider Web, Stylized Spider
 
-### Community 11 - "Favicon Assets"
+### Community 11 - "Worker Types"
+Cohesion: 0.50
+Nodes (4): @cloudflare/workers-types, @cloudflare/workers-types, node, types
+
+### Community 12 - "Favicon Assets"
 Cohesion: 0.67
 Nodes (3): Blue Four-Tile Favicon, Multi-Tone Blue Palette, Rounded Square Tile Layout
 
 ## Knowledge Gaps
-- **90 isolated node(s):** `@cloudflare/vite-plugin`, `eslint`, `eslint-config-next`, `@openai/sites-vite-plugin`, `react-server-dom-webpack` (+85 more)
+- **91 isolated node(s):** `@cloudflare/vite-plugin`, `eslint`, `eslint-config-next`, `@openai/sites-vite-plugin`, `react-server-dom-webpack` (+86 more)
   These have ≤1 connection - possible missing edges or undocumented components.
 - **4 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
 
 ## Suggested Questions
 _Questions this graph is uniquely positioned to answer:_
 
-- **Why does `devDependencies` connect `App Dependencies` to `TypeScript Compiler`, `Project Scripts`?**
-  _High betweenness centrality (0.223) - this node is a cross-community bridge._
-- **Why does `compilerOptions` connect `TypeScript Compiler` to `TypeScript Inputs`?**
-  _High betweenness centrality (0.153) - this node is a cross-community bridge._
-- **Why does `@cloudflare/workers-types` connect `TypeScript Compiler` to `App Dependencies`?**
-  _High betweenness centrality (0.134) - this node is a cross-community bridge._
+- **Why does `devDependencies` connect `App Dependencies` to `Worker Types`, `Project Scripts`?**
+  _High betweenness centrality (0.221) - this node is a cross-community bridge._
+- **Why does `compilerOptions` connect `TypeScript Compiler` to `Worker Types`, `TypeScript Inputs`?**
+  _High betweenness centrality (0.151) - this node is a cross-community bridge._
+- **Why does `@cloudflare/workers-types` connect `Worker Types` to `App Dependencies`?**
+  _High betweenness centrality (0.132) - this node is a cross-community bridge._
 - **What connects `@cloudflare/vite-plugin`, `eslint`, `eslint-config-next` to the rest of the system?**
-  _90 weakly-connected nodes found - possible documentation gaps or missing edges._
+  _91 weakly-connected nodes found - possible documentation gaps or missing edges._
 - **Should `App Dependencies` be split into smaller, more focused modules?**
   _Cohesion score 0.06060606060606061 - nodes in this community are weakly interconnected._
-- **Should `TypeScript Compiler` be split into smaller, more focused modules?**
-  _Cohesion score 0.08695652173913043 - nodes in this community are weakly interconnected._
 - **Should `Multi-View Dashboard` be split into smaller, more focused modules?**
-  _Cohesion score 0.09523809523809523 - nodes in this community are weakly interconnected._
+  _Cohesion score 0.09090909090909091 - nodes in this community are weakly interconnected._
+- **Should `TypeScript Compiler` be split into smaller, more focused modules?**
+  _Cohesion score 0.10526315789473684 - nodes in this community are weakly interconnected._

@@ -63,6 +63,20 @@ const viewCopy: Record<View, { eyebrow: string; title: string; subtitle: string 
 };
 
 const columns: DomainStatus[] = ['Available', 'Template Loaded', 'Busy Working', 'Final Stages'];
+const buildStages = [
+  'Setup',
+  'Build Home Page',
+  'Review Home Page',
+  'Set Up Service Page Template',
+  'Build First Service Page',
+  'Build All Service Pages',
+  'Build Service Page Hub',
+  'Location Pages (optional)',
+  'Review Full Build',
+  'Launch Preparation',
+  'Migrated to Live Site',
+  'Ready to Delete',
+];
 
 const domains: Domain[] = [
   { id: 1, domain: 'dev-01.spyderweb.co.za', client: 'Ready for a new project', status: 'Available', progress: 0, wordpress: '6.8.2', host: 'HostAfrica', template: 'None' },
@@ -102,6 +116,9 @@ export default function Home() {
   const [activityFilter, setActivityFilter] = useState<'All' | Developer>('All');
 
   const copy = viewCopy[activeView];
+  const selectedStageIndex = selectedProject
+    ? Math.max(buildStages.indexOf(selectedProject.stage), 0)
+    : 0;
 
   function changeView(view: View) {
     setActiveView(view);
@@ -181,21 +198,66 @@ export default function Home() {
       )}
 
       {selectedProject && !launchOpen && (
-        <div className="drawer-backdrop" onClick={() => setSelectedProject(null)}>
-          <aside className="detail-drawer" onClick={(event) => event.stopPropagation()}>
+        <div className="project-modal-backdrop" onClick={() => setSelectedProject(null)}>
+          <section className="project-control-modal" onClick={(event) => event.stopPropagation()}>
             <button className="close-button" onClick={() => setSelectedProject(null)}>×</button>
-            <span className={`project-avatar ${selectedProject.developer.toLowerCase()}`}>{selectedProject.client.slice(0, 1)}</span>
-            <p className="eyebrow">Project overview</p><h2>{selectedProject.client}</h2><p className="drawer-copy">{selectedProject.buildType} website managed by {selectedProject.developer}.</p>
-            <div className="drawer-progress"><strong>{selectedProject.progress}%</strong><div className="progress-track"><span style={{ width: `${selectedProject.progress}%` }} /></div></div>
-            <div className="detail-list">
-              <div><span>Domain</span><strong>{selectedProject.domain}</strong></div>
-              <div><span>Current stage</span><strong>{selectedProject.stage}</strong></div>
-              <div><span>Target date</span><strong>{selectedProject.due}</strong></div>
-              <div><span>Next action</span><strong>{selectedProject.next}</strong></div>
+            <header className="project-modal-header">
+              <span className={`project-avatar ${selectedProject.developer.toLowerCase()}`}>{selectedProject.client.slice(0, 1)}</span>
+              <div>
+                <p className="eyebrow">Project control</p>
+                <h2>{selectedProject.client}</h2>
+                <p>{selectedProject.buildType} website managed by {selectedProject.developer}</p>
+              </div>
+              <span className={`developer modal-owner ${selectedProject.developer.toLowerCase()}`}>{selectedProject.developer}</span>
+            </header>
+
+            <div className="project-modal-body">
+              <div className="project-control-main">
+                <section className="project-progress-card">
+                  <div><p>Overall build progress</p><strong>{selectedProject.progress}%</strong></div>
+                  <div className="progress-track large"><span style={{ width: `${selectedProject.progress}%` }} /></div>
+                  <div className="progress-card-meta"><span>Current stage: <b>{selectedProject.stage}</b></span><span>Target: <b>{selectedProject.due}</b></span></div>
+                </section>
+
+                <section className="build-stage-panel">
+                  <div className="modal-section-heading"><div><p className="eyebrow">Build stages</p><h3>Project pipeline</h3></div><span>{selectedStageIndex + 1} of {buildStages.length}</span></div>
+                  <div className="build-stage-list">
+                    {buildStages.map((stage, index) => {
+                      const state = index < selectedStageIndex ? 'complete' : index === selectedStageIndex ? 'current' : 'upcoming';
+                      return (
+                        <div className={`build-stage-item ${state}`} key={stage}>
+                          <span>{state === 'complete' ? '✓' : index + 1}</span>
+                          <div><strong>{stage}</strong><small>{state === 'complete' ? 'Completed' : state === 'current' ? 'Currently in progress' : 'Waiting'}</small></div>
+                          {state === 'current' && <b>Current</b>}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </section>
+              </div>
+
+              <aside className="project-control-sidebar">
+                <section>
+                  <p className="eyebrow">Project details</p>
+                  <div className="modal-detail-list">
+                    <div><span>Development domain</span><strong>{selectedProject.domain}</strong></div>
+                    <div><span>Build type</span><strong>{selectedProject.buildType}</strong></div>
+                    <div><span>Developer</span><strong>{selectedProject.developer}</strong></div>
+                    <div><span>Target date</span><strong>{selectedProject.due}</strong></div>
+                  </div>
+                </section>
+                <section className="next-action-card"><span>Next required action</span><strong>{selectedProject.next}</strong><p>This is the next item SpyderWeb would send to Codex or place into review.</p></section>
+                <section className="project-actions">
+                  <p className="eyebrow">Project controls</p>
+                  <button className="primary-button wide" onClick={() => setNotice(`Demo instruction prepared for ${selectedProject.developer} in Codex.`)}>Send instruction to Codex</button>
+                  <button className="secondary-button" onClick={() => setNotice('Demo only: current stage marked ready for completion.')}>Complete current stage</button>
+                  <button className="secondary-button" onClick={() => setNotice('Demo only: project review request prepared.')}>Request project review</button>
+                </section>
+                {notice && <p className="notice">{notice}</p>}
+                <small className="simulation-note">Demo controls only — no live project or agent data is changed.</small>
+              </aside>
             </div>
-            <button className="secondary-button" onClick={() => setNotice('Demo instruction prepared for Codex reporting.')}>Prepare agent instruction</button>
-            {notice && <p className="notice">{notice}</p>}
-          </aside>
+          </section>
         </div>
       )}
 
