@@ -46,7 +46,8 @@ export async function POST(
     const now = new Date().toISOString();
     const statements = [
       db
-        .prepare(`UPDATE hosting_connections SET status = 'connected_read_only',
+        .prepare(`UPDATE hosting_connections SET
+          status = CASE WHEN mode = 'managed_write' THEN 'connected_managed' ELSE 'connected_read_only' END,
           capabilities_json = ?, last_sync_at = ?, updated_at = ?
           WHERE id = ? AND owner_user_id = ?`)
         .bind(JSON.stringify(discovered.capabilities), now, now, connectionId, identity.userId),

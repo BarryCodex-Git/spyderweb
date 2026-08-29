@@ -32,7 +32,7 @@ type HostingConnection = {
   username: string;
   primaryDomain: string;
   status: string;
-  mode: 'read_only';
+  mode: 'read_only' | 'managed_write';
   credentialStorage: 'encrypted_cloud';
   capabilities: Record<string, boolean>;
   writeActionsEnabled: number;
@@ -187,6 +187,7 @@ export default function Home() {
   const [managedDomains, setManagedDomains] = useState<Domain[]>(demoDomains);
   const [inventoryIsLive, setInventoryIsLive] = useState(false);
   const [hostingSyncingId, setHostingSyncingId] = useState<string | null>(null);
+  const [hostingModeChangingId, setHostingModeChangingId] = useState<string | null>(null);
   const [settingsHostingNotice, setSettingsHostingNotice] = useState('');
 
   const copy = viewCopy[activeView];
@@ -354,6 +355,31 @@ export default function Home() {
     }
   }
 
+  async function changeHostingMode(connection: HostingConnection) {
+    const nextMode = connection.mode === 'managed_write' ? 'read_only' : 'managed_write';
+    setHostingModeChangingId(connection.id);
+    setSettingsHostingNotice(
+      nextMode === 'managed_write'
+        ? `Enabling managed access for ${connection.name}…`
+        : `Returning ${connection.name} to read-only mode…`,
+    );
+    try {
+      const response = await fetch(`/api/hosting/cpanel/${connection.id}/mode`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mode: nextMode }),
+      });
+      const result = (await response.json()) as { error?: string; message?: string };
+      if (!response.ok) throw new Error(result.error || 'The hosting access mode could not be changed.');
+      await loadHostingInventory();
+      setSettingsHostingNotice(result.message || 'The hosting access mode was updated.');
+    } catch (error) {
+      setSettingsHostingNotice(error instanceof Error ? error.message : 'The hosting access mode could not be changed.');
+    } finally {
+      setHostingModeChangingId(null);
+    }
+  }
+
   return (
     <main className="app-shell">
       <aside className="sidebar">
@@ -384,7 +410,7 @@ export default function Home() {
         {activeView === 'Domains' && <DomainsView domains={managedDomains} onDomain={setSelectedDomain} onNotice={setNotice} notice={notice} inventoryIsLive={inventoryIsLive} />}
         {activeView === 'Projects' && <ProjectsView onProject={setSelectedProject} />}
         {activeView === 'Agent Activity' && <AgentActivity filter={activityFilter} onFilter={setActivityFilter} />}
-        {activeView === 'Settings' && <SettingsView connections={hostingConnections} syncingId={hostingSyncingId} notice={settingsHostingNotice} onSync={syncHostingConnection} onConnect={(provider) => { setHostingNotice(''); setHostingProvider(provider); }} />}
+        {activeView === 'Settings' && <SettingsView connections={hostingConnections} syncingId={hostingSyncingId} modeChangingId={hostingModeChangingId} notice={settingsHostingNotice} onSync={syncHostingConnection} onModeChange={changeHostingMode} onConnect={(provider) => { setHostingNotice(''); setHostingProvider(provider); }} />}
       </section>
 
       {hostingProvider && !launchOpen && (
@@ -393,8 +419,8 @@ export default function Home() {
             <button className="close-button" onClick={() => setHostingProvider(null)}>×</button>
             <header className="hosting-modal-header">
               <span className={`provider-logo ${hostingProvider.toLowerCase()}`}>{hostingProvider === 'cPanel' ? 'cP' : 'H'}</span>
-              <div><p className="eyebrow">Hosting connection</p><h2>Connect {hostingProvider}</h2><p>Follow the guide, then prepare the account for its first read-only discovery.</p></div>
-              <span className={`setup-status ${hostingConnections.length ? 'connected' : ''}`}>{hostingConnections.length ? 'Read-only connected' : 'Ready to connect'}</span>
+              <div><p className="eyebrow">Hosting connection</p><h2>Connect {hostingProvider}</h2><p>Start with a safe scan, then choose the access mode for the saved connection.</p></div>
+              <span className={`setup-status ${hostingConnections.length ? 'connected' : ''}`}>{hostingConnections.length ? 'Connections saved' : 'Ready to connect'}</span>
             </header>
             <div className="hosting-modal-body">
               <section className="connection-guide">
@@ -424,7 +450,7 @@ export default function Home() {
                 {hostingProvider === 'cPanel' && <><label>Secure cPanel URL<input name="baseUrl" required type="url" placeholder="https://server.example.com:2083" /></label><label>cPanel username<input name="username" required autoComplete="username" placeholder="Account username" /></label></>}
                 <label>{hostingProvider === 'cPanel' ? 'cPanel API token' : 'Hostinger API token'}<input name="token" required type="password" autoComplete="new-password" placeholder="Paste the API token" /></label>
                 <label>Primary development domain<input name="primaryDomain" required placeholder="dev.example.co.za" /></label>
-                <label className="read-only-option"><input name="readOnly" type="checkbox" defaultChecked required /><span><strong>Read-only synchronisation</strong><small>This version can discover and save domain information, but cannot change hosting data.</small></span></label>
+                <label className="read-only-option"><input name="readOnly" type="checkbox" defaultChecked required /><span><strong>Start safely in read-only mode</strong><small>After the first scan, you can switch this saved connection to Managed access—or return it to read-only—at any time.</small></span></label>
                 {hostingNotice && <p className="notice">{hostingNotice}</p>}
                 <div className="hosting-form-actions"><button className="text-button" type="button" onClick={() => setHostingProvider(null)}>Close</button><button className="primary-button" type="submit" disabled={hostingBusy}>{hostingBusy ? 'Connecting…' : 'Save connection & scan'}</button></div>
               </form>
@@ -674,8 +700,9 @@ function AgentActivity({ filter, onFilter }: { filter: 'All' | Developer; onFilt
   );
 }
 
-function SettingsView({ connections, syncingId, notice, onSync, onConnect }: { connections: HostingConnection[]; syncingId: string | null; notice: string; onSync: (connectionId: string) => void; onConnect: (provider: HostingProvider) => void }) {
+function SettingsView({ connections, syncingId, modeChangingId, notice, onSync, onModeChange, onConnect }: { connections: HostingConnection[]; syncingId: string | null; modeChangingId: string | null; notice: string; onSync: (connectionId: string) => void; onModeChange: (connection: HostingConnection) => void; onConnect: (provider: HostingProvider) => void }) {
   const cpanelConnections = connections.filter((connection) => connection.provider === 'cpanel');
+  const managedConnections = cpanelConnections.filter((connection) => connection.mode === 'managed_write');
   return (
     <div className="settings-stack">
       <section className="settings-account-grid">
@@ -696,11 +723,14 @@ function SettingsView({ connections, syncingId, notice, onSync, onConnect }: { c
           <article className="hosting-provider-card">
             <div className="provider-card-top"><span className="provider-logo cpanel">cP</span><span className={`not-connected ${cpanelConnections.length ? 'connected' : ''}`}>{cpanelConnections.length ? `${cpanelConnections.length} connected` : 'Not connected'}</span></div>
             <h3>cPanel</h3><p>Connect the shared hosting account that manages your main development domain and WordPress subdomains.</p>
-            <ul><li>Discover and save live domains</li><li>Check available cPanel features</li><li>Keep all write actions locked</li></ul>
+            <ul><li>Discover and save live domains</li><li>Check available cPanel features</li><li>Switch each account between read-only and managed access</li></ul>
             {cpanelConnections.length > 0 && <div className="saved-connections">{cpanelConnections.map((connection) => (
               <div className="connection-summary" key={connection.id}>
-                <span><strong>{connection.name}</strong><small>{connection.baseUrl}</small><small>Last scan: {new Date(connection.lastSyncAt).toLocaleString()}</small></span>
-                <button className="outline-button" disabled={syncingId === connection.id} onClick={() => onSync(connection.id)}>{syncingId === connection.id ? 'Syncing…' : 'Sync now'}</button>
+                <div className="connection-details"><span><strong>{connection.name}</strong><b className={`access-mode-pill ${connection.mode === 'managed_write' ? 'managed' : ''}`}>{connection.mode === 'managed_write' ? 'Managed access' : 'Read only'}</b></span><small>{connection.baseUrl}</small><small>Last scan: {new Date(connection.lastSyncAt).toLocaleString()}</small></div>
+                <div className="connection-controls">
+                  <button className="outline-button" disabled={syncingId === connection.id || modeChangingId === connection.id} onClick={() => onSync(connection.id)}>{syncingId === connection.id ? 'Syncing…' : 'Sync now'}</button>
+                  <button className={`access-mode-button ${connection.mode === 'managed_write' ? 'read-only' : ''}`} disabled={syncingId === connection.id || modeChangingId === connection.id} onClick={() => onModeChange(connection)}>{modeChangingId === connection.id ? 'Changing…' : connection.mode === 'managed_write' ? 'Return to read only' : 'Enable managed access'}</button>
+                </div>
               </div>
             ))}</div>}
             {notice && <p className="notice settings-hosting-notice">{notice}</p>}
@@ -716,13 +746,13 @@ function SettingsView({ connections, syncingId, notice, onSync, onConnect }: { c
       </section>
 
       <section className="safety-policy-panel">
-        <div><span className="safety-icon">✓</span><div><p className="eyebrow">Hosting safety</p><h2>Destructive action lock</h2><p>Write and destructive operations are disabled in both the interface and backend.</p></div></div>
+        <div><span className="safety-icon">✓</span><div><p className="eyebrow">Hosting safety</p><h2>Reversible access with a destructive-action lock</h2><p>Ordinary write access can be enabled per connection and switched off instantly. Delete, overwrite and reinstall actions remain separately protected.</p></div></div>
         <div className="safety-rules">
           <span><b>1</b><strong>Fresh backup required</strong><small>No overwrite or deletion without a verified restore point.</small></span>
           <span><b>2</b><strong>Exact domain confirmation</strong><small>The full domain must be entered before the action can continue.</small></span>
           <span><b>3</b><strong>Owner one-time code</strong><small>A separate expiring approval code will be required when write access is introduced.</small></span>
         </div>
-        <strong className="hard-lock">Read-only hard lock active</strong>
+        <strong className={`hard-lock ${managedConnections.length ? 'managed' : ''}`}>{managedConnections.length ? `${managedConnections.length} connection${managedConnections.length === 1 ? '' : 's'} in managed mode · destructive lock active` : 'All connections currently read only'}</strong>
       </section>
 
       <section className="settings-note"><span>⌁</span><div><strong>Multiple hosting spaces supported</strong><p>Add every authorised cPanel account here. Each connection remains saved and can be synchronised independently; Hostinger accounts will use the same model when that connector is added.</p></div></section>

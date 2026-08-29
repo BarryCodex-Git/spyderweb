@@ -102,7 +102,7 @@ export async function POST(request: Request) {
           'owner_code+exact_domain+backup', ?, ?, ?)
         ON CONFLICT(owner_user_id, provider, base_url, username) DO UPDATE SET
           owner_email = excluded.owner_email, name = excluded.name,
-          primary_domain = excluded.primary_domain, status = excluded.status,
+          primary_domain = excluded.primary_domain,
           credential_storage = excluded.credential_storage,
           encrypted_token = excluded.encrypted_token, encryption_iv = excluded.encryption_iv,
           credential_version = excluded.credential_version,
