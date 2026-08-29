@@ -1,12 +1,20 @@
 'use client';
 
 import Image from 'next/image';
-import { type FormEvent, useCallback, useEffect, useState } from 'react';
+import { type FormEvent, useCallback, useEffect, useRef, useState } from 'react';
 
 type View = 'Dashboard' | 'Domains' | 'Projects' | 'Agent Activity' | 'Settings';
 type Developer = 'Barry' | 'Clive';
 type DomainStatus = 'Available' | 'Template Loaded' | 'Busy Working' | 'Final Stages';
 type HostingProvider = 'cPanel' | 'Hostinger';
+type ActionToastStatus = 'progress' | 'success' | 'error';
+
+type ActionToast = {
+  id: string;
+  status: ActionToastStatus;
+  title: string;
+  message: string;
+};
 
 type Domain = {
   id: number | string;
@@ -189,11 +197,42 @@ export default function Home() {
   const [hostingSyncingId, setHostingSyncingId] = useState<string | null>(null);
   const [hostingModeChangingId, setHostingModeChangingId] = useState<string | null>(null);
   const [settingsHostingNotice, setSettingsHostingNotice] = useState('');
+  const [actionToasts, setActionToasts] = useState<ActionToast[]>([]);
+  const toastTimers = useRef(new Map<string, number>());
 
   const copy = viewCopy[activeView];
   const selectedStageIndex = selectedProject
     ? Math.max(buildStages.indexOf(selectedProject.stage), 0)
     : 0;
+
+  const dismissActionToast = useCallback((id: string) => {
+    const timer = toastTimers.current.get(id);
+    if (timer) window.clearTimeout(timer);
+    toastTimers.current.delete(id);
+    setActionToasts((current) => current.filter((toast) => toast.id !== id));
+  }, []);
+
+  const showActionToast = useCallback((toast: ActionToast) => {
+    const existingTimer = toastTimers.current.get(toast.id);
+    if (existingTimer) window.clearTimeout(existingTimer);
+    setActionToasts((current) => [toast, ...current.filter((item) => item.id !== toast.id)].slice(0, 4));
+
+    if (toast.status !== 'progress') {
+      const timer = window.setTimeout(
+        () => {
+          setActionToasts((current) => current.filter((item) => item.id !== toast.id));
+          toastTimers.current.delete(toast.id);
+        },
+        toast.status === 'success' ? 6000 : 10000,
+      );
+      toastTimers.current.set(toast.id, timer);
+    }
+  }, []);
+
+  useEffect(() => {
+    const timers = toastTimers.current;
+    return () => timers.forEach((timer) => window.clearTimeout(timer));
+  }, []);
 
   const loadHostingInventory = useCallback(async () => {
     try {
@@ -303,6 +342,7 @@ export default function Home() {
     event.preventDefault();
     if (hostingProvider !== 'cPanel') {
       setHostingNotice('Hostinger will be connected after the cPanel integration is proven.');
+      showActionToast({ id: 'hostinger-connect', status: 'error', title: 'Hostinger is not ready yet', message: 'Complete the cPanel connection first. The Hostinger connector is still in preparation.' });
       return;
     }
 
@@ -310,6 +350,7 @@ export default function Home() {
     const formData = new FormData(form);
     setHostingBusy(true);
     setHostingNotice('Testing the secure connection and scanning domains…');
+    showActionToast({ id: 'cpanel-connect', status: 'progress', title: 'Connecting to cPanel', message: 'Checking the encrypted credentials and scanning the account for domains and subdomains.' });
     try {
       const response = await fetch('/api/hosting/cpanel', {
         method: 'POST',
@@ -328,9 +369,13 @@ export default function Home() {
       const tokenInput = form.elements.namedItem('token') as HTMLInputElement | null;
       if (tokenInput) tokenInput.value = '';
       await loadHostingInventory();
-      setHostingNotice(result.message || 'cPanel connected in read-only mode.');
+      const successMessage = result.message || 'cPanel connected in read-only mode.';
+      setHostingNotice(successMessage);
+      showActionToast({ id: 'cpanel-connect', status: 'success', title: 'cPanel connected', message: successMessage });
     } catch (error) {
-      setHostingNotice(error instanceof Error ? error.message : 'The cPanel connection failed.');
+      const message = error instanceof Error ? error.message : 'The cPanel connection failed.';
+      setHostingNotice(message);
+      showActionToast({ id: 'cpanel-connect', status: 'error', title: 'Connection failed', message });
     } finally {
       setHostingBusy(false);
     }
@@ -339,6 +384,7 @@ export default function Home() {
   async function syncHostingConnection(connectionId: string) {
     setHostingSyncingId(connectionId);
     setSettingsHostingNotice('Synchronising the saved cPanel connection…');
+    showActionToast({ id: `cpanel-sync-${connectionId}`, status: 'progress', title: 'Scanning cPanel', message: 'Refreshing the saved domain and subdomain inventory.' });
     try {
       const response = await fetch(`/api/hosting/cpanel/${connectionId}/sync`, {
         method: 'POST',
@@ -347,9 +393,13 @@ export default function Home() {
       const result = (await response.json()) as { error?: string; message?: string };
       if (!response.ok) throw new Error(result.error || 'The cPanel synchronisation failed.');
       await loadHostingInventory();
-      setSettingsHostingNotice(result.message || 'The cPanel inventory is current.');
+      const successMessage = result.message || 'The cPanel inventory is current.';
+      setSettingsHostingNotice(successMessage);
+      showActionToast({ id: `cpanel-sync-${connectionId}`, status: 'success', title: 'Scan complete', message: successMessage });
     } catch (error) {
-      setSettingsHostingNotice(error instanceof Error ? error.message : 'The cPanel synchronisation failed.');
+      const message = error instanceof Error ? error.message : 'The cPanel synchronisation failed.';
+      setSettingsHostingNotice(message);
+      showActionToast({ id: `cpanel-sync-${connectionId}`, status: 'error', title: 'Scan failed', message });
     } finally {
       setHostingSyncingId(null);
     }
@@ -363,6 +413,7 @@ export default function Home() {
         ? `Enabling managed access for ${connection.name}…`
         : `Returning ${connection.name} to read-only mode…`,
     );
+    showActionToast({ id: `cpanel-mode-${connection.id}`, status: 'progress', title: 'Changing access mode', message: nextMode === 'managed_write' ? `Enabling managed access for ${connection.name}.` : `Returning ${connection.name} to read-only mode.` });
     try {
       const response = await fetch(`/api/hosting/cpanel/${connection.id}/mode`, {
         method: 'POST',
@@ -372,9 +423,13 @@ export default function Home() {
       const result = (await response.json()) as { error?: string; message?: string };
       if (!response.ok) throw new Error(result.error || 'The hosting access mode could not be changed.');
       await loadHostingInventory();
-      setSettingsHostingNotice(result.message || 'The hosting access mode was updated.');
+      const successMessage = result.message || 'The hosting access mode was updated.';
+      setSettingsHostingNotice(successMessage);
+      showActionToast({ id: `cpanel-mode-${connection.id}`, status: 'success', title: 'Access mode updated', message: successMessage });
     } catch (error) {
-      setSettingsHostingNotice(error instanceof Error ? error.message : 'The hosting access mode could not be changed.');
+      const message = error instanceof Error ? error.message : 'The hosting access mode could not be changed.';
+      setSettingsHostingNotice(message);
+      showActionToast({ id: `cpanel-mode-${connection.id}`, status: 'error', title: 'Access change failed', message });
     } finally {
       setHostingModeChangingId(null);
     }
@@ -560,6 +615,16 @@ export default function Home() {
           </section>
         </div>
       )}
+
+      <aside className="action-toast-region" aria-label="Action updates" aria-live="polite">
+        {actionToasts.map((toast) => (
+          <section className={`action-toast ${toast.status}`} key={toast.id} role={toast.status === 'error' ? 'alert' : 'status'}>
+            <span className="toast-status-icon" aria-hidden="true">{toast.status === 'progress' ? '' : toast.status === 'success' ? '✓' : '!'}</span>
+            <div><strong>{toast.title}</strong><p>{toast.message}</p></div>
+            <button type="button" aria-label={`Dismiss ${toast.title}`} onClick={() => dismissActionToast(toast.id)}>×</button>
+          </section>
+        ))}
+      </aside>
     </main>
   );
 }

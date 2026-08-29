@@ -24,6 +24,12 @@ type UapiEnvelope = {
   };
 };
 
+type DomainDetail = {
+  documentRoot: string | null;
+  phpVersion: string | null;
+  domainType: CpanelDomain['domainType'];
+};
+
 const allowedPorts = new Set(['443', '2083']);
 
 function isPrivateIpv4(hostname: string) {
@@ -77,8 +83,11 @@ async function uapi(
   token: string,
   module: string,
   fn: string,
+  query: Record<string, string> = {},
 ) {
-  const response = await fetch(`${baseUrl}/execute/${module}/${fn}`, {
+  const url = new URL(`${baseUrl}/execute/${module}/${fn}`);
+  Object.entries(query).forEach(([key, value]) => url.searchParams.set(key, value));
+  const response = await fetch(url, {
     method: 'GET',
     headers: {
       Accept: 'application/json',
@@ -103,7 +112,10 @@ async function uapi(
   const payload = (await response.json()) as UapiEnvelope;
   if (payload.result?.status !== 1) {
     const errors = payload.result?.errors;
-    const detail = Array.isArray(errors) ? errors[0] : errors;
+    const messages = payload.result?.messages;
+    const detail =
+      (Array.isArray(errors) ? errors[0] : errors) ||
+      (Array.isArray(messages) ? messages[0] : messages);
     throw new Error(detail || `cPanel could not run ${module}/${fn}.`);
   }
   return payload.result.data;
@@ -112,6 +124,15 @@ async function uapi(
 function stringList(value: unknown) {
   if (!Array.isArray(value)) return [];
   return value.filter((item): item is string => typeof item === 'string' && Boolean(item.trim()));
+}
+
+function classifyDomainType(record: Record<string, unknown>): CpanelDomain['domainType'] {
+  const type = String(record.domain_type ?? record.type ?? record.vhost_type ?? '').toLowerCase();
+  if (/main|primary/.test(type) || record.is_main_domain === 1) return 'main';
+  if (/sub/.test(type) || typeof record.parentdomain === 'string') return 'subdomain';
+  if (/addon/.test(type)) return 'addon';
+  if (/parked|alias/.test(type)) return 'alias';
+  return 'unknown';
 }
 
 function domainFromDetail(value: unknown) {
@@ -126,12 +147,17 @@ function domainFromDetail(value: unknown) {
       [record.documentroot, record.document_root].find((item): item is string => typeof item === 'string') ?? null,
     phpVersion:
       [record.phpversion, record.php_version].find((item): item is string => typeof item === 'string') ?? null,
+    domainType: classifyDomainType(record),
   };
 }
 
-function collectDetails(value: unknown, map = new Map<string, { documentRoot: string | null; phpVersion: string | null }>()) {
+function collectDetails(value: unknown, map = new Map<string, DomainDetail>()) {
   if (Array.isArray(value)) {
     value.forEach((item) => collectDetails(item, map));
+    return map;
+  }
+  if (typeof value === 'string' && value.includes('.') && !value.includes('/') && !value.includes(' ')) {
+    map.set(value.toLowerCase(), { documentRoot: null, phpVersion: null, domainType: 'unknown' });
     return map;
   }
   if (!value || typeof value !== 'object') return map;
@@ -154,9 +180,23 @@ export async function discoverCpanel(input: {
   const username = validateCredentialPart(input.username, 'cPanel username', 128);
   const token = validateCredentialPart(input.token, 'cPanel API token', 4096);
 
-  const listData = (await uapi(baseUrl, username, token, 'DomainInfo', 'list_domains')) as
-    | Record<string, unknown>
-    | undefined;
+  let listData: Record<string, unknown> | null = null;
+  let detailData: unknown = null;
+  let webVhostData: unknown = null;
+  const inventoryErrors: string[] = [];
+
+  await Promise.all([
+    uapi(baseUrl, username, token, 'DomainInfo', 'list_domains')
+      .then((data) => (listData = data as Record<string, unknown>))
+      .catch((error) => inventoryErrors.push(error instanceof Error ? error.message : 'Domain list unavailable')),
+    uapi(baseUrl, username, token, 'DomainInfo', 'domains_data', { format: 'list' })
+      .then((data) => (detailData = data))
+      .catch((error) => inventoryErrors.push(error instanceof Error ? error.message : 'Domain details unavailable')),
+    uapi(baseUrl, username, token, 'WebVhosts', 'list_domains')
+      .then((data) => (webVhostData = data))
+      .catch((error) => inventoryErrors.push(error instanceof Error ? error.message : 'Virtual hosts unavailable')),
+  ]);
+
   const domainTypes = new Map<string, CpanelDomain['domainType']>();
   const add = (items: string[], type: CpanelDomain['domainType']) =>
     items.forEach((domain) => domainTypes.set(domain.trim().toLowerCase(), type));
@@ -168,20 +208,29 @@ export async function discoverCpanel(input: {
     add(stringList(listData.parked_domains), 'alias');
   }
 
-  if (!domainTypes.size) {
-    throw new Error('The connection worked, but cPanel returned no domains for this account.');
+  const details = collectDetails(detailData);
+  const webVhosts = collectDetails(webVhostData);
+  for (const [domain, detail] of [...details, ...webVhosts]) {
+    if (!domainTypes.has(domain) || domainTypes.get(domain) === 'unknown') {
+      domainTypes.set(domain, detail.domainType);
+    }
   }
 
-  let detailData: unknown = null;
+  if (!domainTypes.size) {
+    const detail = inventoryErrors.find((message) => !message.includes('could not run'));
+    throw new Error(
+      detail ||
+        'cPanel authenticated, but did not expose any domains. Ask the host to enable Domain Information or Virtual Host access for this account.',
+    );
+  }
+
   let featureData: unknown = null;
   let phpData: unknown = null;
   await Promise.all([
-    uapi(baseUrl, username, token, 'DomainInfo', 'domains_data').then((data) => (detailData = data)).catch(() => undefined),
     uapi(baseUrl, username, token, 'Features', 'list_features').then((data) => (featureData = data)).catch(() => undefined),
     uapi(baseUrl, username, token, 'LangPHP', 'php_get_vhost_versions').then((data) => (phpData = data)).catch(() => undefined),
   ]);
 
-  const details = collectDetails(detailData);
   const phpDetails = collectDetails(phpData);
   const domains = [...domainTypes.entries()]
     .map(([domain, domainType]) => {
@@ -189,8 +238,8 @@ export async function discoverCpanel(input: {
       const php = phpDetails.get(domain);
       return {
         domain,
-        domainType,
-        documentRoot: detail?.documentRoot ?? null,
+        domainType: domainType === 'unknown' ? detail?.domainType ?? 'unknown' : domainType,
+        documentRoot: detail?.documentRoot ?? webVhosts.get(domain)?.documentRoot ?? null,
         phpVersion: php?.phpVersion ?? detail?.phpVersion ?? null,
       } satisfies CpanelDomain;
     })
