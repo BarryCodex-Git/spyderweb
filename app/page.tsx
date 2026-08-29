@@ -214,6 +214,8 @@ export default function Home() {
   const [hostingConnections, setHostingConnections] = useState<HostingConnection[]>([]);
   const [managedDomains, setManagedDomains] = useState<Domain[]>(demoDomains);
   const [inventoryIsLive, setInventoryIsLive] = useState(false);
+  const [inventoryRefreshing, setInventoryRefreshing] = useState(false);
+  const [inventoryLastRefreshedAt, setInventoryLastRefreshedAt] = useState<string | null>(null);
   const [hostingSyncingId, setHostingSyncingId] = useState<string | null>(null);
   const [hostingModeChangingId, setHostingModeChangingId] = useState<string | null>(null);
   const [domainAvailabilityId, setDomainAvailabilityId] = useState<string | null>(null);
@@ -221,6 +223,7 @@ export default function Home() {
   const [actionToasts, setActionToasts] = useState<ActionToast[]>([]);
   const toastTimers = useRef(new Map<string, number>());
   const automaticHostingScanStarted = useRef(false);
+  const inventoryRequestCounter = useRef(0);
 
   const copy = viewCopy[activeView];
   const selectedStageIndex = selectedProject
@@ -257,40 +260,47 @@ export default function Home() {
   }, []);
 
   const loadHostingInventory = useCallback(async () => {
+    const requestId = ++inventoryRequestCounter.current;
+    setInventoryRefreshing(true);
     try {
       const response = await fetch('/api/hosting/cpanel', { cache: 'no-store' });
-      if (!response.ok) return;
+      if (!response.ok) return null;
       const data = (await response.json()) as {
         connections: HostingConnection[];
         domains: HostingDomain[];
       };
+      if (requestId !== inventoryRequestCounter.current) return data;
       setHostingConnections(data.connections);
       if (data.domains.length > 0) {
         setManagedDomains(mapHostingDomains(data.domains, data.connections));
         setInventoryIsLive(true);
       }
+      setInventoryLastRefreshedAt(new Date().toISOString());
+      return data;
     } catch {
       // The existing demo remains visible until a live inventory is available.
+      return null;
+    } finally {
+      if (requestId === inventoryRequestCounter.current) setInventoryRefreshing(false);
     }
   }, []);
 
   useEffect(() => {
     let active = true;
-    fetch('/api/hosting/cpanel', { cache: 'no-store' })
-      .then((response) => (response.ok ? response.json() : null))
-      .then((data: { connections: HostingConnection[]; domains: HostingDomain[] } | null) => {
-        if (!active || !data) return;
-        setHostingConnections(data.connections);
-        if (data.domains.length > 0) {
-          setManagedDomains(mapHostingDomains(data.domains, data.connections));
-          setInventoryIsLive(true);
-        }
-      })
-      .catch(() => undefined);
+    const refreshVisibleInventory = () => {
+      if (active && document.visibilityState === 'visible') void loadHostingInventory();
+    };
+    refreshVisibleInventory();
+    const timer = window.setInterval(refreshVisibleInventory, 20_000);
+    window.addEventListener('focus', refreshVisibleInventory);
+    document.addEventListener('visibilitychange', refreshVisibleInventory);
     return () => {
       active = false;
+      window.clearInterval(timer);
+      window.removeEventListener('focus', refreshVisibleInventory);
+      document.removeEventListener('visibilitychange', refreshVisibleInventory);
     };
-  }, []);
+  }, [loadHostingInventory]);
 
   const hostingConnectionIds = hostingConnections.map((connection) => connection.id).sort().join(',');
 
@@ -299,6 +309,7 @@ export default function Home() {
     const connectionIds = hostingConnectionIds.split(',');
 
     const refresh = async () => {
+      if (document.visibilityState !== 'visible') return;
       const showAutomaticProgress = !automaticHostingScanStarted.current;
       if (showAutomaticProgress) {
         automaticHostingScanStarted.current = true;
@@ -317,8 +328,8 @@ export default function Home() {
           }),
         ),
       );
-      const response = await fetch('/api/hosting/cpanel', { cache: 'no-store' });
-      if (!response.ok) {
+      const data = await loadHostingInventory();
+      if (!data) {
         if (showAutomaticProgress) {
           showActionToast({
             id: 'automatic-wordpress-scan',
@@ -329,14 +340,7 @@ export default function Home() {
         }
         return;
       }
-      const data = (await response.json()) as {
-        connections: HostingConnection[];
-        domains: HostingDomain[];
-      };
-      setHostingConnections(data.connections);
       const mappedDomains = mapHostingDomains(data.domains, data.connections);
-      setManagedDomains(mappedDomains);
-      setInventoryIsLive(true);
       if (showAutomaticProgress) {
         const installedCount = data.domains.filter((domain) => domain.wordpressStatus === 'installed').length;
         const pendingCount = data.domains.filter((domain) => domain.wordpressStatus === 'not_checked').length;
@@ -354,9 +358,9 @@ export default function Home() {
     void refresh();
     const timer = window.setInterval(() => {
       void refresh();
-    }, 10 * 60 * 1000);
+    }, 5 * 60 * 1000);
     return () => window.clearInterval(timer);
-  }, [hostingConnectionIds, showActionToast]);
+  }, [hostingConnectionIds, loadHostingInventory, showActionToast]);
 
   function changeView(view: View) {
     setActiveView(view);
@@ -568,7 +572,7 @@ export default function Home() {
           </div>
         </header>
 
-        {activeView === 'Dashboard' && <Dashboard domains={managedDomains} onDomain={openDashboardDomain} onLaunch={openLaunch} inventoryIsLive={inventoryIsLive} />}
+        {activeView === 'Dashboard' && <Dashboard domains={managedDomains} onDomain={openDashboardDomain} onLaunch={openLaunch} inventoryIsLive={inventoryIsLive} inventoryRefreshing={inventoryRefreshing} inventoryLastRefreshedAt={inventoryLastRefreshedAt} />}
         {activeView === 'Domains' && <DomainsView domains={managedDomains} onDomain={setSelectedDomain} onNotice={setNotice} notice={notice} inventoryIsLive={inventoryIsLive} />}
         {activeView === 'Projects' && <ProjectsView onProject={setSelectedProject} />}
         {activeView === 'Agent Activity' && <AgentActivity filter={activityFilter} onFilter={setActivityFilter} />}
@@ -745,9 +749,12 @@ export default function Home() {
   );
 }
 
-function Dashboard({ domains, onDomain, onLaunch, inventoryIsLive }: { domains: Domain[]; onDomain: (domain: Domain) => void; onLaunch: () => void; inventoryIsLive: boolean }) {
+function Dashboard({ domains, onDomain, onLaunch, inventoryIsLive, inventoryRefreshing, inventoryLastRefreshedAt }: { domains: Domain[]; onDomain: (domain: Domain) => void; onLaunch: () => void; inventoryIsLive: boolean; inventoryRefreshing: boolean; inventoryLastRefreshedAt: string | null }) {
   const availableCount = domains.filter((domain) => domain.status === 'Available').length;
   const finalCount = domains.filter((domain) => domain.status === 'Final Stages').length;
+  const refreshTime = inventoryLastRefreshedAt
+    ? new Date(inventoryLastRefreshedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+    : null;
   return (
     <>
       <section className="summary-row" aria-label="Platform summary">
@@ -757,7 +764,7 @@ function Dashboard({ domains, onDomain, onLaunch, inventoryIsLive }: { domains: 
         <div className="summary-card"><div><span className="summary-icon navy">✓</span><p>Final stages</p><strong>{finalCount}</strong></div><span className="trend positive">On track</span></div>
       </section>
       <section className="board-section">
-        <div className="section-heading"><div><p className="eyebrow">Domain board</p><h2>Website workspace</h2></div><div className="board-tools"><button>All developers⌄</button><button>Filter</button></div></div>
+        <div className="section-heading"><div><p className="eyebrow">Domain board</p><h2>Website workspace</h2></div><div className="board-heading-actions"><span className={`live-refresh-pill ${inventoryRefreshing ? 'refreshing' : ''}`}><i />{inventoryRefreshing ? 'Refreshing live data…' : refreshTime ? `Live · updated ${refreshTime}` : 'Connecting to live data…'}</span><div className="board-tools"><button>All developers⌄</button><button>Filter</button></div></div></div>
         <div className="kanban-board">
           {columns.map((column) => {
             const items = domains.filter((domain) => domain.status === column);

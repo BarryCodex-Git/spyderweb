@@ -374,15 +374,52 @@ async function publicWordPressInfo(domain: string) {
       redirect: 'manual',
       signal: AbortSignal.timeout(8_000),
     });
+    if (response.ok) {
+      const payload = (await response.json()) as Record<string, unknown>;
+      return {
+        siteName: cleanInventoryText(payload.name, 180),
+        url: cleanInventoryText(payload.url, 2048) ?? `https://${domain}`,
+      };
+    }
+  } catch {
+    // Some WordPress sites disable their public REST index. The homepage title is
+    // still a safe read-only fallback for identifying the installation.
+  }
+
+  try {
+    const response = await fetch(`https://${domain}/`, {
+      headers: { Accept: 'text/html' },
+      redirect: 'manual',
+      signal: AbortSignal.timeout(8_000),
+    });
     if (!response.ok) return { siteName: null, url: `https://${domain}` };
-    const payload = (await response.json()) as Record<string, unknown>;
-    return {
-      siteName: cleanInventoryText(payload.name, 180),
-      url: cleanInventoryText(payload.url, 2048) ?? `https://${domain}`,
-    };
+    const html = await response.text();
+    const match = html.match(/<meta[^>]+property=["']og:site_name["'][^>]+content=["']([^"']+)["']/i)
+      ?? html.match(/<meta[^>]+content=["']([^"']+)["'][^>]+property=["']og:site_name["']/i)
+      ?? html.match(/<title[^>]*>([^<]+)<\/title>/i);
+    const siteName = match?.[1]
+      ?.replace(/&amp;/gi, '&')
+      .replace(/&#0*39;|&apos;/gi, "'")
+      .replace(/&quot;/gi, '"')
+      .replace(/\s+[|–—-]\s+WordPress\s*$/i, '')
+      .trim();
+    return { siteName: cleanInventoryText(siteName, 180), url: `https://${domain}` };
   } catch {
     return { siteName: null, url: `https://${domain}` };
   }
+}
+
+function filemanRootCandidates(documentRoot: string, username: string) {
+  const normalized = documentRoot.replace(/\\/g, '/').replace(/\/+$/, '');
+  const candidates = new Set<string>([normalized]);
+  const withoutLeadingSlash = normalized.replace(/^\/+/, '');
+  if (withoutLeadingSlash) candidates.add(withoutLeadingSlash);
+
+  const escapedUsername = username.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const homeRelative = normalized.replace(new RegExp(`^/home\\d*/${escapedUsername}/?`, 'i'), '');
+  if (homeRelative) candidates.add(homeRelative);
+
+  return [...candidates].filter(Boolean);
 }
 
 async function inspectWordPressDocumentRoot(input: {
@@ -392,9 +429,7 @@ async function inspectWordPressDocumentRoot(input: {
   domain: string;
   documentRoot: string;
 }) {
-  const roots = [input.documentRoot];
-  const relativeRoot = input.documentRoot.replace(/^\/+/, '');
-  if (relativeRoot && relativeRoot !== input.documentRoot && !relativeRoot.startsWith('home/')) roots.push(relativeRoot);
+  const roots = filemanRootCandidates(input.documentRoot, input.username);
 
   let selectedRoot = input.documentRoot;
   let files: unknown = null;
@@ -403,7 +438,6 @@ async function inspectWordPressDocumentRoot(input: {
     try {
       files = await uapi(input.baseUrl, input.username, input.token, 'Fileman', 'list_files', {
         dir: root,
-        only_these_files: 'wp-config.php',
         types: 'file',
         show_hidden: '1',
       });
@@ -469,13 +503,20 @@ function collectDetails(value: unknown, map = new Map<string, DomainDetail>()) {
   }
   const stringDomain = normalizeDomain(value);
   if (stringDomain) {
-    map.set(stringDomain, { documentRoot: null, phpVersion: null, domainType: 'unknown' });
+    if (!map.has(stringDomain)) {
+      map.set(stringDomain, { documentRoot: null, phpVersion: null, domainType: 'unknown' });
+    }
     return map;
   }
   if (!value || typeof value !== 'object') return map;
   const detail = domainFromDetail(value);
   if (detail) {
-    map.set(detail.domain, detail);
+    const existing = map.get(detail.domain);
+    map.set(detail.domain, {
+      documentRoot: detail.documentRoot ?? existing?.documentRoot ?? null,
+      phpVersion: detail.phpVersion ?? existing?.phpVersion ?? null,
+      domainType: detail.domainType === 'unknown' ? existing?.domainType ?? 'unknown' : detail.domainType,
+    });
   }
   Object.values(value as Record<string, unknown>).forEach((item) => collectDetails(item, map));
   return map;
@@ -567,6 +608,32 @@ export async function discoverCpanel(input: {
     if (!domainTypes.has(domain) || domainTypes.get(domain) === 'unknown') {
       domainTypes.set(domain, detail.domainType);
     }
+  }
+
+  const domainsMissingRoots = [...domainTypes.keys()].filter(
+    (domain) => !(details.get(domain)?.documentRoot ?? webVhosts.get(domain)?.documentRoot),
+  );
+  if (domainsMissingRoots.length) {
+    let recoveredRoots = 0;
+    await Promise.all(
+      domainsMissingRoots.map(async (domain) => {
+        try {
+          const data = await uapi(baseUrl, username, token, 'DomainInfo', 'single_domain_data', { domain });
+          const before = details.get(domain)?.documentRoot ?? null;
+          collectDetails(data, details);
+          if (!before && details.get(domain)?.documentRoot) recoveredRoots += 1;
+        } catch {
+          // The bulk domain response remains authoritative when a host disables
+          // the per-domain compatibility endpoint.
+        }
+      }),
+    );
+    inventoryAttempts.push({
+      source: 'Per-domain hosting data',
+      status: recoveredRoots ? 'complete' : 'unavailable',
+      domainCount: recoveredRoots,
+      ...(!recoveredRoots ? { message: 'cPanel did not return additional document roots.' } : {}),
+    });
   }
 
   let featureData: unknown = null;
