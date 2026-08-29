@@ -84,10 +84,15 @@ async function uapi(
       Accept: 'application/json',
       Authorization: `cpanel ${username}:${token}`,
     },
-    redirect: 'error',
+    redirect: 'manual',
     signal: AbortSignal.timeout(20_000),
   });
 
+  if (response.status >= 300 && response.status < 400) {
+    throw new Error(
+      'The cPanel server redirected the API request. Use the direct secure cPanel URL, usually https://server-name:2083.',
+    );
+  }
   if (response.status === 401 || response.status === 403) {
     throw new Error('cPanel rejected the username or API token. Check both and try again.');
   }
