@@ -259,9 +259,9 @@ export default function Home() {
     return () => timers.forEach((timer) => window.clearTimeout(timer));
   }, []);
 
-  const loadHostingInventory = useCallback(async () => {
+  const loadHostingInventory = useCallback(async (showIndicator = false) => {
     const requestId = ++inventoryRequestCounter.current;
-    setInventoryRefreshing(true);
+    if (showIndicator) setInventoryRefreshing(true);
     try {
       const response = await fetch('/api/hosting/cpanel', { cache: 'no-store' });
       if (!response.ok) return null;
@@ -270,9 +270,10 @@ export default function Home() {
         domains: HostingDomain[];
       };
       if (requestId !== inventoryRequestCounter.current) return data;
-      setHostingConnections(data.connections);
+      setHostingConnections((current) => JSON.stringify(current) === JSON.stringify(data.connections) ? current : data.connections);
       if (data.domains.length > 0) {
-        setManagedDomains(mapHostingDomains(data.domains, data.connections));
+        const mappedDomains = mapHostingDomains(data.domains, data.connections);
+        setManagedDomains((current) => JSON.stringify(current) === JSON.stringify(mappedDomains) ? current : mappedDomains);
         setInventoryIsLive(true);
       }
       setInventoryLastRefreshedAt(new Date().toISOString());
@@ -281,7 +282,7 @@ export default function Home() {
       // The existing demo remains visible until a live inventory is available.
       return null;
     } finally {
-      if (requestId === inventoryRequestCounter.current) setInventoryRefreshing(false);
+      if (showIndicator) setInventoryRefreshing(false);
     }
   }, []);
 
@@ -290,12 +291,15 @@ export default function Home() {
     const refreshVisibleInventory = () => {
       if (active && document.visibilityState === 'visible') void loadHostingInventory();
     };
-    refreshVisibleInventory();
+    const initialTimer = window.setTimeout(() => {
+      if (active && document.visibilityState === 'visible') void loadHostingInventory(true);
+    }, 0);
     const timer = window.setInterval(refreshVisibleInventory, 20_000);
     window.addEventListener('focus', refreshVisibleInventory);
     document.addEventListener('visibilitychange', refreshVisibleInventory);
     return () => {
       active = false;
+      window.clearTimeout(initialTimer);
       window.clearInterval(timer);
       window.removeEventListener('focus', refreshVisibleInventory);
       document.removeEventListener('visibilitychange', refreshVisibleInventory);
