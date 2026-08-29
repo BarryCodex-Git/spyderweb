@@ -33,7 +33,7 @@ type HostingConnection = {
   primaryDomain: string;
   status: string;
   mode: 'read_only';
-  credentialStorage: 'transient';
+  credentialStorage: 'encrypted_cloud';
   capabilities: Record<string, boolean>;
   writeActionsEnabled: number;
   destructiveActionsEnabled: number;
@@ -186,6 +186,8 @@ export default function Home() {
   const [hostingConnections, setHostingConnections] = useState<HostingConnection[]>([]);
   const [managedDomains, setManagedDomains] = useState<Domain[]>(demoDomains);
   const [inventoryIsLive, setInventoryIsLive] = useState(false);
+  const [hostingSyncingId, setHostingSyncingId] = useState<string | null>(null);
+  const [settingsHostingNotice, setSettingsHostingNotice] = useState('');
 
   const copy = viewCopy[activeView];
   const selectedStageIndex = selectedProject
@@ -227,6 +229,35 @@ export default function Home() {
       active = false;
     };
   }, []);
+
+  useEffect(() => {
+    if (hostingConnections.length === 0) return;
+
+    const refresh = async () => {
+      await Promise.allSettled(
+        hostingConnections.map((connection) =>
+          fetch(`/api/hosting/cpanel/${connection.id}/sync`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+          }),
+        ),
+      );
+      const response = await fetch('/api/hosting/cpanel', { cache: 'no-store' });
+      if (!response.ok) return;
+      const data = (await response.json()) as {
+        connections: HostingConnection[];
+        domains: HostingDomain[];
+      };
+      setHostingConnections(data.connections);
+      setManagedDomains(mapHostingDomains(data.domains, data.connections));
+      setInventoryIsLive(true);
+    };
+
+    const timer = window.setInterval(() => {
+      void refresh();
+    }, 10 * 60 * 1000);
+    return () => window.clearInterval(timer);
+  }, [hostingConnections]);
 
   function changeView(view: View) {
     setActiveView(view);
@@ -304,6 +335,25 @@ export default function Home() {
     }
   }
 
+  async function syncHostingConnection(connectionId: string) {
+    setHostingSyncingId(connectionId);
+    setSettingsHostingNotice('Synchronising the saved cPanel connection…');
+    try {
+      const response = await fetch(`/api/hosting/cpanel/${connectionId}/sync`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+      });
+      const result = (await response.json()) as { error?: string; message?: string };
+      if (!response.ok) throw new Error(result.error || 'The cPanel synchronisation failed.');
+      await loadHostingInventory();
+      setSettingsHostingNotice(result.message || 'The cPanel inventory is current.');
+    } catch (error) {
+      setSettingsHostingNotice(error instanceof Error ? error.message : 'The cPanel synchronisation failed.');
+    } finally {
+      setHostingSyncingId(null);
+    }
+  }
+
   return (
     <main className="app-shell">
       <aside className="sidebar">
@@ -334,7 +384,7 @@ export default function Home() {
         {activeView === 'Domains' && <DomainsView domains={managedDomains} onDomain={setSelectedDomain} onNotice={setNotice} notice={notice} inventoryIsLive={inventoryIsLive} />}
         {activeView === 'Projects' && <ProjectsView onProject={setSelectedProject} />}
         {activeView === 'Agent Activity' && <AgentActivity filter={activityFilter} onFilter={setActivityFilter} />}
-        {activeView === 'Settings' && <SettingsView connections={hostingConnections} onConnect={(provider) => { setHostingNotice(''); setHostingProvider(provider); }} />}
+        {activeView === 'Settings' && <SettingsView connections={hostingConnections} syncingId={hostingSyncingId} notice={settingsHostingNotice} onSync={syncHostingConnection} onConnect={(provider) => { setHostingNotice(''); setHostingProvider(provider); }} />}
       </section>
 
       {hostingProvider && !launchOpen && (
@@ -365,18 +415,18 @@ export default function Home() {
                     <div className="guide-step" key={title}><span>{index + 1}</span><div><strong>{title}</strong><p>{description}</p></div></div>
                   ))}
                 </div>
-                <div className="security-callout"><strong>Token is not stored</strong><p>The token travels through the private server only for this scan. SpyderWeb stores the domain inventory and connection details, but discards the token.</p></div>
+                <div className="security-callout"><strong>Encrypted connection storage</strong><p>The token is encrypted before storage using a private SpyderWeb key. It is never returned to the browser and cannot be read from the database by itself.</p></div>
               </section>
 
               <form className="hosting-form" onSubmit={connectHosting}>
-                <div><p className="eyebrow">Connection details</p><h3>{hostingProvider} account</h3><p>{hostingProvider === 'cPanel' ? 'Test the real API connection and import the domain inventory.' : 'This provider is still in preparation.'}</p></div>
+                <div><p className="eyebrow">Connection details</p><h3>{hostingProvider} account</h3><p>{hostingProvider === 'cPanel' ? 'Authorise this account once, save it securely, and import its domain inventory.' : 'This provider is still in preparation.'}</p></div>
                 <label>Connection name<input name="name" required placeholder={hostingProvider === 'cPanel' ? 'Main DEV cPanel' : 'Hostinger DEV account'} /></label>
                 {hostingProvider === 'cPanel' && <><label>Secure cPanel URL<input name="baseUrl" required type="url" placeholder="https://server.example.com:2083" /></label><label>cPanel username<input name="username" required autoComplete="username" placeholder="Account username" /></label></>}
                 <label>{hostingProvider === 'cPanel' ? 'cPanel API token' : 'Hostinger API token'}<input name="token" required type="password" autoComplete="new-password" placeholder="Paste the API token" /></label>
                 <label>Primary development domain<input name="primaryDomain" required placeholder="dev.example.co.za" /></label>
                 <label className="read-only-option"><input name="readOnly" type="checkbox" defaultChecked required /><span><strong>Read-only synchronisation</strong><small>This version can discover and save domain information, but cannot change hosting data.</small></span></label>
                 {hostingNotice && <p className="notice">{hostingNotice}</p>}
-                <div className="hosting-form-actions"><button className="text-button" type="button" onClick={() => setHostingProvider(null)}>Close</button><button className="primary-button" type="submit" disabled={hostingBusy}>{hostingBusy ? 'Connecting…' : hostingConnections.length ? 'Reconnect & scan' : 'Connect & scan'}</button></div>
+                <div className="hosting-form-actions"><button className="text-button" type="button" onClick={() => setHostingProvider(null)}>Close</button><button className="primary-button" type="submit" disabled={hostingBusy}>{hostingBusy ? 'Connecting…' : 'Save connection & scan'}</button></div>
               </form>
             </div>
           </section>
@@ -624,8 +674,8 @@ function AgentActivity({ filter, onFilter }: { filter: 'All' | Developer; onFilt
   );
 }
 
-function SettingsView({ connections, onConnect }: { connections: HostingConnection[]; onConnect: (provider: HostingProvider) => void }) {
-  const cpanelConnection = connections.find((connection) => connection.provider === 'cpanel');
+function SettingsView({ connections, syncingId, notice, onSync, onConnect }: { connections: HostingConnection[]; syncingId: string | null; notice: string; onSync: (connectionId: string) => void; onConnect: (provider: HostingProvider) => void }) {
+  const cpanelConnections = connections.filter((connection) => connection.provider === 'cpanel');
   return (
     <div className="settings-stack">
       <section className="settings-account-grid">
@@ -644,11 +694,17 @@ function SettingsView({ connections, onConnect }: { connections: HostingConnecti
         <div className="section-heading"><div><p className="eyebrow">Hosting accounts</p><h2>Connect your development hosting</h2><p>Start with read-only discovery. cPanel project reporting remains completely separate.</p></div><span className={`connection-count ${connections.length ? 'connected' : ''}`}>{connections.length} connected</span></div>
         <div className="hosting-provider-grid">
           <article className="hosting-provider-card">
-            <div className="provider-card-top"><span className="provider-logo cpanel">cP</span><span className={`not-connected ${cpanelConnection ? 'connected' : ''}`}>{cpanelConnection ? 'Read-only connected' : 'Not connected'}</span></div>
+            <div className="provider-card-top"><span className="provider-logo cpanel">cP</span><span className={`not-connected ${cpanelConnections.length ? 'connected' : ''}`}>{cpanelConnections.length ? `${cpanelConnections.length} connected` : 'Not connected'}</span></div>
             <h3>cPanel</h3><p>Connect the shared hosting account that manages your main development domain and WordPress subdomains.</p>
             <ul><li>Discover and save live domains</li><li>Check available cPanel features</li><li>Keep all write actions locked</li></ul>
-            {cpanelConnection && <div className="connection-summary"><strong>{cpanelConnection.name}</strong><small>{cpanelConnection.baseUrl}</small><small>Last scan: {new Date(cpanelConnection.lastSyncAt).toLocaleString()}</small></div>}
-            <button className="primary-button" onClick={() => onConnect('cPanel')}>{cpanelConnection ? 'Reconnect & scan' : 'Set up cPanel'}</button>
+            {cpanelConnections.length > 0 && <div className="saved-connections">{cpanelConnections.map((connection) => (
+              <div className="connection-summary" key={connection.id}>
+                <span><strong>{connection.name}</strong><small>{connection.baseUrl}</small><small>Last scan: {new Date(connection.lastSyncAt).toLocaleString()}</small></span>
+                <button className="outline-button" disabled={syncingId === connection.id} onClick={() => onSync(connection.id)}>{syncingId === connection.id ? 'Syncing…' : 'Sync now'}</button>
+              </div>
+            ))}</div>}
+            {notice && <p className="notice settings-hosting-notice">{notice}</p>}
+            <button className="primary-button" onClick={() => onConnect('cPanel')}>{cpanelConnections.length ? '＋ Add another cPanel' : 'Set up cPanel'}</button>
           </article>
           <article className="hosting-provider-card">
             <div className="provider-card-top"><span className="provider-logo hostinger">H</span><span className="not-connected">Not connected</span></div>
@@ -669,7 +725,7 @@ function SettingsView({ connections, onConnect }: { connections: HostingConnecti
         <strong className="hard-lock">Read-only hard lock active</strong>
       </section>
 
-      <section className="settings-note"><span>⌁</span><div><strong>Easy to extend after the scan</strong><p>The cPanel API and domain inventory are now separated from the project workflow. WordPress, PHP and user-management actions can be added behind the safety policy without rebuilding the dashboard.</p></div></section>
+      <section className="settings-note"><span>⌁</span><div><strong>Multiple hosting spaces supported</strong><p>Add every authorised cPanel account here. Each connection remains saved and can be synchronised independently; Hostinger accounts will use the same model when that connector is added.</p></div></section>
     </div>
   );
 }

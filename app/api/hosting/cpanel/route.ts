@@ -1,4 +1,5 @@
 import { discoverCpanel } from '@/lib/cpanel';
+import { encryptHostingToken } from '@/lib/credential-crypto';
 import { ensureHostingSchema, getDatabase, stableId } from '@/lib/hosting-db';
 import { getRequestIdentity, isSameOrigin } from '@/lib/request-auth';
 
@@ -84,18 +85,27 @@ export async function POST(request: Request) {
       discovered.baseUrl,
       discovered.username,
     );
+    const credential = await encryptHostingToken(
+      cleanText(body.token, 'cPanel API token', 4096),
+      identity.userId,
+      connectionId,
+    );
     const db = await ensureHostingSchema(getDatabase());
     const statements = [
       db
         .prepare(`INSERT INTO hosting_connections (
           id, owner_user_id, owner_email, provider, name, base_url, username, primary_domain,
-          status, mode, credential_storage, capabilities_json, write_actions_enabled,
+          status, mode, credential_storage, encrypted_token, encryption_iv, credential_version,
+          capabilities_json, write_actions_enabled,
           destructive_actions_enabled, confirmation_policy, last_sync_at, created_at, updated_at
-        ) VALUES (?, ?, ?, 'cpanel', ?, ?, ?, ?, 'connected_read_only', 'read_only', 'transient', ?, 0, 0,
+        ) VALUES (?, ?, ?, 'cpanel', ?, ?, ?, ?, 'connected_read_only', 'read_only', 'encrypted_cloud', ?, ?, ?, ?, 0, 0,
           'owner_code+exact_domain+backup', ?, ?, ?)
         ON CONFLICT(owner_user_id, provider, base_url, username) DO UPDATE SET
           owner_email = excluded.owner_email, name = excluded.name,
           primary_domain = excluded.primary_domain, status = excluded.status,
+          credential_storage = excluded.credential_storage,
+          encrypted_token = excluded.encrypted_token, encryption_iv = excluded.encryption_iv,
+          credential_version = excluded.credential_version,
           capabilities_json = excluded.capabilities_json, last_sync_at = excluded.last_sync_at,
           updated_at = excluded.updated_at`)
         .bind(
@@ -106,6 +116,9 @@ export async function POST(request: Request) {
           discovered.baseUrl,
           discovered.username,
           primaryDomain,
+          credential.encryptedToken,
+          credential.encryptionIv,
+          credential.credentialVersion,
           JSON.stringify(discovered.capabilities),
           now,
           now,
@@ -165,7 +178,7 @@ export async function POST(request: Request) {
         primaryDomain,
         status: 'connected_read_only',
         mode: 'read_only',
-        credentialStorage: 'transient',
+        credentialStorage: 'encrypted_cloud',
         capabilities: discovered.capabilities,
         writeActionsEnabled: 0,
         destructiveActionsEnabled: 0,
@@ -180,7 +193,7 @@ export async function POST(request: Request) {
         sslStatus: 'not_checked',
         lastSeenAt: now,
       })),
-      message: `${discovered.domains.length} domains discovered. The API token was used for this scan and was not stored.`,
+      message: `${discovered.domains.length} domains discovered. This cPanel connection is now securely saved for future synchronisation.`,
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : 'The cPanel connection could not be completed.';

@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "d992e4b8-e5a2-4aa6-8827-223d1472699f",
+  "id": "ad7d49ff-7ccc-444b-9f1c-bc352df50b58",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "tables": {
     "hosting_audit_events": {
@@ -161,7 +161,29 @@
           "primaryKey": false,
           "notNull": true,
           "autoincrement": false,
-          "default": "'transient'"
+          "default": "'encrypted_cloud'"
+        },
+        "encrypted_token": {
+          "name": "encrypted_token",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "encryption_iv": {
+          "name": "encryption_iv",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "credential_version": {
+          "name": "credential_version",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": 1
         },
         "capabilities_json": {
           "name": "capabilities_json",
