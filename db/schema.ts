@@ -56,6 +56,8 @@ export const hostingDomains = sqliteTable(
     wordpressInstallationId: text('wordpress_installation_id'),
     wordpressSource: text('wordpress_source'),
     workflowStatusOverride: text('workflow_status_override'),
+    assignedDeveloper: text('assigned_developer'),
+    wordpressSoftLocked: integer('wordpress_soft_locked').notNull().default(1),
     sslStatus: text('ssl_status').notNull().default('not_checked'),
     active: integer('active').notNull().default(1),
     lastSeenAt: text('last_seen_at').notNull(),

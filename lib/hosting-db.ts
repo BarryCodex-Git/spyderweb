@@ -47,6 +47,8 @@ const schemaStatements = [
     wordpress_installation_id TEXT,
     wordpress_source TEXT,
     workflow_status_override TEXT,
+    assigned_developer TEXT,
+    wordpress_soft_locked INTEGER NOT NULL DEFAULT 1,
     ssl_status TEXT NOT NULL DEFAULT 'not_checked',
     active INTEGER NOT NULL DEFAULT 1,
     last_seen_at TEXT NOT NULL
@@ -76,6 +78,8 @@ const hostingDomainColumnMigrations = [
   ['wordpress_installation_id', 'ALTER TABLE hosting_domains ADD COLUMN wordpress_installation_id TEXT'],
   ['wordpress_source', 'ALTER TABLE hosting_domains ADD COLUMN wordpress_source TEXT'],
   ['workflow_status_override', 'ALTER TABLE hosting_domains ADD COLUMN workflow_status_override TEXT'],
+  ['assigned_developer', 'ALTER TABLE hosting_domains ADD COLUMN assigned_developer TEXT'],
+  ['wordpress_soft_locked', 'ALTER TABLE hosting_domains ADD COLUMN wordpress_soft_locked INTEGER NOT NULL DEFAULT 1'],
 ] as const;
 
 export async function ensureHostingSchema(db = getDatabase()) {

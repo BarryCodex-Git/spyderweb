@@ -4,7 +4,7 @@ import Image from 'next/image';
 import { type FormEvent, useCallback, useEffect, useRef, useState } from 'react';
 
 type View = 'Dashboard' | 'Domains' | 'Projects' | 'Agent Activity' | 'Settings';
-type Developer = 'Barry' | 'Clive';
+type Developer = 'Barry' | 'Clive' | 'Owner Account';
 type DomainStatus = 'Available' | 'Template Loaded' | 'Busy Working' | 'Final Stages' | 'Needs Inspection';
 type HostingProvider = 'cPanel' | 'Hostinger';
 type ActionToastStatus = 'progress' | 'success' | 'warning' | 'error';
@@ -30,6 +30,8 @@ type Domain = {
   source?: 'demo' | 'cpanel';
   domainType?: string;
   phpVersion?: string | null;
+  softLocked?: boolean;
+  connectionMode?: 'read_only' | 'managed_write';
 };
 
 type HostingConnection = {
@@ -63,6 +65,8 @@ type HostingDomain = {
   wordpressInstallationId: string | null;
   wordpressSource: string | null;
   workflowStatusOverride: string | null;
+  assignedDeveloper: string | null;
+  wordpressSoftLocked: number;
   sslStatus: string;
   lastSeenAt: string;
 };
@@ -116,6 +120,7 @@ const viewCopy: Record<View, { eyebrow: string; title: string; subtitle: string 
 };
 
 const columns: DomainStatus[] = ['Needs Inspection', 'Available', 'Template Loaded', 'Busy Working', 'Final Stages'];
+const assignableDevelopers: Developer[] = ['Barry', 'Clive', 'Owner Account'];
 const buildStages = [
   'Setup',
   'Build Home Page',
@@ -165,17 +170,19 @@ function mapHostingDomains(records: HostingDomain[], connections: HostingConnect
     const isTemplate = installed && /(\btemplate\b|\bnew\s+(?:client\s+)?build\b)/i.test(
       `${record.domain} ${record.wordpressSiteName ?? ''}`,
     );
-    const isManuallyAvailable = record.workflowStatusOverride === 'Available';
-    const status: DomainStatus = isManuallyAvailable
-      ? 'Available'
+    const workflowOverride = columns.includes(record.workflowStatusOverride as DomainStatus)
+      ? record.workflowStatusOverride as DomainStatus
+      : null;
+    const status: DomainStatus = workflowOverride
+      ? workflowOverride
       : isTemplate
         ? 'Template Loaded'
         : installed
           ? 'Busy Working'
           : record.wordpressStatus === 'not_installed' ? 'Available' : 'Needs Inspection';
-    const client = isManuallyAvailable || record.wordpressStatus === 'not_installed'
+    const client = status === 'Available' || record.wordpressStatus === 'not_installed'
       ? 'Ready for a new project'
-      : isTemplate
+      : status === 'Template Loaded'
         ? 'Approved template ready'
         : installed
           ? record.wordpressSiteName ?? 'WordPress installation detected'
@@ -197,6 +204,11 @@ function mapHostingDomains(records: HostingDomain[], connections: HostingConnect
       source: 'cpanel',
       domainType: record.domainType,
       phpVersion: record.phpVersion,
+      developer: assignableDevelopers.includes(record.assignedDeveloper as Developer)
+        ? record.assignedDeveloper as Developer
+        : undefined,
+      softLocked: record.wordpressSoftLocked !== 0,
+      connectionMode: connection?.mode,
     };
   });
 }
@@ -221,10 +233,11 @@ export default function Home() {
   const [hostingSyncingId, setHostingSyncingId] = useState<string | null>(null);
   const [hostingModeChangingId, setHostingModeChangingId] = useState<string | null>(null);
   const [domainAvailabilityId, setDomainAvailabilityId] = useState<string | null>(null);
+  const [domainControlBusy, setDomainControlBusy] = useState<string | null>(null);
+  const [selectedAssignee, setSelectedAssignee] = useState('');
   const [settingsHostingNotice, setSettingsHostingNotice] = useState('');
   const [actionToasts, setActionToasts] = useState<ActionToast[]>([]);
   const toastTimers = useRef(new Map<string, number>());
-  const automaticHostingScanStarted = useRef(false);
   const inventoryRequestCounter = useRef(0);
 
   const copy = viewCopy[activeView];
@@ -276,6 +289,9 @@ export default function Home() {
       if (data.domains.length > 0) {
         const mappedDomains = mapHostingDomains(data.domains, data.connections);
         setManagedDomains((current) => JSON.stringify(current) === JSON.stringify(mappedDomains) ? current : mappedDomains);
+        setSelectedDomain((current) => current
+          ? mappedDomains.find((domain) => domain.id === current.id) ?? current
+          : null);
         setInventoryIsLive(true);
       } else if (data.connections.length === 0) {
         setManagedDomains(demoDomains);
@@ -311,66 +327,6 @@ export default function Home() {
     };
   }, [loadHostingInventory]);
 
-  const hostingConnectionIds = hostingConnections.map((connection) => connection.id).sort().join(',');
-
-  useEffect(() => {
-    if (!hostingConnectionIds) return;
-    const connectionIds = hostingConnectionIds.split(',');
-
-    const refresh = async () => {
-      if (document.visibilityState !== 'visible') return;
-      const showAutomaticProgress = !automaticHostingScanStarted.current;
-      if (showAutomaticProgress) {
-        automaticHostingScanStarted.current = true;
-        showActionToast({
-          id: 'automatic-wordpress-scan',
-          status: 'progress',
-          title: 'Scanning WordPress installations',
-          message: 'Matching the connected cPanel domains to live WordPress installations and site names.',
-        });
-      }
-      await Promise.allSettled(
-        connectionIds.map((connectionId) =>
-          fetch(`/api/hosting/cpanel/${connectionId}/sync`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-          }),
-        ),
-      );
-      const data = await loadHostingInventory();
-      if (!data) {
-        if (showAutomaticProgress) {
-          showActionToast({
-            id: 'automatic-wordpress-scan',
-            status: 'warning',
-            title: 'WordPress scan needs another attempt',
-            message: 'The saved cPanel connection remains available. Use Scan domains & WordPress in Settings to retry.',
-          });
-        }
-        return;
-      }
-      const mappedDomains = mapHostingDomains(data.domains, data.connections);
-      if (showAutomaticProgress) {
-        const installedCount = data.domains.filter((domain) => domain.wordpressStatus === 'installed').length;
-        const pendingCount = data.domains.filter((domain) => domain.wordpressStatus === 'not_checked').length;
-        showActionToast({
-          id: 'automatic-wordpress-scan',
-          status: pendingCount ? 'warning' : 'success',
-          title: pendingCount ? 'WordPress scan needs attention' : 'WordPress scan complete',
-          message: pendingCount
-            ? `${installedCount} installations identified. ${pendingCount} domains still need inspection.`
-            : `${installedCount} WordPress installations matched to ${mappedDomains.length} connected domains.`,
-        });
-      }
-    };
-
-    void refresh();
-    const timer = window.setInterval(() => {
-      void refresh();
-    }, 5 * 60 * 1000);
-    return () => window.clearInterval(timer);
-  }, [hostingConnectionIds, loadHostingInventory, showActionToast]);
-
   function changeView(view: View) {
     setActiveView(view);
     setSelectedDomain(null);
@@ -387,18 +343,10 @@ export default function Home() {
     setLaunchOpen(true);
   }
 
-  function openDashboardDomain(domain: Domain) {
+  function openDomain(domain: Domain) {
     setNotice('');
-    const project = projects.find((item) => item.domain === domain.domain);
-    const isActive = domain.status === 'Busy Working' || domain.status === 'Final Stages';
-
-    if (isActive && project) {
-      setSelectedDomain(null);
-      setSelectedProject(project);
-      return;
-    }
-
     setSelectedProject(null);
+    setSelectedAssignee(domain.developer ?? '');
     setSelectedDomain(domain);
   }
 
@@ -540,7 +488,6 @@ export default function Home() {
       const result = (await response.json()) as { error?: string; message?: string };
       if (!response.ok) throw new Error(result.error || 'The domain could not be marked available.');
       await loadHostingInventory();
-      setSelectedDomain(null);
       showActionToast({
         id: `domain-available-${domain.id}`,
         status: 'success',
@@ -552,6 +499,41 @@ export default function Home() {
       showActionToast({ id: `domain-available-${domain.id}`, status: 'error', title: 'Update failed', message });
     } finally {
       setDomainAvailabilityId(null);
+    }
+  }
+
+  async function updateDomainControl(
+    domain: Domain,
+    action: 'assign_developer' | 'set_soft_lock',
+    value: string | boolean | null,
+  ) {
+    if (typeof domain.id !== 'string' || domain.source !== 'cpanel') return;
+    const actionId = `${action}-${domain.id}`;
+    setDomainControlBusy(actionId);
+    const isLockAction = action === 'set_soft_lock';
+    showActionToast({
+      id: actionId,
+      status: 'progress',
+      title: isLockAction ? 'Updating WordPress protection' : 'Updating developer assignment',
+      message: isLockAction ? `Updating the soft lock for ${domain.domain}.` : `Assigning ${domain.domain}.`,
+    });
+    try {
+      const response = await fetch(`/api/hosting/domains/${domain.id}/controls`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(isLockAction
+          ? { action, locked: value }
+          : { action, assignedDeveloper: value || null }),
+      });
+      const result = (await response.json()) as { error?: string; message?: string };
+      if (!response.ok) throw new Error(result.error || 'The domain control could not be updated.');
+      await loadHostingInventory();
+      showActionToast({ id: actionId, status: 'success', title: isLockAction ? 'Protection updated' : 'Assignment updated', message: result.message || 'The domain was updated.' });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'The domain control could not be updated.';
+      showActionToast({ id: actionId, status: 'error', title: 'Update failed', message });
+    } finally {
+      setDomainControlBusy(null);
     }
   }
 
@@ -569,7 +551,7 @@ export default function Home() {
             </button>
           ))}
         </nav>
-        <div className="sidebar-status"><span className="pulse" /><div><strong>Codex link ready</strong><small>Demo reporting connection</small></div></div>
+        <div className="sidebar-status"><span className="pulse" /><div><strong>{inventoryIsLive ? 'Hosting inventory live' : 'Connect hosting'}</strong><small>{inventoryIsLive ? 'Agent reporting comes next' : 'No live domains yet'}</small></div></div>
       </aside>
 
       <section className="workspace">
@@ -581,8 +563,8 @@ export default function Home() {
           </div>
         </header>
 
-        {activeView === 'Dashboard' && <Dashboard domains={managedDomains} onDomain={openDashboardDomain} onLaunch={openLaunch} inventoryIsLive={inventoryIsLive} inventoryRefreshing={inventoryRefreshing} inventoryLastRefreshedAt={inventoryLastRefreshedAt} />}
-        {activeView === 'Domains' && <DomainsView domains={managedDomains} onDomain={setSelectedDomain} onNotice={setNotice} notice={notice} inventoryIsLive={inventoryIsLive} />}
+        {activeView === 'Dashboard' && <Dashboard domains={managedDomains} onDomain={openDomain} onLaunch={openLaunch} inventoryIsLive={inventoryIsLive} inventoryRefreshing={inventoryRefreshing} inventoryLastRefreshedAt={inventoryLastRefreshedAt} />}
+        {activeView === 'Domains' && <DomainsView domains={managedDomains} onDomain={openDomain} onNotice={setNotice} notice={notice} inventoryIsLive={inventoryIsLive} />}
         {activeView === 'Projects' && <ProjectsView onProject={setSelectedProject} />}
         {activeView === 'Agent Activity' && <AgentActivity filter={activityFilter} onFilter={setActivityFilter} />}
         {activeView === 'Settings' && <SettingsView connections={hostingConnections} syncingId={hostingSyncingId} modeChangingId={hostingModeChangingId} notice={settingsHostingNotice} onSync={syncHostingConnection} onModeChange={changeHostingMode} onConnect={(provider) => { setHostingNotice(''); setHostingProvider(provider); }} />}
@@ -635,34 +617,90 @@ export default function Home() {
       )}
 
       {selectedDomain && !launchOpen && (
-        <div className="drawer-backdrop" onClick={() => setSelectedDomain(null)}>
-          <aside className="detail-drawer" onClick={(event) => event.stopPropagation()}>
+        <div className="project-modal-backdrop" onClick={() => setSelectedDomain(null)}>
+          <section className="domain-control-modal" onClick={(event) => event.stopPropagation()}>
             <button className="close-button" onClick={() => setSelectedDomain(null)}>×</button>
-            <span className="drawer-logo"><Image src="/spyderweb-logo.png" alt="" width={61} height={61} /></span>
-            <p className="eyebrow">Domain details</p><h2>{selectedDomain.domain}</h2><p className="drawer-copy">{selectedDomain.client}</p>
-            <div className="detail-list">
-              <div><span>Status</span><strong>{selectedDomain.status}</strong></div>
-              <div><span>Developer</span><strong>{selectedDomain.developer ?? 'Not allocated'}</strong></div>
-              <div><span>WordPress</span><strong>{selectedDomain.wordpress}</strong></div>
-              <div><span>PHP version</span><strong>{selectedDomain.phpVersion ?? 'Not reported'}</strong></div>
-              <div><span>Template</span><strong>{selectedDomain.template}</strong></div>
-              <div><span>Current stage</span><strong>{selectedDomain.stage ?? 'Ready to begin'}</strong></div>
+            <header className="domain-modal-header">
+              <span className="drawer-logo"><Image src="/spyderweb-logo.png" alt="" width={61} height={61} /></span>
+              <div><p className="eyebrow">WordPress domain control</p><h2>{selectedDomain.domain}</h2><p>{selectedDomain.client}</p></div>
+              <span className={`status-pill ${selectedDomain.status.toLowerCase().replaceAll(' ', '-')}`}>{selectedDomain.status}</span>
+            </header>
+
+            <div className="domain-modal-body">
+              <div className="domain-control-main">
+                <section className="domain-facts-grid">
+                  <div><span>WordPress</span><strong>{selectedDomain.wordpress}</strong></div>
+                  <div><span>Template</span><strong>{selectedDomain.template}</strong></div>
+                  <div><span>PHP</span><strong>{selectedDomain.phpVersion ?? 'Not reported'}</strong></div>
+                  <div><span>Hosting</span><strong>{selectedDomain.host}</strong></div>
+                </section>
+
+                {(selectedDomain.status === 'Busy Working' || selectedDomain.status === 'Final Stages') ? (
+                  <section className="compact-project-report">
+                    <div className="modal-section-heading"><div><p className="eyebrow">Project report</p><h3>{selectedDomain.client}</h3></div><span>{selectedDomain.status}</span></div>
+                    <div className="compact-report-grid">
+                      <div><span>Assigned to</span><strong>{selectedDomain.developer ?? 'Not allocated'}</strong></div>
+                      <div><span>Build phase</span><strong>{selectedDomain.status === 'Final Stages' ? 'Final stages' : 'Active build'}</strong></div>
+                      <div><span>Agent report</span><strong>Connection pending</strong></div>
+                      <div><span>Detailed workflow</span><strong>Projects tab</strong></div>
+                    </div>
+                    <p>The dashboard keeps this report compact and focused on the WordPress workspace. Detailed stages will come from the assigned developer or agent in Projects.</p>
+                  </section>
+                ) : (
+                  <section className="domain-readiness-card">
+                    <p className="eyebrow">Workspace readiness</p>
+                    <h3>{selectedDomain.status === 'Template Loaded' ? 'Ready to assign and begin' : selectedDomain.status === 'Available' ? 'Ready for a fresh WordPress build' : 'Check this domain before using it'}</h3>
+                    <p>{selectedDomain.status === 'Template Loaded'
+                      ? 'The approved template is loaded. Assign it to a developer or user to move it into active work.'
+                      : selectedDomain.status === 'Available'
+                        ? 'No WordPress installation was detected. This domain is available for the next build.'
+                        : 'The domain did not respond reliably during inspection. No destructive action should be taken yet.'}</p>
+                  </section>
+                )}
+
+                <section className="assignment-card">
+                  <div><p className="eyebrow">Ownership</p><h3>Assign to developer</h3><p>Transfer this domain at any stage. Future SpyderWeb users will appear in this same list and receive it on their dashboard.</p></div>
+                  <div className="assignment-controls">
+                    <select value={selectedAssignee} onChange={(event) => setSelectedAssignee(event.target.value)} aria-label="Assign domain to developer">
+                      <option value="">Unassigned</option>
+                      {assignableDevelopers.map((name) => <option key={name} value={name}>{name}</option>)}
+                    </select>
+                    <button
+                      className="primary-button"
+                      disabled={domainControlBusy === `assign_developer-${selectedDomain.id}` || selectedAssignee === (selectedDomain.developer ?? '')}
+                      onClick={() => updateDomainControl(selectedDomain, 'assign_developer', selectedAssignee || null)}
+                    >{selectedDomain.developer ? 'Transfer assignment' : 'Assign to developer'}</button>
+                  </div>
+                </section>
+              </div>
+
+              <aside className="domain-action-panel">
+                <section className={`soft-lock-card ${selectedDomain.softLocked ? 'locked' : 'unlocked'}`}>
+                  <span className="lock-symbol">{selectedDomain.softLocked ? '●' : '○'}</span>
+                  <div><p className="eyebrow">WordPress soft lock</p><h3>{selectedDomain.softLocked ? 'Protection is on' : 'Domain is unlocked'}</h3><p>{selectedDomain.softLocked ? 'Deletion, overwrite and replacement actions are blocked.' : 'Destructive actions may be prepared, but still require final confirmation.'}</p></div>
+                  <button
+                    className={selectedDomain.softLocked ? 'outline-button' : 'secondary-button'}
+                    disabled={domainControlBusy === `set_soft_lock-${selectedDomain.id}`}
+                    onClick={() => updateDomainControl(selectedDomain, 'set_soft_lock', !selectedDomain.softLocked)}
+                  >{domainControlBusy === `set_soft_lock-${selectedDomain.id}` ? 'Updating…' : selectedDomain.softLocked ? 'Unlock domain' : 'Turn soft lock on'}</button>
+                </section>
+
+                <section className="wordpress-actions-card">
+                  <p className="eyebrow">WordPress management</p>
+                  <h3>Protected actions</h3>
+                  <button className="secondary-button" disabled>{selectedDomain.softLocked ? 'Fresh WordPress installation · Locked' : 'Fresh WordPress installation · Coming next'}</button>
+                  <button className="secondary-button" disabled>{selectedDomain.softLocked ? 'Load approved template · Locked' : 'Load approved template · Coming next'}</button>
+                  {selectedDomain.source === 'cpanel' && selectedDomain.status !== 'Available' && (
+                    <button className="secondary-button available-workflow-button" disabled={domainAvailabilityId === selectedDomain.id} onClick={() => markDomainAvailable(selectedDomain)}>
+                      {domainAvailabilityId === selectedDomain.id ? 'Updating…' : 'Mark available for a new build'}
+                    </button>
+                  )}
+                  <small>Unlocking is easy and reversible. It does not perform a WordPress action by itself.</small>
+                </section>
+                {notice && <p className="notice">{notice}</p>}
+              </aside>
             </div>
-            <h3>Safe domain actions</h3>
-            {selectedDomain.source === 'cpanel' && selectedDomain.status !== 'Available' && (
-              <button
-                className="secondary-button available-workflow-button"
-                disabled={domainAvailabilityId === selectedDomain.id}
-                onClick={() => markDomainAvailable(selectedDomain)}
-              >
-                {domainAvailabilityId === selectedDomain.id ? 'Updating…' : 'Mark available for a new build'}
-              </button>
-            )}
-            <button className="secondary-button" disabled>Fresh WordPress installation · Locked</button>
-            <button className="secondary-button" disabled>Load approved template · Locked</button>
-            {notice && <p className="notice">{notice}</p>}
-            <small className="simulation-note">Marking a domain available changes only its SpyderWeb workflow status. WordPress is not altered. Hosting write actions remain protected.</small>
-          </aside>
+          </section>
         </div>
       )}
 
@@ -760,6 +798,7 @@ export default function Home() {
 
 function Dashboard({ domains, onDomain, onLaunch, inventoryIsLive, inventoryRefreshing, inventoryLastRefreshedAt }: { domains: Domain[]; onDomain: (domain: Domain) => void; onLaunch: () => void; inventoryIsLive: boolean; inventoryRefreshing: boolean; inventoryLastRefreshedAt: string | null }) {
   const availableCount = domains.filter((domain) => domain.status === 'Available').length;
+  const activeCount = domains.filter((domain) => domain.status === 'Busy Working' || domain.status === 'Final Stages').length;
   const finalCount = domains.filter((domain) => domain.status === 'Final Stages').length;
   const refreshTime = inventoryLastRefreshedAt
     ? new Date(inventoryLastRefreshedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
@@ -769,7 +808,7 @@ function Dashboard({ domains, onDomain, onLaunch, inventoryIsLive, inventoryRefr
       <section className="summary-row" aria-label="Platform summary">
         <div className="summary-card featured"><div><span className="summary-icon">⌁</span><p>Development domains</p><strong>{domains.length}</strong></div><span className="trend">{inventoryIsLive ? 'Live inventory' : 'Demo data'}</span></div>
         <div className="summary-card"><div><span className="summary-icon purple">◇</span><p>Available now</p><strong>{availableCount}</strong></div><span className="trend positive">Ready</span></div>
-        <div className="summary-card"><div><span className="summary-icon blue">▣</span><p>Active builds</p><strong>{projects.length}</strong></div><span className="trend">In progress</span></div>
+        <div className="summary-card"><div><span className="summary-icon blue">▣</span><p>Active builds</p><strong>{activeCount}</strong></div><span className="trend">Live domains</span></div>
         <div className="summary-card"><div><span className="summary-icon navy">✓</span><p>Final stages</p><strong>{finalCount}</strong></div><span className="trend positive">On track</span></div>
       </section>
       <section className="board-section">
@@ -799,8 +838,8 @@ function DomainCard({ domain, onClick }: { domain: Domain; onClick: () => void }
       <div className="domain-top"><span className="domain-icon">◎</span><span className="more">•••</span></div>
       <strong>{domain.domain}</strong><p>{domain.client}</p>
       {domain.stage && <span className="stage-label">{domain.stage}</span>}
-      <div className="progress-track"><span style={{ width: `${Math.max(domain.progress, 6)}%` }} /></div>
-      <div className="domain-meta"><span>{domain.progress}%</span>{domain.developer ? <span className={`developer ${domain.developer.toLowerCase()}`}>{domain.developer.slice(0, 1)} · {domain.developer}</span> : <span>Unallocated</span>}</div>
+      {domain.source === 'demo' && <div className="progress-track"><span style={{ width: `${Math.max(domain.progress, 6)}%` }} /></div>}
+      <div className="domain-meta"><span>{domain.source === 'cpanel' ? domain.wordpress : `${domain.progress}%`}</span>{domain.developer ? <span className={`developer ${domain.developer.toLowerCase().replaceAll(' ', '-')}`}>{domain.developer.slice(0, 1)} · {domain.developer}</span> : <span>Unallocated</span>}</div>
     </button>
   );
 }
@@ -808,7 +847,7 @@ function DomainCard({ domain, onClick }: { domain: Domain; onClick: () => void }
 function DomainsView({ domains, onDomain, onNotice, notice, inventoryIsLive }: { domains: Domain[]; onDomain: (domain: Domain) => void; onNotice: (message: string) => void; notice: string; inventoryIsLive: boolean }) {
   const availableCount = domains.filter((domain) => domain.status === 'Available').length;
   const templateCount = domains.filter((domain) => domain.status === 'Template Loaded').length;
-  const attentionCount = domains.filter((domain) => domain.wordpress === 'Scan pending').length;
+  const attentionCount = domains.filter((domain) => domain.status === 'Needs Inspection').length;
   return (
     <div className="view-stack">
       <section className="mini-summary-row">

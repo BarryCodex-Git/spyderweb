@@ -44,6 +44,7 @@ export async function GET(request: Request) {
           wordpress_site_name AS wordpressSiteName, wordpress_url AS wordpressUrl,
           wordpress_installation_id AS wordpressInstallationId, wordpress_source AS wordpressSource,
           workflow_status_override AS workflowStatusOverride,
+          assigned_developer AS assignedDeveloper, wordpress_soft_locked AS wordpressSoftLocked,
           ssl_status AS sslStatus, last_seen_at AS lastSeenAt
           FROM hosting_domains WHERE owner_user_id = ? AND active = 1 ORDER BY domain`)
         .bind(identity.userId)
