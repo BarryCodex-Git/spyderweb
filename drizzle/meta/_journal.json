@@ -8,6 +8,13 @@
       "when": 1788005028075,
       "tag": "0000_rich_night_thrasher",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "6",
+      "when": 1788027278946,
+      "tag": "0001_tiresome_warlock",
+      "breakpoints": true
     }
   ]
 }

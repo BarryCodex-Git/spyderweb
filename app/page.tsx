@@ -57,6 +57,12 @@ type HostingDomain = {
   documentRoot: string | null;
   phpVersion: string | null;
   wordpressStatus: string;
+  wordpressVersion: string | null;
+  wordpressSiteName: string | null;
+  wordpressUrl: string | null;
+  wordpressInstallationId: string | null;
+  wordpressSource: string | null;
+  workflowStatusOverride: string | null;
   sslStatus: string;
   lastSeenAt: string;
 };
@@ -154,24 +160,38 @@ const activities = [
 
 function mapHostingDomains(records: HostingDomain[], connections: HostingConnection[]): Domain[] {
   return records.map((record) => {
-    const project = projects.find((item) => item.domain.toLowerCase() === record.domain.toLowerCase());
     const connection = connections.find((item) => item.id === record.connectionId);
+    const installed = record.wordpressStatus === 'installed';
+    const isTemplate = installed && /(\btemplate\b|\bnew\s+(?:client\s+)?build\b)/i.test(record.wordpressSiteName ?? '');
+    const isManuallyAvailable = record.workflowStatusOverride === 'Available';
+    const status: DomainStatus = isManuallyAvailable
+      ? 'Available'
+      : isTemplate
+        ? 'Template Loaded'
+        : installed
+          ? 'Busy Working'
+          : 'Available';
+    const client = isManuallyAvailable || record.wordpressStatus === 'not_installed'
+      ? 'Ready for a new project'
+      : isTemplate
+        ? 'Approved template ready'
+        : installed
+          ? record.wordpressSiteName ?? 'WordPress installation detected'
+          : 'WordPress scan pending';
     return {
       id: record.id ?? `${record.connectionId}:${record.domain}`,
       domain: record.domain,
-      client: project?.client ?? 'Available development domain',
-      status: project
-        ? project.progress >= 85
-          ? 'Final Stages'
-          : 'Busy Working'
-        : 'Available',
-      developer: project?.developer,
-      stage: project?.stage,
-      progress: project?.progress ?? 0,
+      client,
+      status,
+      progress: 0,
       wordpress:
-        record.wordpressStatus === 'installed' ? 'Installed' : 'Not checked yet',
+        installed
+          ? record.wordpressVersion ? `Installed · ${record.wordpressVersion}` : 'Installed'
+          : record.wordpressStatus === 'not_installed' ? 'Not installed' : 'Scan pending',
       host: connection?.name ?? 'Connected cPanel',
-      template: project?.buildType === 'Custom' ? 'Custom' : project ? 'Barry template' : 'Not linked',
+      template: isTemplate
+        ? record.wordpressSiteName ?? 'Template detected'
+        : installed ? 'Client website' : 'None',
       source: 'cpanel',
       domainType: record.domainType,
       phpVersion: record.phpVersion,
@@ -196,9 +216,11 @@ export default function Home() {
   const [inventoryIsLive, setInventoryIsLive] = useState(false);
   const [hostingSyncingId, setHostingSyncingId] = useState<string | null>(null);
   const [hostingModeChangingId, setHostingModeChangingId] = useState<string | null>(null);
+  const [domainAvailabilityId, setDomainAvailabilityId] = useState<string | null>(null);
   const [settingsHostingNotice, setSettingsHostingNotice] = useState('');
   const [actionToasts, setActionToasts] = useState<ActionToast[]>([]);
   const toastTimers = useRef(new Map<string, number>());
+  const automaticHostingScanStarted = useRef(false);
 
   const copy = viewCopy[activeView];
   const selectedStageIndex = selectedProject
@@ -270,34 +292,71 @@ export default function Home() {
     };
   }, []);
 
+  const hostingConnectionIds = hostingConnections.map((connection) => connection.id).sort().join(',');
+
   useEffect(() => {
-    if (hostingConnections.length === 0) return;
+    if (!hostingConnectionIds) return;
+    const connectionIds = hostingConnectionIds.split(',');
 
     const refresh = async () => {
+      const showAutomaticProgress = !automaticHostingScanStarted.current;
+      if (showAutomaticProgress) {
+        automaticHostingScanStarted.current = true;
+        showActionToast({
+          id: 'automatic-wordpress-scan',
+          status: 'progress',
+          title: 'Scanning WordPress installations',
+          message: 'Matching the connected cPanel domains to live WordPress installations and site names.',
+        });
+      }
       await Promise.allSettled(
-        hostingConnections.map((connection) =>
-          fetch(`/api/hosting/cpanel/${connection.id}/sync`, {
+        connectionIds.map((connectionId) =>
+          fetch(`/api/hosting/cpanel/${connectionId}/sync`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
           }),
         ),
       );
       const response = await fetch('/api/hosting/cpanel', { cache: 'no-store' });
-      if (!response.ok) return;
+      if (!response.ok) {
+        if (showAutomaticProgress) {
+          showActionToast({
+            id: 'automatic-wordpress-scan',
+            status: 'warning',
+            title: 'WordPress scan needs another attempt',
+            message: 'The saved cPanel connection remains available. Use Scan domains & WordPress in Settings to retry.',
+          });
+        }
+        return;
+      }
       const data = (await response.json()) as {
         connections: HostingConnection[];
         domains: HostingDomain[];
       };
       setHostingConnections(data.connections);
-      setManagedDomains(mapHostingDomains(data.domains, data.connections));
+      const mappedDomains = mapHostingDomains(data.domains, data.connections);
+      setManagedDomains(mappedDomains);
       setInventoryIsLive(true);
+      if (showAutomaticProgress) {
+        const installedCount = data.domains.filter((domain) => domain.wordpressStatus === 'installed').length;
+        const pendingCount = data.domains.filter((domain) => domain.wordpressStatus === 'not_checked').length;
+        showActionToast({
+          id: 'automatic-wordpress-scan',
+          status: pendingCount ? 'warning' : 'success',
+          title: pendingCount ? 'WordPress scan needs attention' : 'WordPress scan complete',
+          message: pendingCount
+            ? `${installedCount} installations identified. ${pendingCount} domains still need inspection.`
+            : `${installedCount} WordPress installations matched to ${mappedDomains.length} connected domains.`,
+        });
+      }
     };
 
+    void refresh();
     const timer = window.setInterval(() => {
       void refresh();
     }, 10 * 60 * 1000);
     return () => window.clearInterval(timer);
-  }, [hostingConnections]);
+  }, [hostingConnectionIds, showActionToast]);
 
   function changeView(view: View) {
     setActiveView(view);
@@ -364,7 +423,7 @@ export default function Home() {
           readOnly: formData.get('readOnly') === 'on',
         }),
       });
-      const result = (await response.json()) as { error?: string; message?: string; scanStatus?: 'complete' | 'needs_attention' };
+      const result = (await response.json()) as { error?: string; message?: string; scanStatus?: 'complete' | 'needs_attention'; wordpressScanStatus?: 'complete' | 'needs_attention' };
       if (!response.ok) throw new Error(result.error || 'The cPanel connection failed.');
       const tokenInput = form.elements.namedItem('token') as HTMLInputElement | null;
       if (tokenInput) tokenInput.value = '';
@@ -373,8 +432,8 @@ export default function Home() {
       setHostingNotice(successMessage);
       showActionToast({
         id: 'cpanel-connect',
-        status: result.scanStatus === 'needs_attention' ? 'warning' : 'success',
-        title: result.scanStatus === 'needs_attention' ? 'cPanel connected · scan pending' : 'cPanel connected',
+        status: result.scanStatus === 'needs_attention' || result.wordpressScanStatus === 'needs_attention' ? 'warning' : 'success',
+        title: result.scanStatus === 'needs_attention' || result.wordpressScanStatus === 'needs_attention' ? 'cPanel connected · scan pending' : 'cPanel connected',
         message: successMessage,
       });
       if (result.scanStatus === 'complete') {
@@ -394,22 +453,22 @@ export default function Home() {
 
   async function syncHostingConnection(connectionId: string) {
     setHostingSyncingId(connectionId);
-    setSettingsHostingNotice('Synchronising the saved cPanel connection…');
-    showActionToast({ id: `cpanel-sync-${connectionId}`, status: 'progress', title: 'Scanning cPanel', message: 'Refreshing the saved domain and subdomain inventory.' });
+    setSettingsHostingNotice('Synchronising domains and WordPress installations…');
+    showActionToast({ id: `cpanel-sync-${connectionId}`, status: 'progress', title: 'Scanning cPanel', message: 'Refreshing domains, WordPress installations, versions and site names.' });
     try {
       const response = await fetch(`/api/hosting/cpanel/${connectionId}/sync`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
       });
-      const result = (await response.json()) as { error?: string; message?: string; scanStatus?: 'complete' | 'needs_attention' };
+      const result = (await response.json()) as { error?: string; message?: string; scanStatus?: 'complete' | 'needs_attention'; wordpressScanStatus?: 'complete' | 'needs_attention' };
       if (!response.ok) throw new Error(result.error || 'The cPanel synchronisation failed.');
       await loadHostingInventory();
       const successMessage = result.message || 'The cPanel inventory is current.';
       setSettingsHostingNotice(successMessage);
       showActionToast({
         id: `cpanel-sync-${connectionId}`,
-        status: result.scanStatus === 'needs_attention' ? 'warning' : 'success',
-        title: result.scanStatus === 'needs_attention' ? 'Connected · scan pending' : 'Scan complete',
+        status: result.scanStatus === 'needs_attention' || result.wordpressScanStatus === 'needs_attention' ? 'warning' : 'success',
+        title: result.scanStatus === 'needs_attention' || result.wordpressScanStatus === 'needs_attention' ? 'Connected · scan pending' : 'Scan complete',
         message: successMessage,
       });
     } catch (error) {
@@ -448,6 +507,38 @@ export default function Home() {
       showActionToast({ id: `cpanel-mode-${connection.id}`, status: 'error', title: 'Access change failed', message });
     } finally {
       setHostingModeChangingId(null);
+    }
+  }
+
+  async function markDomainAvailable(domain: Domain) {
+    if (typeof domain.id !== 'string' || domain.source !== 'cpanel') return;
+    setDomainAvailabilityId(domain.id);
+    showActionToast({
+      id: `domain-available-${domain.id}`,
+      status: 'progress',
+      title: 'Updating domain workflow',
+      message: `Marking ${domain.domain} as available in SpyderWeb.`,
+    });
+    try {
+      const response = await fetch(`/api/hosting/domains/${domain.id}/availability`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+      });
+      const result = (await response.json()) as { error?: string; message?: string };
+      if (!response.ok) throw new Error(result.error || 'The domain could not be marked available.');
+      await loadHostingInventory();
+      setSelectedDomain(null);
+      showActionToast({
+        id: `domain-available-${domain.id}`,
+        status: 'success',
+        title: 'Domain available',
+        message: result.message || `${domain.domain} is ready for a new build.`,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'The domain could not be marked available.';
+      showActionToast({ id: `domain-available-${domain.id}`, status: 'error', title: 'Update failed', message });
+    } finally {
+      setDomainAvailabilityId(null);
     }
   }
 
@@ -545,10 +636,19 @@ export default function Home() {
               <div><span>Current stage</span><strong>{selectedDomain.stage ?? 'Ready to begin'}</strong></div>
             </div>
             <h3>Safe domain actions</h3>
+            {selectedDomain.source === 'cpanel' && selectedDomain.status !== 'Available' && (
+              <button
+                className="secondary-button available-workflow-button"
+                disabled={domainAvailabilityId === selectedDomain.id}
+                onClick={() => markDomainAvailable(selectedDomain)}
+              >
+                {domainAvailabilityId === selectedDomain.id ? 'Updating…' : 'Mark available for a new build'}
+              </button>
+            )}
             <button className="secondary-button" disabled>Fresh WordPress installation · Locked</button>
             <button className="secondary-button" disabled>Load approved template · Locked</button>
             {notice && <p className="notice">{notice}</p>}
-            <small className="simulation-note">Read-only protection is active. Write actions will unlock only after the capability review and protected approval flow are complete.</small>
+            <small className="simulation-note">Marking a domain available changes only its SpyderWeb workflow status. WordPress is not altered. Hosting write actions remain protected.</small>
           </aside>
         </div>
       )}
@@ -692,17 +792,17 @@ function DomainCard({ domain, onClick }: { domain: Domain; onClick: () => void }
 function DomainsView({ domains, onDomain, onNotice, notice, inventoryIsLive }: { domains: Domain[]; onDomain: (domain: Domain) => void; onNotice: (message: string) => void; notice: string; inventoryIsLive: boolean }) {
   const availableCount = domains.filter((domain) => domain.status === 'Available').length;
   const templateCount = domains.filter((domain) => domain.status === 'Template Loaded').length;
-  const attentionCount = domains.filter((domain) => domain.wordpress === 'Not checked yet').length;
+  const attentionCount = domains.filter((domain) => domain.wordpress === 'Scan pending').length;
   return (
     <div className="view-stack">
       <section className="mini-summary-row">
         <div><span>{inventoryIsLive ? 'Connected domains' : 'Demo domains'}</span><strong>{domains.length}</strong><small>{inventoryIsLive ? 'Imported from cPanel' : 'Waiting for connection'}</small></div>
         <div><span>Available</span><strong>{availableCount}</strong><small>Ready for allocation</small></div>
-        <div><span>Templates loaded</span><strong>{templateCount}</strong><small>Project-linked status</small></div>
-        <div><span>Needs inspection</span><strong>{attentionCount}</strong><small>WordPress scan comes next</small></div>
+        <div><span>Templates loaded</span><strong>{templateCount}</strong><small>Detected from site names</small></div>
+        <div><span>Needs inspection</span><strong>{attentionCount}</strong><small>WordPress data pending</small></div>
       </section>
       <section className="panel">
-        <div className="section-heading"><div><p className="eyebrow">Connected installations</p><h2>WordPress domain inventory</h2></div><button className="outline-button" onClick={() => onNotice(inventoryIsLive ? 'For safety, open Settings and provide the API token again to refresh this inventory.' : 'Connect cPanel in Settings to replace this demo inventory with live domains.')}>{inventoryIsLive ? 'How to refresh' : 'Connection status'}</button></div>
+        <div className="section-heading"><div><p className="eyebrow">Connected installations</p><h2>WordPress domain inventory</h2></div><button className="outline-button" onClick={() => onNotice(inventoryIsLive ? 'SpyderWeb scans domains and WordPress installations automatically. Use Sync now in Settings whenever you want an immediate refresh.' : 'Connect cPanel in Settings to replace this demo inventory with live domains.')}>{inventoryIsLive ? 'Scan information' : 'Connection status'}</button></div>
         {notice && <p className="notice inline-notice">{notice}</p>}
         <div className="data-table domain-table">
           <div className="table-row table-head"><span>Domain</span><span>Status</span><span>WordPress</span><span>Template</span><span>Host</span><span /></div>
@@ -809,7 +909,7 @@ function SettingsView({ connections, syncingId, modeChangingId, notice, onSync, 
               <div className="connection-summary" key={connection.id}>
                 <div className="connection-details"><span><strong>{connection.name}</strong><b className={`connection-health-pill ${connection.status === 'connected_scan_issue' ? 'warning' : ''}`}>{connection.status === 'connected_scan_issue' ? 'Connected · scan needed' : 'Connected'}</b><b className={`access-mode-pill ${connection.mode === 'managed_write' ? 'managed' : ''}`}>{connection.mode === 'managed_write' ? 'Managed access' : 'Read only'}</b></span><small>{connection.baseUrl}</small><small>{connection.status === 'connected_scan_issue' ? 'Authentication verified · live inventory not imported yet' : `Last scan: ${new Date(connection.lastSyncAt).toLocaleString()}`}</small></div>
                 <div className="connection-controls">
-                  <button className="outline-button" disabled={syncingId === connection.id || modeChangingId === connection.id} onClick={() => onSync(connection.id)}>{syncingId === connection.id ? 'Scanning…' : connection.status === 'connected_scan_issue' ? 'Retry scan' : 'Sync now'}</button>
+                  <button className="outline-button" disabled={syncingId === connection.id || modeChangingId === connection.id} onClick={() => onSync(connection.id)}>{syncingId === connection.id ? 'Scanning…' : connection.status === 'connected_scan_issue' ? 'Retry scan' : 'Scan domains & WordPress'}</button>
                   <button className={`access-mode-button ${connection.mode === 'managed_write' ? 'read-only' : ''}`} disabled={syncingId === connection.id || modeChangingId === connection.id} onClick={() => onModeChange(connection)}>{modeChangingId === connection.id ? 'Changing…' : connection.mode === 'managed_write' ? 'Return to read only' : 'Enable managed access'}</button>
                 </div>
               </div>

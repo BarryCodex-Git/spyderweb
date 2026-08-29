@@ -41,6 +41,12 @@ const schemaStatements = [
     document_root TEXT,
     php_version TEXT,
     wordpress_status TEXT NOT NULL DEFAULT 'not_checked',
+    wordpress_version TEXT,
+    wordpress_site_name TEXT,
+    wordpress_url TEXT,
+    wordpress_installation_id TEXT,
+    wordpress_source TEXT,
+    workflow_status_override TEXT,
     ssl_status TEXT NOT NULL DEFAULT 'not_checked',
     active INTEGER NOT NULL DEFAULT 1,
     last_seen_at TEXT NOT NULL
@@ -63,8 +69,22 @@ const schemaStatements = [
     ON hosting_audit_events (owner_user_id, created_at)`,
 ];
 
+const hostingDomainColumnMigrations = [
+  ['wordpress_version', 'ALTER TABLE hosting_domains ADD COLUMN wordpress_version TEXT'],
+  ['wordpress_site_name', 'ALTER TABLE hosting_domains ADD COLUMN wordpress_site_name TEXT'],
+  ['wordpress_url', 'ALTER TABLE hosting_domains ADD COLUMN wordpress_url TEXT'],
+  ['wordpress_installation_id', 'ALTER TABLE hosting_domains ADD COLUMN wordpress_installation_id TEXT'],
+  ['wordpress_source', 'ALTER TABLE hosting_domains ADD COLUMN wordpress_source TEXT'],
+  ['workflow_status_override', 'ALTER TABLE hosting_domains ADD COLUMN workflow_status_override TEXT'],
+] as const;
+
 export async function ensureHostingSchema(db = getDatabase()) {
   await db.batch(schemaStatements.map((statement) => db.prepare(statement)));
+  const columns = await db.prepare("PRAGMA table_info('hosting_domains')").all<{ name: string }>();
+  const existing = new Set(columns.results.map((column) => column.name));
+  for (const [name, statement] of hostingDomainColumnMigrations) {
+    if (!existing.has(name)) await db.prepare(statement).run();
+  }
   return db;
 }
 

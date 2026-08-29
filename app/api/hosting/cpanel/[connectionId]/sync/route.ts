@@ -66,11 +66,25 @@ export async function POST(
         db
           .prepare(`INSERT INTO hosting_domains (
             id, connection_id, owner_user_id, domain, domain_type, document_root, php_version,
-            wordpress_status, ssl_status, active, last_seen_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, 'not_checked', 'not_checked', 1, ?)
+            wordpress_status, wordpress_version, wordpress_site_name, wordpress_url,
+            wordpress_installation_id, wordpress_source, ssl_status, active, last_seen_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'not_checked', 1, ?)
           ON CONFLICT(connection_id, domain) DO UPDATE SET
             domain_type = excluded.domain_type, document_root = excluded.document_root,
-            php_version = excluded.php_version, active = 1, last_seen_at = excluded.last_seen_at`)
+            php_version = excluded.php_version,
+            wordpress_status = CASE WHEN excluded.wordpress_status = 'not_checked'
+              THEN hosting_domains.wordpress_status ELSE excluded.wordpress_status END,
+            wordpress_version = CASE WHEN excluded.wordpress_status = 'not_checked'
+              THEN hosting_domains.wordpress_version ELSE excluded.wordpress_version END,
+            wordpress_site_name = CASE WHEN excluded.wordpress_status = 'not_checked'
+              THEN hosting_domains.wordpress_site_name ELSE excluded.wordpress_site_name END,
+            wordpress_url = CASE WHEN excluded.wordpress_status = 'not_checked'
+              THEN hosting_domains.wordpress_url ELSE excluded.wordpress_url END,
+            wordpress_installation_id = CASE WHEN excluded.wordpress_status = 'not_checked'
+              THEN hosting_domains.wordpress_installation_id ELSE excluded.wordpress_installation_id END,
+            wordpress_source = CASE WHEN excluded.wordpress_status = 'not_checked'
+              THEN hosting_domains.wordpress_source ELSE excluded.wordpress_source END,
+            active = 1, last_seen_at = excluded.last_seen_at`)
           .bind(
             domainId,
             connectionId,
@@ -79,6 +93,12 @@ export async function POST(
             domain.domainType,
             domain.documentRoot,
             domain.phpVersion,
+            domain.wordpressStatus,
+            domain.wordpressVersion,
+            domain.wordpressSiteName,
+            domain.wordpressUrl,
+            domain.wordpressInstallationId,
+            domain.wordpressSource,
             now,
           ),
       );
@@ -95,7 +115,12 @@ export async function POST(
           connectionId,
           discovered.baseUrl,
           discovered.scanStatus === 'complete' ? 'success' : 'warning',
-          JSON.stringify({ domainCount: discovered.domains.length, inventoryAttempts: discovered.inventoryAttempts }),
+          JSON.stringify({
+            domainCount: discovered.domains.length,
+            wordpressInstallationCount: discovered.wordpressInstallationCount,
+            wordpressScanStatus: discovered.wordpressScanStatus,
+            inventoryAttempts: discovered.inventoryAttempts,
+          }),
           now,
         ),
     );
@@ -104,9 +129,13 @@ export async function POST(
     return json({
       scanStatus: discovered.scanStatus,
       message: discovered.scanStatus === 'complete'
-        ? `${String(connection.name)} synchronised successfully. ${discovered.domains.length} domains are current.`
+        ? discovered.wordpressScanStatus === 'complete'
+          ? `${String(connection.name)} synchronised successfully. ${discovered.domains.length} domains and ${discovered.wordpressInstallationCount} WordPress installations are current.`
+          : `${String(connection.name)} domains are current, but WordPress inspection still needs attention. The saved connection will retry automatically.`
         : `${String(connection.name)} is connected, but the live domain scan still needs attention. The saved connection remains available for retrying.`,
       domainCount: discovered.domains.length,
+      wordpressInstallationCount: discovered.wordpressInstallationCount,
+      wordpressScanStatus: discovered.wordpressScanStatus,
       lastSyncAt: now,
     });
   } catch (error) {

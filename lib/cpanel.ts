@@ -3,12 +3,19 @@ export type CpanelDomain = {
   domainType: 'main' | 'subdomain' | 'addon' | 'alias' | 'unknown';
   documentRoot: string | null;
   phpVersion: string | null;
+  wordpressStatus: 'installed' | 'not_installed' | 'not_checked';
+  wordpressVersion: string | null;
+  wordpressSiteName: string | null;
+  wordpressUrl: string | null;
+  wordpressInstallationId: string | null;
+  wordpressSource: string | null;
 };
 
 export type CpanelCapabilities = {
   domainInventory: boolean;
   featureInventory: boolean;
   phpInventory: boolean;
+  wordpressInventory: boolean;
   wordpressManagement: boolean;
   userManagement: boolean;
   writeActions: false;
@@ -35,6 +42,15 @@ type DomainDetail = {
   documentRoot: string | null;
   phpVersion: string | null;
   domainType: CpanelDomain['domainType'];
+};
+
+type WordPressInstallation = {
+  domain: string;
+  installationId: string | null;
+  siteName: string | null;
+  url: string | null;
+  version: string | null;
+  source: string;
 };
 
 type Api2Envelope = {
@@ -176,6 +192,49 @@ async function api2ListSubdomains(baseUrl: string, username: string, token: stri
   return result.data;
 }
 
+async function softaculousListInstallations(baseUrl: string, username: string, token: string) {
+  const url = new URL(`${baseUrl}/frontend/jupiter/softaculous/index.live.php`);
+  url.searchParams.set('act', 'installations');
+  url.searchParams.set('api', 'json');
+  const response = await fetch(url, {
+    method: 'GET',
+    headers: {
+      Accept: 'application/json',
+      Authorization: `cpanel ${username}:${token}`,
+    },
+    redirect: 'manual',
+    signal: AbortSignal.timeout(20_000),
+  });
+
+  if (response.status >= 300 && response.status < 400) {
+    throw new CpanelFunctionError('Softaculous requires a browser session on this host.');
+  }
+  if (response.status === 401 || response.status === 403) {
+    throw new CpanelFunctionError('Softaculous did not accept API-token authentication on this host.');
+  }
+  if (!response.ok) {
+    throw new CpanelFunctionError(`Softaculous returned ${response.status}.`);
+  }
+
+  const text = await response.text();
+  if (/^\s*</.test(text)) {
+    throw new CpanelFunctionError('Softaculous returned its sign-in page instead of installation data.');
+  }
+
+  let payload: unknown;
+  try {
+    payload = JSON.parse(text);
+  } catch {
+    throw new CpanelFunctionError('Softaculous returned an unreadable installation list.');
+  }
+  if (payload && typeof payload === 'object' && 'error' in payload) {
+    const error = (payload as Record<string, unknown>).error;
+    const message = Array.isArray(error) ? error.join(' ') : String(error || 'Softaculous could not list installations.');
+    if (message.trim()) throw new CpanelFunctionError(message);
+  }
+  return payload;
+}
+
 function stringList(value: unknown) {
   if (!Array.isArray(value)) return [];
   return value.filter((item): item is string => typeof item === 'string' && Boolean(item.trim()));
@@ -198,6 +257,183 @@ function normalizeDomain(value: unknown) {
     return null;
   }
   return candidate;
+}
+
+function cleanInventoryText(value: unknown, maxLength: number) {
+  if (typeof value !== 'string' && typeof value !== 'number') return null;
+  const cleaned = String(value).replace(/[\r\n\0]+/g, ' ').trim();
+  return cleaned && cleaned.length <= maxLength ? cleaned : cleaned.slice(0, maxLength) || null;
+}
+
+function domainFromUrl(value: unknown) {
+  const text = cleanInventoryText(value, 2048);
+  if (!text) return null;
+  const direct = normalizeDomain(text);
+  if (direct) return direct;
+  try {
+    return normalizeDomain(new URL(text.includes('://') ? text : `https://${text}`).hostname);
+  } catch {
+    return null;
+  }
+}
+
+function firstInventoryText(record: Record<string, unknown>, fields: string[], maxLength: number) {
+  for (const field of fields) {
+    const value = cleanInventoryText(record[field], maxLength);
+    if (value) return value;
+  }
+  return null;
+}
+
+function wordpressFromRecord(value: unknown, source: string, keyHint?: string): WordPressInstallation | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const record = value as Record<string, unknown>;
+  const productText = [record.soft, record.sid, record.script, record.softname, record.script_name, record.type]
+    .map((item) => String(item ?? '').toLowerCase())
+    .join(' ');
+  const hasWordPressMarker = /(^|\s)26($|\s)|wordpress|wp_/.test(productText);
+  const hasInstanceShape = ['site_url', 'softurl', 'softdomain', 'blogname', 'wordpress_version', 'instance_id']
+    .some((field) => field in record);
+  if (!hasWordPressMarker && !hasInstanceShape) return null;
+
+  const url = firstInventoryText(record, ['softurl', 'site_url', 'siteurl', 'url', 'home_url'], 2048);
+  const domain = [record.softdomain, record.domain, record.hostname, url]
+    .map(domainFromUrl)
+    .find(Boolean) ?? null;
+  if (!domain) return null;
+
+  let siteName = firstInventoryText(
+    record,
+    ['site_name', 'site_title', 'blogname', 'blog_name', 'blog_title', 'title'],
+    180,
+  );
+  if (siteName && /^(wordpress|my blog|just another wordpress site)$/i.test(siteName)) siteName = null;
+
+  return {
+    domain,
+    installationId: firstInventoryText(record, ['insid', 'installation_id', 'instance_id', 'unique_id', 'id'], 180)
+      ?? cleanInventoryText(keyHint, 180),
+    siteName,
+    url,
+    version: firstInventoryText(record, ['version', 'ver', 'wordpress_version', 'installed_version'], 80),
+    source,
+  };
+}
+
+function collectWordPressInstallations(
+  value: unknown,
+  source: string,
+  map = new Map<string, WordPressInstallation>(),
+  keyHint?: string,
+) {
+  if (Array.isArray(value)) {
+    value.forEach((item) => collectWordPressInstallations(item, source, map));
+    return map;
+  }
+  if (!value || typeof value !== 'object') return map;
+
+  const installation = wordpressFromRecord(value, source, keyHint);
+  if (installation) {
+    const existing = map.get(installation.domain);
+    if (!existing || (!existing.siteName && installation.siteName) || (!existing.version && installation.version)) {
+      map.set(installation.domain, installation);
+    }
+  }
+
+  Object.entries(value as Record<string, unknown>).forEach(([key, item]) => {
+    collectWordPressInstallations(item, source, map, key);
+  });
+  return map;
+}
+
+function containsNamedFile(value: unknown, filename: string): boolean {
+  if (typeof value === 'string') return value.split(/[\\/]/).pop()?.toLowerCase() === filename.toLowerCase();
+  if (Array.isArray(value)) return value.some((item) => containsNamedFile(item, filename));
+  if (!value || typeof value !== 'object') return false;
+  const record = value as Record<string, unknown>;
+  const candidate = firstInventoryText(record, ['file', 'name', 'filename', 'fullpath', 'path'], 2048);
+  if (candidate?.split(/[\\/]/).pop()?.toLowerCase() === filename.toLowerCase()) return true;
+  return Object.values(record).some((item) => containsNamedFile(item, filename));
+}
+
+function fileContent(value: unknown): string | null {
+  if (!value || typeof value !== 'object') return null;
+  const record = value as Record<string, unknown>;
+  if (typeof record.content === 'string') return record.content;
+  for (const item of Object.values(record)) {
+    const content = fileContent(item);
+    if (content) return content;
+  }
+  return null;
+}
+
+async function publicWordPressInfo(domain: string) {
+  try {
+    const response = await fetch(`https://${domain}/wp-json/`, {
+      headers: { Accept: 'application/json' },
+      redirect: 'manual',
+      signal: AbortSignal.timeout(8_000),
+    });
+    if (!response.ok) return { siteName: null, url: `https://${domain}` };
+    const payload = (await response.json()) as Record<string, unknown>;
+    return {
+      siteName: cleanInventoryText(payload.name, 180),
+      url: cleanInventoryText(payload.url, 2048) ?? `https://${domain}`,
+    };
+  } catch {
+    return { siteName: null, url: `https://${domain}` };
+  }
+}
+
+async function inspectWordPressDocumentRoot(input: {
+  baseUrl: string;
+  username: string;
+  token: string;
+  domain: string;
+  documentRoot: string;
+}) {
+  const roots = [input.documentRoot];
+  const relativeRoot = input.documentRoot.replace(/^\/+/, '');
+  if (relativeRoot && relativeRoot !== input.documentRoot && !relativeRoot.startsWith('home/')) roots.push(relativeRoot);
+
+  let selectedRoot = input.documentRoot;
+  let files: unknown = null;
+  let lastError: unknown = null;
+  for (const root of roots) {
+    try {
+      files = await uapi(input.baseUrl, input.username, input.token, 'Fileman', 'list_files', {
+        dir: root,
+        only_these_files: 'wp-config.php',
+        types: 'file',
+        show_hidden: '1',
+      });
+      selectedRoot = root;
+      break;
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  if (files === null && lastError) throw lastError;
+  if (!containsNamedFile(files, 'wp-config.php')) return null;
+
+  const [versionData, publicInfo] = await Promise.all([
+    uapi(input.baseUrl, input.username, input.token, 'Fileman', 'get_file_content', {
+      dir: `${selectedRoot.replace(/\/$/, '')}/wp-includes`,
+      file: 'version.php',
+      to_charset: 'UTF-8',
+      update_html_document_encoding: '0',
+    }).catch(() => null),
+    publicWordPressInfo(input.domain),
+  ]);
+  const versionMatch = fileContent(versionData)?.match(/\$wp_version\s*=\s*['\"]([^'\"]+)['\"]/i);
+  return {
+    domain: input.domain,
+    installationId: null,
+    siteName: publicInfo.siteName,
+    url: publicInfo.url,
+    version: cleanInventoryText(versionMatch?.[1], 80),
+    source: 'cPanel files',
+  } satisfies WordPressInstallation;
 }
 
 const domainFields = [
@@ -335,21 +571,117 @@ export async function discoverCpanel(input: {
 
   let featureData: unknown = null;
   let phpData: unknown = null;
+  let nativeWordPressData: unknown = null;
+  let addonWordPressData: unknown = null;
+  let softaculousData: unknown = null;
+  let wordpressAuthenticatedSources = 0;
+  const wordpressAttempts: CpanelInventoryAttempt[] = [];
+
+  const recordWordPressAttempt = (source: string, data: unknown) => {
+    wordpressAuthenticatedSources += 1;
+    const installationCount = collectWordPressInstallations(data, source).size;
+    wordpressAttempts.push({ source, status: installationCount ? 'complete' : 'empty', domainCount: installationCount });
+    return data;
+  };
+
+  const recordWordPressFailure = (source: string, error: unknown) => {
+    wordpressAttempts.push({
+      source,
+      status: 'unavailable',
+      domainCount: 0,
+      message: error instanceof Error ? error.message : 'WordPress inventory source unavailable.',
+    });
+  };
+
   await Promise.all([
     uapi(baseUrl, username, token, 'Features', 'list_features').then((data) => (featureData = data)).catch(() => undefined),
     uapi(baseUrl, username, token, 'LangPHP', 'php_get_vhost_versions').then((data) => (phpData = data)).catch(() => undefined),
+    uapi(baseUrl, username, token, 'WordPressInstanceManager', 'get_instances')
+      .then((data) => (nativeWordPressData = recordWordPressAttempt('cPanel WordPress Manager', data)))
+      .catch((error) => recordWordPressFailure('cPanel WordPress Manager', error)),
+    uapi(baseUrl, username, token, 'cPAddons', 'list_addon_instances')
+      .then((data) => (addonWordPressData = recordWordPressAttempt('cPanel application inventory', data)))
+      .catch((error) => recordWordPressFailure('cPanel application inventory', error)),
+    softaculousListInstallations(baseUrl, username, token)
+      .then((data) => (softaculousData = recordWordPressAttempt('Softaculous', data)))
+      .catch((error) => recordWordPressFailure('Softaculous', error)),
   ]);
 
   const phpDetails = collectDetails(phpData);
+  const wordpressInstallations = new Map<string, WordPressInstallation>();
+  for (const [domain, installation] of [
+    ...collectWordPressInstallations(nativeWordPressData, 'cPanel WordPress Manager'),
+    ...collectWordPressInstallations(addonWordPressData, 'cPanel application inventory'),
+    ...collectWordPressInstallations(softaculousData, 'Softaculous'),
+  ]) {
+    const existing = wordpressInstallations.get(domain);
+    if (!existing) {
+      wordpressInstallations.set(domain, installation);
+    } else if ((!existing.siteName && installation.siteName) || installation.source === 'Softaculous') {
+      wordpressInstallations.set(domain, {
+        ...existing,
+        ...installation,
+        siteName: installation.siteName ?? existing.siteName,
+        version: installation.version ?? existing.version,
+        url: installation.url ?? existing.url,
+        installationId: installation.installationId ?? existing.installationId,
+      });
+    }
+  }
+
+  const fileCheckedDomains = new Set<string>();
+  const fileInspectionResults = await Promise.all(
+    [...domainTypes.keys()].map(async (domain) => {
+      const documentRoot = details.get(domain)?.documentRoot ?? webVhosts.get(domain)?.documentRoot ?? null;
+      if (!documentRoot) return null;
+      try {
+        const installation = await inspectWordPressDocumentRoot({ baseUrl, username, token, domain, documentRoot });
+        fileCheckedDomains.add(domain);
+        return installation;
+      } catch {
+        return null;
+      }
+    }),
+  );
+  for (const installation of fileInspectionResults) {
+    if (!installation) continue;
+    const existing = wordpressInstallations.get(installation.domain);
+    wordpressInstallations.set(installation.domain, {
+      ...installation,
+      installationId: existing?.installationId ?? installation.installationId,
+      siteName: existing?.siteName ?? installation.siteName,
+      url: existing?.url ?? installation.url,
+      version: existing?.version ?? installation.version,
+      source: existing?.source ?? installation.source,
+    });
+  }
+  wordpressAttempts.push({
+    source: 'cPanel WordPress file check',
+    status: fileCheckedDomains.size ? 'complete' : 'unavailable',
+    domainCount: wordpressInstallations.size,
+    ...(!fileCheckedDomains.size ? { message: 'cPanel did not expose readable document roots for WordPress inspection.' } : {}),
+  });
+
+  const managerInventoryComplete = softaculousData !== null || wordpressInstallations.size > 0;
+  const wordpressInventoryComplete = managerInventoryComplete || fileCheckedDomains.size === domainTypes.size;
   const domains = [...domainTypes.entries()]
     .map(([domain, domainType]) => {
       const detail = details.get(domain);
       const php = phpDetails.get(domain);
+      const wordpress = wordpressInstallations.get(domain);
       return {
         domain,
         domainType: domainType === 'unknown' ? detail?.domainType ?? 'unknown' : domainType,
         documentRoot: detail?.documentRoot ?? webVhosts.get(domain)?.documentRoot ?? null,
         phpVersion: php?.phpVersion ?? detail?.phpVersion ?? null,
+        wordpressStatus: wordpress
+          ? 'installed'
+          : managerInventoryComplete || fileCheckedDomains.has(domain) ? 'not_installed' : 'not_checked',
+        wordpressVersion: wordpress?.version ?? null,
+        wordpressSiteName: wordpress?.siteName ?? null,
+        wordpressUrl: wordpress?.url ?? null,
+        wordpressInstallationId: wordpress?.installationId ?? null,
+        wordpressSource: wordpress?.source ?? null,
       } satisfies CpanelDomain;
     })
     .sort((a, b) => a.domain.localeCompare(b.domain));
@@ -359,7 +691,8 @@ export async function discoverCpanel(input: {
     domainInventory: domainTypes.size > 0,
     featureInventory: featureData !== null,
     phpInventory: phpData !== null,
-    wordpressManagement: /wordpress|wp_toolkit|wp-toolkit/.test(featureText),
+    wordpressInventory: wordpressInventoryComplete,
+    wordpressManagement: wordpressAuthenticatedSources > 0 || /wordpress|wp_toolkit|wp-toolkit/.test(featureText),
     userManagement: /ftp|email|mysql|user/.test(featureText),
     writeActions: false,
     destructiveActions: false,
@@ -371,6 +704,8 @@ export async function discoverCpanel(input: {
     domains,
     capabilities,
     scanStatus: domains.length ? 'complete' as const : 'needs_attention' as const,
-    inventoryAttempts,
+    wordpressScanStatus: wordpressInventoryComplete ? 'complete' as const : 'needs_attention' as const,
+    wordpressInstallationCount: wordpressInstallations.size,
+    inventoryAttempts: [...inventoryAttempts, ...wordpressAttempts],
   };
 }

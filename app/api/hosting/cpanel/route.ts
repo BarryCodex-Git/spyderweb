@@ -40,7 +40,11 @@ export async function GET(request: Request) {
       db
         .prepare(`SELECT id, connection_id AS connectionId, domain, domain_type AS domainType,
           document_root AS documentRoot, php_version AS phpVersion,
-          wordpress_status AS wordpressStatus, ssl_status AS sslStatus, last_seen_at AS lastSeenAt
+          wordpress_status AS wordpressStatus, wordpress_version AS wordpressVersion,
+          wordpress_site_name AS wordpressSiteName, wordpress_url AS wordpressUrl,
+          wordpress_installation_id AS wordpressInstallationId, wordpress_source AS wordpressSource,
+          workflow_status_override AS workflowStatusOverride,
+          ssl_status AS sslStatus, last_seen_at AS lastSeenAt
           FROM hosting_domains WHERE owner_user_id = ? AND active = 1 ORDER BY domain`)
         .bind(identity.userId)
         .all(),
@@ -140,11 +144,25 @@ export async function POST(request: Request) {
         db
           .prepare(`INSERT INTO hosting_domains (
             id, connection_id, owner_user_id, domain, domain_type, document_root, php_version,
-            wordpress_status, ssl_status, active, last_seen_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, 'not_checked', 'not_checked', 1, ?)
+            wordpress_status, wordpress_version, wordpress_site_name, wordpress_url,
+            wordpress_installation_id, wordpress_source, ssl_status, active, last_seen_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'not_checked', 1, ?)
           ON CONFLICT(connection_id, domain) DO UPDATE SET
             domain_type = excluded.domain_type, document_root = excluded.document_root,
-            php_version = excluded.php_version, active = 1, last_seen_at = excluded.last_seen_at`)
+            php_version = excluded.php_version,
+            wordpress_status = CASE WHEN excluded.wordpress_status = 'not_checked'
+              THEN hosting_domains.wordpress_status ELSE excluded.wordpress_status END,
+            wordpress_version = CASE WHEN excluded.wordpress_status = 'not_checked'
+              THEN hosting_domains.wordpress_version ELSE excluded.wordpress_version END,
+            wordpress_site_name = CASE WHEN excluded.wordpress_status = 'not_checked'
+              THEN hosting_domains.wordpress_site_name ELSE excluded.wordpress_site_name END,
+            wordpress_url = CASE WHEN excluded.wordpress_status = 'not_checked'
+              THEN hosting_domains.wordpress_url ELSE excluded.wordpress_url END,
+            wordpress_installation_id = CASE WHEN excluded.wordpress_status = 'not_checked'
+              THEN hosting_domains.wordpress_installation_id ELSE excluded.wordpress_installation_id END,
+            wordpress_source = CASE WHEN excluded.wordpress_status = 'not_checked'
+              THEN hosting_domains.wordpress_source ELSE excluded.wordpress_source END,
+            active = 1, last_seen_at = excluded.last_seen_at`)
           .bind(
             domainId,
             connectionId,
@@ -153,6 +171,12 @@ export async function POST(request: Request) {
             domain.domainType,
             domain.documentRoot,
             domain.phpVersion,
+            domain.wordpressStatus,
+            domain.wordpressVersion,
+            domain.wordpressSiteName,
+            domain.wordpressUrl,
+            domain.wordpressInstallationId,
+            domain.wordpressSource,
             now,
           ),
       );
@@ -169,7 +193,12 @@ export async function POST(request: Request) {
           connectionId,
           discovered.baseUrl,
           discovered.scanStatus === 'complete' ? 'success' : 'warning',
-          JSON.stringify({ domainCount: discovered.domains.length, inventoryAttempts: discovered.inventoryAttempts }),
+          JSON.stringify({
+            domainCount: discovered.domains.length,
+            wordpressInstallationCount: discovered.wordpressInstallationCount,
+            wordpressScanStatus: discovered.wordpressScanStatus,
+            inventoryAttempts: discovered.inventoryAttempts,
+          }),
           now,
         ),
     );
@@ -197,13 +226,16 @@ export async function POST(request: Request) {
         ...domain,
         id: undefined,
         connectionId,
-        wordpressStatus: 'not_checked',
         sslStatus: 'not_checked',
+        workflowStatusOverride: null,
         lastSeenAt: now,
       })),
       scanStatus: discovered.scanStatus,
+      wordpressScanStatus: discovered.wordpressScanStatus,
       message: discovered.scanStatus === 'complete'
-        ? `${discovered.domains.length} domains discovered. This cPanel connection is now securely saved for future synchronisation.`
+        ? discovered.wordpressScanStatus === 'complete'
+          ? `${discovered.domains.length} domains discovered and ${discovered.wordpressInstallationCount} WordPress installations identified. This cPanel connection is now securely saved for future synchronisation.`
+          : `${discovered.domains.length} domains discovered and the cPanel connection is securely saved. WordPress inspection still needs attention and will retry automatically.`
         : 'cPanel connected and the credentials are securely saved. The live domain scan needs another attempt; use Retry scan from Settings.',
     });
   } catch (error) {
