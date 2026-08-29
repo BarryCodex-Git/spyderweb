@@ -5,7 +5,7 @@ import { type FormEvent, useCallback, useEffect, useRef, useState } from 'react'
 
 type View = 'Dashboard' | 'Domains' | 'Projects' | 'Agent Activity' | 'Settings';
 type Developer = 'Barry' | 'Clive';
-type DomainStatus = 'Available' | 'Template Loaded' | 'Busy Working' | 'Final Stages';
+type DomainStatus = 'Available' | 'Template Loaded' | 'Busy Working' | 'Final Stages' | 'Needs Inspection';
 type HostingProvider = 'cPanel' | 'Hostinger';
 type ActionToastStatus = 'progress' | 'success' | 'warning' | 'error';
 
@@ -115,7 +115,7 @@ const viewCopy: Record<View, { eyebrow: string; title: string; subtitle: string 
   },
 };
 
-const columns: DomainStatus[] = ['Available', 'Template Loaded', 'Busy Working', 'Final Stages'];
+const columns: DomainStatus[] = ['Available', 'Template Loaded', 'Busy Working', 'Final Stages', 'Needs Inspection'];
 const buildStages = [
   'Setup',
   'Build Home Page',
@@ -170,7 +170,7 @@ function mapHostingDomains(records: HostingDomain[], connections: HostingConnect
         ? 'Template Loaded'
         : installed
           ? 'Busy Working'
-          : 'Available';
+          : record.wordpressStatus === 'not_installed' ? 'Available' : 'Needs Inspection';
     const client = isManuallyAvailable || record.wordpressStatus === 'not_installed'
       ? 'Ready for a new project'
       : isTemplate
@@ -212,7 +212,7 @@ export default function Home() {
   const [hostingNotice, setHostingNotice] = useState('');
   const [hostingBusy, setHostingBusy] = useState(false);
   const [hostingConnections, setHostingConnections] = useState<HostingConnection[]>([]);
-  const [managedDomains, setManagedDomains] = useState<Domain[]>(demoDomains);
+  const [managedDomains, setManagedDomains] = useState<Domain[]>([]);
   const [inventoryIsLive, setInventoryIsLive] = useState(false);
   const [inventoryRefreshing, setInventoryRefreshing] = useState(false);
   const [inventoryLastRefreshedAt, setInventoryLastRefreshedAt] = useState<string | null>(null);
@@ -275,6 +275,9 @@ export default function Home() {
         const mappedDomains = mapHostingDomains(data.domains, data.connections);
         setManagedDomains((current) => JSON.stringify(current) === JSON.stringify(mappedDomains) ? current : mappedDomains);
         setInventoryIsLive(true);
+      } else if (data.connections.length === 0) {
+        setManagedDomains(demoDomains);
+        setInventoryIsLive(false);
       }
       setInventoryLastRefreshedAt(new Date().toISOString());
       return data;

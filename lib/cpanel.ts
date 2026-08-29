@@ -376,10 +376,17 @@ async function publicWordPressInfo(domain: string) {
     });
     if (response.ok) {
       const payload = (await response.json()) as Record<string, unknown>;
-      return {
-        siteName: cleanInventoryText(payload.name, 180),
-        url: cleanInventoryText(payload.url, 2048) ?? `https://${domain}`,
-      };
+      const namespaces = Array.isArray(payload.namespaces) ? payload.namespaces.map(String) : [];
+      const isWordPress = namespaces.some((namespace) => namespace === 'wp/v2' || namespace.startsWith('wp/'))
+        || ('routes' in payload && 'name' in payload && 'url' in payload);
+      if (isWordPress) {
+        return {
+          detected: true,
+          siteName: cleanInventoryText(payload.name, 180),
+          url: cleanInventoryText(payload.url, 2048) ?? `https://${domain}`,
+          version: null,
+        };
+      }
     }
   } catch {
     // Some WordPress sites disable their public REST index. The homepage title is
@@ -392,8 +399,12 @@ async function publicWordPressInfo(domain: string) {
       redirect: 'manual',
       signal: AbortSignal.timeout(8_000),
     });
-    if (!response.ok) return { siteName: null, url: `https://${domain}` };
+    if (!response.ok) return { detected: false, siteName: null, url: `https://${domain}`, version: null };
     const html = await response.text();
+    const generator = html.match(/<meta[^>]+name=["']generator["'][^>]+content=["']WordPress\s*([^"']*)["']/i)
+      ?? html.match(/<meta[^>]+content=["']WordPress\s*([^"']*)["'][^>]+name=["']generator["']/i);
+    const detected = Boolean(generator || /\bwp-(?:content|includes)\//i.test(html));
+    if (!detected) return { detected: false, siteName: null, url: `https://${domain}`, version: null };
     const match = html.match(/<meta[^>]+property=["']og:site_name["'][^>]+content=["']([^"']+)["']/i)
       ?? html.match(/<meta[^>]+content=["']([^"']+)["'][^>]+property=["']og:site_name["']/i)
       ?? html.match(/<title[^>]*>([^<]+)<\/title>/i);
@@ -403,9 +414,14 @@ async function publicWordPressInfo(domain: string) {
       .replace(/&quot;/gi, '"')
       .replace(/\s+[|–—-]\s+WordPress\s*$/i, '')
       .trim();
-    return { siteName: cleanInventoryText(siteName, 180), url: `https://${domain}` };
+    return {
+      detected: true,
+      siteName: cleanInventoryText(siteName, 180),
+      url: `https://${domain}`,
+      version: cleanInventoryText(generator?.[1], 80),
+    };
   } catch {
-    return { siteName: null, url: `https://${domain}` };
+    return { detected: false, siteName: null, url: `https://${domain}`, version: null };
   }
 }
 
@@ -696,6 +712,41 @@ export async function discoverCpanel(input: {
     }
   }
 
+  const publicWordPressResults = await Promise.all(
+    [...domainTypes.keys()].map(async (domain) => {
+      const info = await publicWordPressInfo(domain);
+      if (!info.detected) return null;
+      return {
+        domain,
+        installationId: null,
+        siteName: info.siteName,
+        url: info.url,
+        version: info.version,
+        source: 'Public WordPress endpoint',
+      } satisfies WordPressInstallation;
+    }),
+  );
+  let publicInstallationCount = 0;
+  for (const installation of publicWordPressResults) {
+    if (!installation) continue;
+    publicInstallationCount += 1;
+    const existing = wordpressInstallations.get(installation.domain);
+    wordpressInstallations.set(installation.domain, {
+      ...installation,
+      installationId: existing?.installationId ?? installation.installationId,
+      siteName: installation.siteName ?? existing?.siteName ?? null,
+      url: installation.url ?? existing?.url ?? null,
+      version: existing?.version ?? installation.version,
+      source: existing?.source ?? installation.source,
+    });
+  }
+  wordpressAttempts.push({
+    source: 'Public WordPress endpoints',
+    status: publicInstallationCount ? 'complete' : 'empty',
+    domainCount: publicInstallationCount,
+    ...(!publicInstallationCount ? { message: 'No public WordPress endpoints responded.' } : {}),
+  });
+
   const fileCheckedDomains = new Set<string>();
   const fileInspectionResults = await Promise.all(
     [...domainTypes.keys()].map(async (domain) => {
@@ -729,8 +780,7 @@ export async function discoverCpanel(input: {
     ...(!fileCheckedDomains.size ? { message: 'cPanel did not expose readable document roots for WordPress inspection.' } : {}),
   });
 
-  const managerInventoryComplete = softaculousData !== null || wordpressInstallations.size > 0;
-  const wordpressInventoryComplete = managerInventoryComplete || fileCheckedDomains.size === domainTypes.size;
+  const managerInventoryComplete = wordpressAuthenticatedSources > 0;
   const domains = [...domainTypes.entries()]
     .map(([domain, domainType]) => {
       const detail = details.get(domain);
@@ -752,6 +802,7 @@ export async function discoverCpanel(input: {
       } satisfies CpanelDomain;
     })
     .sort((a, b) => a.domain.localeCompare(b.domain));
+  const wordpressInventoryComplete = domains.every((domain) => domain.wordpressStatus !== 'not_checked');
 
   const featureText = JSON.stringify(featureData ?? {}).toLowerCase();
   const capabilities: CpanelCapabilities = {
