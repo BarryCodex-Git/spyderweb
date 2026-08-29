@@ -377,6 +377,12 @@ export default function Home() {
         title: result.scanStatus === 'needs_attention' ? 'cPanel connected · scan pending' : 'cPanel connected',
         message: successMessage,
       });
+      if (result.scanStatus === 'complete') {
+        setHostingProvider(null);
+        setActiveView('Dashboard');
+        setSelectedDomain(null);
+        setSelectedProject(null);
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : 'The cPanel connection failed.';
       setHostingNotice(message);
