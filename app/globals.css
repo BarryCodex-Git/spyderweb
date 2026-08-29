@@ -82,10 +82,12 @@ h2 { margin-bottom: 0; font-size: 21px; letter-spacing: -.025em; }
 .action-toast.progress { border-color: #b9ccec; }
 .action-toast.success { border-color: #bde5d2; }
 .action-toast.error { border-color: #efc6cf; }
+.action-toast.warning { border-color: #f0d49b; }
 .toast-status-icon { width: 34px; height: 34px; display: grid; place-items: center; border-radius: 10px; color: white; background: var(--dark-blue); font-weight: 900; }
 .action-toast.progress .toast-status-icon { border: 3px solid #d7e4f8; border-top-color: var(--mid-blue); border-radius: 50%; background: transparent; animation: toast-spin .8s linear infinite; }
 .action-toast.success .toast-status-icon { background: #1d9b69; }
 .action-toast.error .toast-status-icon { background: #bf3e59; }
+.action-toast.warning .toast-status-icon { background: #c17a12; }
 .action-toast strong { display: block; margin-top: 1px; color: var(--dark-blue); font-size: 15px; }
 .action-toast p { margin: 4px 0 0; color: var(--muted); font-size: 13px; line-height: 1.45; }
 .action-toast > button { width: 24px; height: 24px; border: 0; border-radius: 7px; color: #6e7b90; background: #f0f3f8; font-size: 17px; line-height: 1; cursor: pointer; }
@@ -164,6 +166,8 @@ button.table-row { cursor: pointer; }.table-row:last-child { border-bottom: 0; }
 .connection-summary small { color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
 .connection-controls { display: flex; align-items: center; justify-content: flex-end; gap: 7px; flex-wrap: wrap; }
 .connection-summary .outline-button { flex: 0 0 auto; }
+.connection-health-pill { padding: 5px 8px; border-radius: 8px; color: #147354; background: #e2f6ed; font-size: 11px; }
+.connection-health-pill.warning { color: #8a590e; background: #fff1d5; }
 .access-mode-pill { padding: 4px 7px; border-radius: 7px; color: #4d5b71; background: #edf0f5; font-size: 11px; font-weight: 800; }
 .access-mode-pill.managed { color: #fff; background: radial-gradient(circle at 20% 50%, var(--dark-purple), var(--dark-blue) 62%, var(--mid-blue)); }
 .access-mode-button { min-height: 37px; padding: 8px 10px; border: 1px solid #bea7df; border-radius: 9px; color: #fff; background: var(--dark-purple); font-size: 12px; font-weight: 800; cursor: pointer; }

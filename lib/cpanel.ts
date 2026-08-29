@@ -15,6 +15,13 @@ export type CpanelCapabilities = {
   destructiveActions: false;
 };
 
+export type CpanelInventoryAttempt = {
+  source: string;
+  status: 'complete' | 'empty' | 'unavailable';
+  domainCount: number;
+  message?: string;
+};
+
 type UapiEnvelope = {
   result?: {
     status?: number;
@@ -28,6 +35,15 @@ type DomainDetail = {
   documentRoot: string | null;
   phpVersion: string | null;
   domainType: CpanelDomain['domainType'];
+};
+
+type Api2Envelope = {
+  cpanelresult?: {
+    data?: unknown;
+    event?: { result?: number };
+    error?: string;
+    reason?: string;
+  };
 };
 
 const allowedPorts = new Set(['443', '2083']);
@@ -121,6 +137,42 @@ async function uapi(
   return payload.result.data;
 }
 
+async function api2ListSubdomains(baseUrl: string, username: string, token: string) {
+  const url = new URL(`${baseUrl}/json-api/cpanel`);
+  url.searchParams.set('cpanel_jsonapi_user', username);
+  url.searchParams.set('cpanel_jsonapi_apiversion', '2');
+  url.searchParams.set('cpanel_jsonapi_module', 'SubDomain');
+  url.searchParams.set('cpanel_jsonapi_func', 'listsubdomains');
+  url.searchParams.set('return_https_redirect_status', '1');
+
+  const response = await fetch(url, {
+    method: 'GET',
+    headers: {
+      Accept: 'application/json',
+      Authorization: `cpanel ${username}:${token}`,
+    },
+    redirect: 'manual',
+    signal: AbortSignal.timeout(20_000),
+  });
+
+  if (response.status >= 300 && response.status < 400) {
+    throw new Error('The shared-host compatibility endpoint redirected the request.');
+  }
+  if (response.status === 401 || response.status === 403) {
+    throw new Error('cPanel did not authorise the shared-host compatibility endpoint.');
+  }
+  if (!response.ok) {
+    throw new Error(`The shared-host compatibility endpoint returned ${response.status}.`);
+  }
+
+  const payload = (await response.json()) as Api2Envelope;
+  const result = payload.cpanelresult;
+  if (!result || result.event?.result !== 1) {
+    throw new Error(result?.reason || result?.error || 'The shared-host compatibility endpoint was unavailable.');
+  }
+  return result.data;
+}
+
 function stringList(value: unknown) {
   if (!Array.isArray(value)) return [];
   return value.filter((item): item is string => typeof item === 'string' && Boolean(item.trim()));
@@ -129,22 +181,42 @@ function stringList(value: unknown) {
 function classifyDomainType(record: Record<string, unknown>): CpanelDomain['domainType'] {
   const type = String(record.domain_type ?? record.type ?? record.vhost_type ?? '').toLowerCase();
   if (/main|primary/.test(type) || record.is_main_domain === 1) return 'main';
-  if (/sub/.test(type) || typeof record.parentdomain === 'string') return 'subdomain';
+  if (/sub/.test(type) || typeof record.parentdomain === 'string' || typeof record.rootdomain === 'string') return 'subdomain';
   if (/addon/.test(type)) return 'addon';
   if (/parked|alias/.test(type)) return 'alias';
   return 'unknown';
 }
 
+function normalizeDomain(value: unknown) {
+  if (typeof value !== 'string') return null;
+  const candidate = value.trim().toLowerCase().replace(/^\*\./, '').replace(/\.$/, '');
+  if (candidate.length > 253 || !candidate.includes('.')) return null;
+  if (!/^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(candidate)) {
+    return null;
+  }
+  return candidate;
+}
+
+const domainFields = [
+  'domain',
+  'domain_name',
+  'name',
+  'servername',
+  'server_name',
+  'vhost',
+  'vhost_name',
+  'hostname',
+] as const;
+
 function domainFromDetail(value: unknown) {
   if (!value || typeof value !== 'object') return null;
   const record = value as Record<string, unknown>;
-  const domain = [record.domain, record.domain_name, record.name].find(
-    (item): item is string => typeof item === 'string' && item.includes('.'),
-  );
+  const domain = domainFields.map((field) => normalizeDomain(record[field])).find(Boolean) ?? null;
   if (!domain) return null;
   return {
+    domain,
     documentRoot:
-      [record.documentroot, record.document_root].find((item): item is string => typeof item === 'string') ?? null,
+      [record.documentroot, record.document_root, record.dir].find((item): item is string => typeof item === 'string') ?? null,
     phpVersion:
       [record.phpversion, record.php_version].find((item): item is string => typeof item === 'string') ?? null,
     domainType: classifyDomainType(record),
@@ -156,16 +228,15 @@ function collectDetails(value: unknown, map = new Map<string, DomainDetail>()) {
     value.forEach((item) => collectDetails(item, map));
     return map;
   }
-  if (typeof value === 'string' && value.includes('.') && !value.includes('/') && !value.includes(' ')) {
-    map.set(value.toLowerCase(), { documentRoot: null, phpVersion: null, domainType: 'unknown' });
+  const stringDomain = normalizeDomain(value);
+  if (stringDomain) {
+    map.set(stringDomain, { documentRoot: null, phpVersion: null, domainType: 'unknown' });
     return map;
   }
   if (!value || typeof value !== 'object') return map;
   const detail = domainFromDetail(value);
   if (detail) {
-    const record = value as Record<string, unknown>;
-    const domain = String(record.domain ?? record.domain_name ?? record.name).toLowerCase();
-    map.set(domain, detail);
+    map.set(detail.domain, detail);
   }
   Object.values(value as Record<string, unknown>).forEach((item) => collectDetails(item, map));
   return map;
@@ -180,21 +251,44 @@ export async function discoverCpanel(input: {
   const username = validateCredentialPart(input.username, 'cPanel username', 128);
   const token = validateCredentialPart(input.token, 'cPanel API token', 4096);
 
+  // Authentication and inventory are separate stages. A valid connection should
+  // remain usable and retryable even if one host-specific inventory API is blank.
+  await uapi(baseUrl, username, token, 'Variables', 'get_user_information');
+
   let listData: Record<string, unknown> | null = null;
   let detailData: unknown = null;
   let webVhostData: unknown = null;
-  const inventoryErrors: string[] = [];
+  let legacySubdomainData: unknown = null;
+  const inventoryAttempts: CpanelInventoryAttempt[] = [];
+
+  const recordAttempt = (source: string, data: unknown) => {
+    const domainCount = collectDetails(data).size;
+    inventoryAttempts.push({ source, status: domainCount ? 'complete' : 'empty', domainCount });
+    return data;
+  };
+
+  const recordFailure = (source: string, error: unknown) => {
+    inventoryAttempts.push({
+      source,
+      status: 'unavailable',
+      domainCount: 0,
+      message: error instanceof Error ? error.message : 'Inventory source unavailable.',
+    });
+  };
 
   await Promise.all([
     uapi(baseUrl, username, token, 'DomainInfo', 'list_domains')
-      .then((data) => (listData = data as Record<string, unknown>))
-      .catch((error) => inventoryErrors.push(error instanceof Error ? error.message : 'Domain list unavailable')),
+      .then((data) => (listData = recordAttempt('Domain Information', data) as Record<string, unknown>))
+      .catch((error) => recordFailure('Domain Information', error)),
     uapi(baseUrl, username, token, 'DomainInfo', 'domains_data', { format: 'list' })
-      .then((data) => (detailData = data))
-      .catch((error) => inventoryErrors.push(error instanceof Error ? error.message : 'Domain details unavailable')),
+      .then((data) => (detailData = recordAttempt('Domain hosting data', data)))
+      .catch((error) => recordFailure('Domain hosting data', error)),
     uapi(baseUrl, username, token, 'WebVhosts', 'list_domains')
-      .then((data) => (webVhostData = data))
-      .catch((error) => inventoryErrors.push(error instanceof Error ? error.message : 'Virtual hosts unavailable')),
+      .then((data) => (webVhostData = recordAttempt('Virtual hosts', data)))
+      .catch((error) => recordFailure('Virtual hosts', error)),
+    api2ListSubdomains(baseUrl, username, token)
+      .then((data) => (legacySubdomainData = recordAttempt('Shared-host compatibility scan', data)))
+      .catch((error) => recordFailure('Shared-host compatibility scan', error)),
   ]);
 
   const domainTypes = new Map<string, CpanelDomain['domainType']>();
@@ -208,20 +302,24 @@ export async function discoverCpanel(input: {
     add(stringList(listData.parked_domains), 'alias');
   }
 
+  if (Array.isArray(legacySubdomainData)) {
+    legacySubdomainData.forEach((value) => {
+      if (!value || typeof value !== 'object') return;
+      const record = value as Record<string, unknown>;
+      const rootDomain = normalizeDomain(record.rootdomain);
+      const subdomain = normalizeDomain(record.domain);
+      if (rootDomain) domainTypes.set(rootDomain, 'main');
+      if (subdomain) domainTypes.set(subdomain, subdomain === rootDomain ? 'main' : 'subdomain');
+    });
+  }
+
   const details = collectDetails(detailData);
   const webVhosts = collectDetails(webVhostData);
-  for (const [domain, detail] of [...details, ...webVhosts]) {
+  const legacySubdomains = collectDetails(legacySubdomainData);
+  for (const [domain, detail] of [...details, ...webVhosts, ...legacySubdomains]) {
     if (!domainTypes.has(domain) || domainTypes.get(domain) === 'unknown') {
       domainTypes.set(domain, detail.domainType);
     }
-  }
-
-  if (!domainTypes.size) {
-    const detail = inventoryErrors.find((message) => !message.includes('could not run'));
-    throw new Error(
-      detail ||
-        'cPanel authenticated, but did not expose any domains. Ask the host to enable Domain Information or Virtual Host access for this account.',
-    );
   }
 
   let featureData: unknown = null;
@@ -247,7 +345,7 @@ export async function discoverCpanel(input: {
 
   const featureText = JSON.stringify(featureData ?? {}).toLowerCase();
   const capabilities: CpanelCapabilities = {
-    domainInventory: true,
+    domainInventory: domainTypes.size > 0,
     featureInventory: featureData !== null,
     phpInventory: phpData !== null,
     wordpressManagement: /wordpress|wp_toolkit|wp-toolkit/.test(featureText),
@@ -256,5 +354,12 @@ export async function discoverCpanel(input: {
     destructiveActions: false,
   };
 
-  return { baseUrl, username, domains, capabilities };
+  return {
+    baseUrl,
+    username,
+    domains,
+    capabilities,
+    scanStatus: domains.length ? 'complete' as const : 'needs_attention' as const,
+    inventoryAttempts,
+  };
 }

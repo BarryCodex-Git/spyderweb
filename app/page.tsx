@@ -7,7 +7,7 @@ type View = 'Dashboard' | 'Domains' | 'Projects' | 'Agent Activity' | 'Settings'
 type Developer = 'Barry' | 'Clive';
 type DomainStatus = 'Available' | 'Template Loaded' | 'Busy Working' | 'Final Stages';
 type HostingProvider = 'cPanel' | 'Hostinger';
-type ActionToastStatus = 'progress' | 'success' | 'error';
+type ActionToastStatus = 'progress' | 'success' | 'warning' | 'error';
 
 type ActionToast = {
   id: string;
@@ -243,7 +243,7 @@ export default function Home() {
         domains: HostingDomain[];
       };
       setHostingConnections(data.connections);
-      if (data.connections.length > 0) {
+      if (data.domains.length > 0) {
         setManagedDomains(mapHostingDomains(data.domains, data.connections));
         setInventoryIsLive(true);
       }
@@ -259,7 +259,7 @@ export default function Home() {
       .then((data: { connections: HostingConnection[]; domains: HostingDomain[] } | null) => {
         if (!active || !data) return;
         setHostingConnections(data.connections);
-        if (data.connections.length > 0) {
+        if (data.domains.length > 0) {
           setManagedDomains(mapHostingDomains(data.domains, data.connections));
           setInventoryIsLive(true);
         }
@@ -364,14 +364,19 @@ export default function Home() {
           readOnly: formData.get('readOnly') === 'on',
         }),
       });
-      const result = (await response.json()) as { error?: string; message?: string };
+      const result = (await response.json()) as { error?: string; message?: string; scanStatus?: 'complete' | 'needs_attention' };
       if (!response.ok) throw new Error(result.error || 'The cPanel connection failed.');
       const tokenInput = form.elements.namedItem('token') as HTMLInputElement | null;
       if (tokenInput) tokenInput.value = '';
       await loadHostingInventory();
       const successMessage = result.message || 'cPanel connected in read-only mode.';
       setHostingNotice(successMessage);
-      showActionToast({ id: 'cpanel-connect', status: 'success', title: 'cPanel connected', message: successMessage });
+      showActionToast({
+        id: 'cpanel-connect',
+        status: result.scanStatus === 'needs_attention' ? 'warning' : 'success',
+        title: result.scanStatus === 'needs_attention' ? 'cPanel connected · scan pending' : 'cPanel connected',
+        message: successMessage,
+      });
     } catch (error) {
       const message = error instanceof Error ? error.message : 'The cPanel connection failed.';
       setHostingNotice(message);
@@ -390,12 +395,17 @@ export default function Home() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
       });
-      const result = (await response.json()) as { error?: string; message?: string };
+      const result = (await response.json()) as { error?: string; message?: string; scanStatus?: 'complete' | 'needs_attention' };
       if (!response.ok) throw new Error(result.error || 'The cPanel synchronisation failed.');
       await loadHostingInventory();
       const successMessage = result.message || 'The cPanel inventory is current.';
       setSettingsHostingNotice(successMessage);
-      showActionToast({ id: `cpanel-sync-${connectionId}`, status: 'success', title: 'Scan complete', message: successMessage });
+      showActionToast({
+        id: `cpanel-sync-${connectionId}`,
+        status: result.scanStatus === 'needs_attention' ? 'warning' : 'success',
+        title: result.scanStatus === 'needs_attention' ? 'Connected · scan pending' : 'Scan complete',
+        message: successMessage,
+      });
     } catch (error) {
       const message = error instanceof Error ? error.message : 'The cPanel synchronisation failed.';
       setSettingsHostingNotice(message);
@@ -791,9 +801,9 @@ function SettingsView({ connections, syncingId, modeChangingId, notice, onSync, 
             <ul><li>Discover and save live domains</li><li>Check available cPanel features</li><li>Switch each account between read-only and managed access</li></ul>
             {cpanelConnections.length > 0 && <div className="saved-connections">{cpanelConnections.map((connection) => (
               <div className="connection-summary" key={connection.id}>
-                <div className="connection-details"><span><strong>{connection.name}</strong><b className={`access-mode-pill ${connection.mode === 'managed_write' ? 'managed' : ''}`}>{connection.mode === 'managed_write' ? 'Managed access' : 'Read only'}</b></span><small>{connection.baseUrl}</small><small>Last scan: {new Date(connection.lastSyncAt).toLocaleString()}</small></div>
+                <div className="connection-details"><span><strong>{connection.name}</strong><b className={`connection-health-pill ${connection.status === 'connected_scan_issue' ? 'warning' : ''}`}>{connection.status === 'connected_scan_issue' ? 'Connected · scan needed' : 'Connected'}</b><b className={`access-mode-pill ${connection.mode === 'managed_write' ? 'managed' : ''}`}>{connection.mode === 'managed_write' ? 'Managed access' : 'Read only'}</b></span><small>{connection.baseUrl}</small><small>{connection.status === 'connected_scan_issue' ? 'Authentication verified · live inventory not imported yet' : `Last scan: ${new Date(connection.lastSyncAt).toLocaleString()}`}</small></div>
                 <div className="connection-controls">
-                  <button className="outline-button" disabled={syncingId === connection.id || modeChangingId === connection.id} onClick={() => onSync(connection.id)}>{syncingId === connection.id ? 'Syncing…' : 'Sync now'}</button>
+                  <button className="outline-button" disabled={syncingId === connection.id || modeChangingId === connection.id} onClick={() => onSync(connection.id)}>{syncingId === connection.id ? 'Scanning…' : connection.status === 'connected_scan_issue' ? 'Retry scan' : 'Sync now'}</button>
                   <button className={`access-mode-button ${connection.mode === 'managed_write' ? 'read-only' : ''}`} disabled={syncingId === connection.id || modeChangingId === connection.id} onClick={() => onModeChange(connection)}>{modeChangingId === connection.id ? 'Changing…' : connection.mode === 'managed_write' ? 'Return to read only' : 'Enable managed access'}</button>
                 </div>
               </div>

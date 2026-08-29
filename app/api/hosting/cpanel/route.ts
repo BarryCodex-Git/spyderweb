@@ -91,6 +91,7 @@ export async function POST(request: Request) {
       connectionId,
     );
     const db = await ensureHostingSchema(getDatabase());
+    const connectionStatus = discovered.scanStatus === 'complete' ? 'connected_read_only' : 'connected_scan_issue';
     const statements = [
       db
         .prepare(`INSERT INTO hosting_connections (
@@ -98,11 +99,13 @@ export async function POST(request: Request) {
           status, mode, credential_storage, encrypted_token, encryption_iv, credential_version,
           capabilities_json, write_actions_enabled,
           destructive_actions_enabled, confirmation_policy, last_sync_at, created_at, updated_at
-        ) VALUES (?, ?, ?, 'cpanel', ?, ?, ?, ?, 'connected_read_only', 'read_only', 'encrypted_cloud', ?, ?, ?, ?, 0, 0,
+        ) VALUES (?, ?, ?, 'cpanel', ?, ?, ?, ?, ?, 'read_only', 'encrypted_cloud', ?, ?, ?, ?, 0, 0,
           'owner_code+exact_domain+backup', ?, ?, ?)
         ON CONFLICT(owner_user_id, provider, base_url, username) DO UPDATE SET
           owner_email = excluded.owner_email, name = excluded.name,
           primary_domain = excluded.primary_domain,
+          status = CASE WHEN excluded.status = 'connected_scan_issue' THEN 'connected_scan_issue'
+            WHEN hosting_connections.mode = 'managed_write' THEN 'connected_managed' ELSE 'connected_read_only' END,
           credential_storage = excluded.credential_storage,
           encrypted_token = excluded.encrypted_token, encryption_iv = excluded.encryption_iv,
           credential_version = excluded.credential_version,
@@ -116,6 +119,7 @@ export async function POST(request: Request) {
           discovered.baseUrl,
           discovered.username,
           primaryDomain,
+          connectionStatus,
           credential.encryptedToken,
           credential.encryptionIv,
           credential.credentialVersion,
@@ -124,8 +128,11 @@ export async function POST(request: Request) {
           now,
           now,
         ),
-      db.prepare('UPDATE hosting_domains SET active = 0 WHERE connection_id = ?').bind(connectionId),
     ];
+
+    if (discovered.scanStatus === 'complete') {
+      statements.push(db.prepare('UPDATE hosting_domains SET active = 0 WHERE connection_id = ?').bind(connectionId));
+    }
 
     for (const domain of discovered.domains) {
       const domainId = await stableId(connectionId, domain.domain);
@@ -155,13 +162,14 @@ export async function POST(request: Request) {
       db
         .prepare(`INSERT INTO hosting_audit_events (
           id, owner_user_id, connection_id, action, target, outcome, details_json, created_at
-        ) VALUES (?, ?, ?, 'cpanel.read_only_scan', ?, 'success', ?, ?)`)
+        ) VALUES (?, ?, ?, 'cpanel.read_only_scan', ?, ?, ?, ?)`)
         .bind(
           crypto.randomUUID(),
           identity.userId,
           connectionId,
           discovered.baseUrl,
-          JSON.stringify({ domainCount: discovered.domains.length }),
+          discovered.scanStatus === 'complete' ? 'success' : 'warning',
+          JSON.stringify({ domainCount: discovered.domains.length, inventoryAttempts: discovered.inventoryAttempts }),
           now,
         ),
     );
@@ -176,7 +184,7 @@ export async function POST(request: Request) {
         baseUrl: discovered.baseUrl,
         username: discovered.username,
         primaryDomain,
-        status: 'connected_read_only',
+        status: connectionStatus,
         mode: 'read_only',
         credentialStorage: 'encrypted_cloud',
         capabilities: discovered.capabilities,
@@ -193,7 +201,10 @@ export async function POST(request: Request) {
         sslStatus: 'not_checked',
         lastSeenAt: now,
       })),
-      message: `${discovered.domains.length} domains discovered. This cPanel connection is now securely saved for future synchronisation.`,
+      scanStatus: discovered.scanStatus,
+      message: discovered.scanStatus === 'complete'
+        ? `${discovered.domains.length} domains discovered. This cPanel connection is now securely saved for future synchronisation.`
+        : 'cPanel connected and the credentials are securely saved. The live domain scan needs another attempt; use Retry scan from Settings.',
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : 'The cPanel connection could not be completed.';

@@ -23,7 +23,7 @@ export async function POST(
   try {
     const db = await ensureHostingSchema();
     const connection = await db
-      .prepare(`SELECT id, name, base_url AS baseUrl, username, encrypted_token AS encryptedToken,
+      .prepare(`SELECT id, name, base_url AS baseUrl, username, mode, encrypted_token AS encryptedToken,
         encryption_iv AS encryptionIv FROM hosting_connections
         WHERE id = ? AND owner_user_id = ? AND provider = 'cpanel'`)
       .bind(connectionId, identity.userId)
@@ -44,15 +44,21 @@ export async function POST(
     });
 
     const now = new Date().toISOString();
+    const connectionStatus = discovered.scanStatus === 'complete'
+      ? String(connection.mode) === 'managed_write' ? 'connected_managed' : 'connected_read_only'
+      : 'connected_scan_issue';
     const statements = [
       db
         .prepare(`UPDATE hosting_connections SET
-          status = CASE WHEN mode = 'managed_write' THEN 'connected_managed' ELSE 'connected_read_only' END,
+          status = ?,
           capabilities_json = ?, last_sync_at = ?, updated_at = ?
           WHERE id = ? AND owner_user_id = ?`)
-        .bind(JSON.stringify(discovered.capabilities), now, now, connectionId, identity.userId),
-      db.prepare('UPDATE hosting_domains SET active = 0 WHERE connection_id = ?').bind(connectionId),
+        .bind(connectionStatus, JSON.stringify(discovered.capabilities), now, now, connectionId, identity.userId),
     ];
+
+    if (discovered.scanStatus === 'complete') {
+      statements.push(db.prepare('UPDATE hosting_domains SET active = 0 WHERE connection_id = ?').bind(connectionId));
+    }
 
     for (const domain of discovered.domains) {
       const domainId = await stableId(connectionId, domain.domain);
@@ -82,20 +88,24 @@ export async function POST(
       db
         .prepare(`INSERT INTO hosting_audit_events (
           id, owner_user_id, connection_id, action, target, outcome, details_json, created_at
-        ) VALUES (?, ?, ?, 'cpanel.read_only_sync', ?, 'success', ?, ?)`)
+        ) VALUES (?, ?, ?, 'cpanel.read_only_sync', ?, ?, ?, ?)`)
         .bind(
           crypto.randomUUID(),
           identity.userId,
           connectionId,
           discovered.baseUrl,
-          JSON.stringify({ domainCount: discovered.domains.length }),
+          discovered.scanStatus === 'complete' ? 'success' : 'warning',
+          JSON.stringify({ domainCount: discovered.domains.length, inventoryAttempts: discovered.inventoryAttempts }),
           now,
         ),
     );
     await db.batch(statements);
 
     return json({
-      message: `${String(connection.name)} synchronised successfully. ${discovered.domains.length} domains are current.`,
+      scanStatus: discovered.scanStatus,
+      message: discovered.scanStatus === 'complete'
+        ? `${String(connection.name)} synchronised successfully. ${discovered.domains.length} domains are current.`
+        : `${String(connection.name)} is connected, but the live domain scan still needs attention. The saved connection remains available for retrying.`,
       domainCount: discovered.domains.length,
       lastSyncAt: now,
     });
