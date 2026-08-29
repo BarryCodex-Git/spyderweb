@@ -367,13 +367,25 @@ function fileContent(value: unknown): string | null {
   return null;
 }
 
-async function publicWordPressInfo(domain: string) {
+type PublicWordPressInfo = {
+  detected: boolean;
+  checked: boolean;
+  siteName: string | null;
+  url: string;
+  version: string | null;
+};
+
+async function publicWordPressInfo(domain: string): Promise<PublicWordPressInfo> {
+  const baseUrl = `https://${domain}`;
+  let receivedResponse = false;
+
   try {
-    const response = await fetch(`https://${domain}/wp-json/`, {
+    const response = await fetch(`${baseUrl}/wp-json/`, {
       headers: { Accept: 'application/json' },
-      redirect: 'manual',
-      signal: AbortSignal.timeout(8_000),
+      redirect: 'follow',
+      signal: AbortSignal.timeout(12_000),
     });
+    receivedResponse = true;
     if (response.ok) {
       const payload = (await response.json()) as Record<string, unknown>;
       const namespaces = Array.isArray(payload.namespaces) ? payload.namespaces.map(String) : [];
@@ -382,29 +394,40 @@ async function publicWordPressInfo(domain: string) {
       if (isWordPress) {
         return {
           detected: true,
+          checked: true,
           siteName: cleanInventoryText(payload.name, 180),
-          url: cleanInventoryText(payload.url, 2048) ?? `https://${domain}`,
+          url: cleanInventoryText(payload.url, 2048) ?? response.url ?? baseUrl,
           version: null,
         };
       }
     }
   } catch {
-    // Some WordPress sites disable their public REST index. The homepage title is
-    // still a safe read-only fallback for identifying the installation.
+    // Some sites disable REST or do not yet have a working HTTPS document root.
+    // The homepage check below distinguishes an empty domain from an unreachable one.
   }
 
   try {
-    const response = await fetch(`https://${domain}/`, {
+    const response = await fetch(`${baseUrl}/`, {
       headers: { Accept: 'text/html' },
-      redirect: 'manual',
-      signal: AbortSignal.timeout(8_000),
+      redirect: 'follow',
+      signal: AbortSignal.timeout(12_000),
     });
-    if (!response.ok) return { detected: false, siteName: null, url: `https://${domain}`, version: null };
+    receivedResponse = true;
+    if (!response.ok && (response.status >= 500 || [401, 403, 429].includes(response.status))) {
+      return { detected: false, checked: false, siteName: null, url: response.url || baseUrl, version: null };
+    }
     const html = await response.text();
     const generator = html.match(/<meta[^>]+name=["']generator["'][^>]+content=["']WordPress\s*([^"']*)["']/i)
       ?? html.match(/<meta[^>]+content=["']WordPress\s*([^"']*)["'][^>]+name=["']generator["']/i);
-    const detected = Boolean(generator || /\bwp-(?:content|includes)\//i.test(html));
-    if (!detected) return { detected: false, siteName: null, url: `https://${domain}`, version: null };
+    const detected = Boolean(
+      generator
+      || /\bwp-(?:content|includes)\//i.test(html)
+      || /<link[^>]+https?:\/\/api\.w\.org\//i.test(html)
+      || /\/xmlrpc\.php(?:[?"'])/i.test(html),
+    );
+    if (!detected) {
+      return { detected: false, checked: true, siteName: null, url: response.url || baseUrl, version: null };
+    }
     const match = html.match(/<meta[^>]+property=["']og:site_name["'][^>]+content=["']([^"']+)["']/i)
       ?? html.match(/<meta[^>]+content=["']([^"']+)["'][^>]+property=["']og:site_name["']/i)
       ?? html.match(/<title[^>]*>([^<]+)<\/title>/i);
@@ -416,13 +439,28 @@ async function publicWordPressInfo(domain: string) {
       .trim();
     return {
       detected: true,
+      checked: true,
       siteName: cleanInventoryText(siteName, 180),
-      url: `https://${domain}`,
+      url: response.url || baseUrl,
       version: cleanInventoryText(generator?.[1], 80),
     };
   } catch {
-    return { detected: false, siteName: null, url: `https://${domain}`, version: null };
+    return { detected: false, checked: receivedResponse, siteName: null, url: baseUrl, version: null };
   }
+}
+
+async function mapWithConcurrency<T, R>(items: T[], limit: number, mapper: (item: T) => Promise<R>) {
+  const results = new Array<R>(items.length);
+  let nextIndex = 0;
+  const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (nextIndex < items.length) {
+      const index = nextIndex;
+      nextIndex += 1;
+      results[index] = await mapper(items[index]);
+    }
+  });
+  await Promise.all(workers);
+  return results;
 }
 
 function filemanRootCandidates(documentRoot: string, username: string) {
@@ -712,9 +750,13 @@ export async function discoverCpanel(input: {
     }
   }
 
-  const publicWordPressResults = await Promise.all(
-    [...domainTypes.keys()].map(async (domain) => {
+  const publicCheckedDomains = new Set<string>();
+  const publicWordPressResults = await mapWithConcurrency(
+    [...domainTypes.keys()],
+    4,
+    async (domain) => {
       const info = await publicWordPressInfo(domain);
+      if (info.checked) publicCheckedDomains.add(domain);
       if (!info.detected) return null;
       return {
         domain,
@@ -724,7 +766,7 @@ export async function discoverCpanel(input: {
         version: info.version,
         source: 'Public WordPress endpoint',
       } satisfies WordPressInstallation;
-    }),
+    },
   );
   let publicInstallationCount = 0;
   for (const installation of publicWordPressResults) {
@@ -744,7 +786,7 @@ export async function discoverCpanel(input: {
     source: 'Public WordPress endpoints',
     status: publicInstallationCount ? 'complete' : 'empty',
     domainCount: publicInstallationCount,
-    ...(!publicInstallationCount ? { message: 'No public WordPress endpoints responded.' } : {}),
+    message: `${publicInstallationCount} installations found; ${publicCheckedDomains.size - publicInstallationCount} domains confirmed without WordPress; ${domainTypes.size - publicCheckedDomains.size} domains could not be reached.`,
   });
 
   const fileCheckedDomains = new Set<string>();
@@ -793,7 +835,9 @@ export async function discoverCpanel(input: {
         phpVersion: php?.phpVersion ?? detail?.phpVersion ?? null,
         wordpressStatus: wordpress
           ? 'installed'
-          : managerInventoryComplete || fileCheckedDomains.has(domain) ? 'not_installed' : 'not_checked',
+          : managerInventoryComplete || fileCheckedDomains.has(domain) || publicCheckedDomains.has(domain)
+            ? 'not_installed'
+            : 'not_checked',
         wordpressVersion: wordpress?.version ?? null,
         wordpressSiteName: wordpress?.siteName ?? null,
         wordpressUrl: wordpress?.url ?? null,

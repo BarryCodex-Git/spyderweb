@@ -115,7 +115,7 @@ const viewCopy: Record<View, { eyebrow: string; title: string; subtitle: string 
   },
 };
 
-const columns: DomainStatus[] = ['Available', 'Template Loaded', 'Busy Working', 'Final Stages', 'Needs Inspection'];
+const columns: DomainStatus[] = ['Needs Inspection', 'Available', 'Template Loaded', 'Busy Working', 'Final Stages'];
 const buildStages = [
   'Setup',
   'Build Home Page',
@@ -162,7 +162,9 @@ function mapHostingDomains(records: HostingDomain[], connections: HostingConnect
   return records.map((record) => {
     const connection = connections.find((item) => item.id === record.connectionId);
     const installed = record.wordpressStatus === 'installed';
-    const isTemplate = installed && /(\btemplate\b|\bnew\s+(?:client\s+)?build\b)/i.test(record.wordpressSiteName ?? '');
+    const isTemplate = installed && /(\btemplate\b|\bnew\s+(?:client\s+)?build\b)/i.test(
+      `${record.domain} ${record.wordpressSiteName ?? ''}`,
+    );
     const isManuallyAvailable = record.workflowStatusOverride === 'Available';
     const status: DomainStatus = isManuallyAvailable
       ? 'Available'
