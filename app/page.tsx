@@ -1,7 +1,7 @@
 'use client';
 
 import Image from 'next/image';
-import { useState } from 'react';
+import { type FormEvent, useCallback, useEffect, useState } from 'react';
 
 type View = 'Dashboard' | 'Domains' | 'Projects' | 'Agent Activity' | 'Settings';
 type Developer = 'Barry' | 'Clive';
@@ -9,7 +9,7 @@ type DomainStatus = 'Available' | 'Template Loaded' | 'Busy Working' | 'Final St
 type HostingProvider = 'cPanel' | 'Hostinger';
 
 type Domain = {
-  id: number;
+  id: number | string;
   domain: string;
   client: string;
   status: DomainStatus;
@@ -19,6 +19,38 @@ type Domain = {
   wordpress: string;
   host: string;
   template: string;
+  source?: 'demo' | 'cpanel';
+  domainType?: string;
+  phpVersion?: string | null;
+};
+
+type HostingConnection = {
+  id: string;
+  provider: 'cpanel';
+  name: string;
+  baseUrl: string;
+  username: string;
+  primaryDomain: string;
+  status: string;
+  mode: 'read_only';
+  credentialStorage: 'transient';
+  capabilities: Record<string, boolean>;
+  writeActionsEnabled: number;
+  destructiveActionsEnabled: number;
+  confirmationPolicy: string;
+  lastSyncAt: string;
+};
+
+type HostingDomain = {
+  id?: string;
+  connectionId: string;
+  domain: string;
+  domainType: string;
+  documentRoot: string | null;
+  phpVersion: string | null;
+  wordpressStatus: string;
+  sslStatus: string;
+  lastSeenAt: string;
 };
 
 type Project = {
@@ -85,13 +117,13 @@ const buildStages = [
   'Ready to Delete',
 ];
 
-const domains: Domain[] = [
-  { id: 1, domain: 'dev-01.spyderweb.co.za', client: 'Ready for a new project', status: 'Available', progress: 0, wordpress: '6.8.2', host: 'HostAfrica', template: 'None' },
-  { id: 2, domain: 'dev-02.spyderweb.co.za', client: 'Ready for a new project', status: 'Available', progress: 0, wordpress: '6.8.2', host: 'HostAfrica', template: 'None' },
-  { id: 3, domain: 'dev-03.spyderweb.co.za', client: 'Approved template ready', status: 'Template Loaded', progress: 15, wordpress: '6.8.2', host: 'HostAfrica', template: 'Barry Core v4' },
-  { id: 4, domain: 'northstar-dev.co.za', client: 'Northstar Exterior', status: 'Busy Working', developer: 'Barry', stage: 'Build All Service Pages', progress: 62, wordpress: '6.8.2', host: 'HostAfrica', template: 'Barry Core v4' },
-  { id: 5, domain: 'clearwater-dev.co.za', client: 'Clearwater Plumbing', status: 'Busy Working', developer: 'Clive', stage: 'Review Home Page', progress: 38, wordpress: '6.8.2', host: 'HostAfrica', template: 'Custom' },
-  { id: 6, domain: 'oakandstone-dev.co.za', client: 'Oak & Stone', status: 'Final Stages', developer: 'Barry', stage: 'Launch Preparation', progress: 91, wordpress: '6.8.2', host: 'HostAfrica', template: 'Barry Core v4' },
+const demoDomains: Domain[] = [
+  { id: 1, domain: 'dev-01.spyderweb.co.za', client: 'Ready for a new project', status: 'Available', progress: 0, wordpress: '6.8.2', host: 'HostAfrica', template: 'None', source: 'demo' },
+  { id: 2, domain: 'dev-02.spyderweb.co.za', client: 'Ready for a new project', status: 'Available', progress: 0, wordpress: '6.8.2', host: 'HostAfrica', template: 'None', source: 'demo' },
+  { id: 3, domain: 'dev-03.spyderweb.co.za', client: 'Approved template ready', status: 'Template Loaded', progress: 15, wordpress: '6.8.2', host: 'HostAfrica', template: 'Barry Core v4', source: 'demo' },
+  { id: 4, domain: 'northstar-dev.co.za', client: 'Northstar Exterior', status: 'Busy Working', developer: 'Barry', stage: 'Build All Service Pages', progress: 62, wordpress: '6.8.2', host: 'HostAfrica', template: 'Barry Core v4', source: 'demo' },
+  { id: 5, domain: 'clearwater-dev.co.za', client: 'Clearwater Plumbing', status: 'Busy Working', developer: 'Clive', stage: 'Review Home Page', progress: 38, wordpress: '6.8.2', host: 'HostAfrica', template: 'Custom', source: 'demo' },
+  { id: 6, domain: 'oakandstone-dev.co.za', client: 'Oak & Stone', status: 'Final Stages', developer: 'Barry', stage: 'Launch Preparation', progress: 91, wordpress: '6.8.2', host: 'HostAfrica', template: 'Barry Core v4', source: 'demo' },
 ];
 
 const projects: Project[] = [
@@ -112,6 +144,33 @@ const activities = [
   { time: '09:55', agent: 'Barry', project: 'Oak & Stone', action: 'Moved the build into launch preparation.', status: 'Updated' },
 ];
 
+function mapHostingDomains(records: HostingDomain[], connections: HostingConnection[]): Domain[] {
+  return records.map((record) => {
+    const project = projects.find((item) => item.domain.toLowerCase() === record.domain.toLowerCase());
+    const connection = connections.find((item) => item.id === record.connectionId);
+    return {
+      id: record.id ?? `${record.connectionId}:${record.domain}`,
+      domain: record.domain,
+      client: project?.client ?? 'Available development domain',
+      status: project
+        ? project.progress >= 85
+          ? 'Final Stages'
+          : 'Busy Working'
+        : 'Available',
+      developer: project?.developer,
+      stage: project?.stage,
+      progress: project?.progress ?? 0,
+      wordpress:
+        record.wordpressStatus === 'installed' ? 'Installed' : 'Not checked yet',
+      host: connection?.name ?? 'Connected cPanel',
+      template: project?.buildType === 'Custom' ? 'Custom' : project ? 'Barry template' : 'Not linked',
+      source: 'cpanel',
+      domainType: record.domainType,
+      phpVersion: record.phpVersion,
+    };
+  });
+}
+
 export default function Home() {
   const [activeView, setActiveView] = useState<View>('Dashboard');
   const [launchOpen, setLaunchOpen] = useState(false);
@@ -123,11 +182,51 @@ export default function Home() {
   const [activityFilter, setActivityFilter] = useState<'All' | Developer>('All');
   const [hostingProvider, setHostingProvider] = useState<HostingProvider | null>(null);
   const [hostingNotice, setHostingNotice] = useState('');
+  const [hostingBusy, setHostingBusy] = useState(false);
+  const [hostingConnections, setHostingConnections] = useState<HostingConnection[]>([]);
+  const [managedDomains, setManagedDomains] = useState<Domain[]>(demoDomains);
+  const [inventoryIsLive, setInventoryIsLive] = useState(false);
 
   const copy = viewCopy[activeView];
   const selectedStageIndex = selectedProject
     ? Math.max(buildStages.indexOf(selectedProject.stage), 0)
     : 0;
+
+  const loadHostingInventory = useCallback(async () => {
+    try {
+      const response = await fetch('/api/hosting/cpanel', { cache: 'no-store' });
+      if (!response.ok) return;
+      const data = (await response.json()) as {
+        connections: HostingConnection[];
+        domains: HostingDomain[];
+      };
+      setHostingConnections(data.connections);
+      if (data.connections.length > 0) {
+        setManagedDomains(mapHostingDomains(data.domains, data.connections));
+        setInventoryIsLive(true);
+      }
+    } catch {
+      // The existing demo remains visible until a live inventory is available.
+    }
+  }, []);
+
+  useEffect(() => {
+    let active = true;
+    fetch('/api/hosting/cpanel', { cache: 'no-store' })
+      .then((response) => (response.ok ? response.json() : null))
+      .then((data: { connections: HostingConnection[]; domains: HostingDomain[] } | null) => {
+        if (!active || !data) return;
+        setHostingConnections(data.connections);
+        if (data.connections.length > 0) {
+          setManagedDomains(mapHostingDomains(data.domains, data.connections));
+          setInventoryIsLive(true);
+        }
+      })
+      .catch(() => undefined);
+    return () => {
+      active = false;
+    };
+  }, []);
 
   function changeView(view: View) {
     setActiveView(view);
@@ -168,6 +267,43 @@ export default function Home() {
     setNotice(`Demo build prepared for ${developer}. No live domain was changed.`);
   }
 
+  async function connectHosting(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (hostingProvider !== 'cPanel') {
+      setHostingNotice('Hostinger will be connected after the cPanel integration is proven.');
+      return;
+    }
+
+    const form = event.currentTarget;
+    const formData = new FormData(form);
+    setHostingBusy(true);
+    setHostingNotice('Testing the secure connection and scanning domains…');
+    try {
+      const response = await fetch('/api/hosting/cpanel', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: formData.get('name'),
+          baseUrl: formData.get('baseUrl'),
+          username: formData.get('username'),
+          token: formData.get('token'),
+          primaryDomain: formData.get('primaryDomain'),
+          readOnly: formData.get('readOnly') === 'on',
+        }),
+      });
+      const result = (await response.json()) as { error?: string; message?: string };
+      if (!response.ok) throw new Error(result.error || 'The cPanel connection failed.');
+      const tokenInput = form.elements.namedItem('token') as HTMLInputElement | null;
+      if (tokenInput) tokenInput.value = '';
+      await loadHostingInventory();
+      setHostingNotice(result.message || 'cPanel connected in read-only mode.');
+    } catch (error) {
+      setHostingNotice(error instanceof Error ? error.message : 'The cPanel connection failed.');
+    } finally {
+      setHostingBusy(false);
+    }
+  }
+
   return (
     <main className="app-shell">
       <aside className="sidebar">
@@ -194,11 +330,11 @@ export default function Home() {
           </div>
         </header>
 
-        {activeView === 'Dashboard' && <Dashboard onDomain={openDashboardDomain} onLaunch={openLaunch} />}
-        {activeView === 'Domains' && <DomainsView onDomain={setSelectedDomain} onNotice={setNotice} notice={notice} />}
+        {activeView === 'Dashboard' && <Dashboard domains={managedDomains} onDomain={openDashboardDomain} onLaunch={openLaunch} inventoryIsLive={inventoryIsLive} />}
+        {activeView === 'Domains' && <DomainsView domains={managedDomains} onDomain={setSelectedDomain} onNotice={setNotice} notice={notice} inventoryIsLive={inventoryIsLive} />}
         {activeView === 'Projects' && <ProjectsView onProject={setSelectedProject} />}
         {activeView === 'Agent Activity' && <AgentActivity filter={activityFilter} onFilter={setActivityFilter} />}
-        {activeView === 'Settings' && <SettingsView onConnect={(provider) => { setHostingNotice(''); setHostingProvider(provider); }} />}
+        {activeView === 'Settings' && <SettingsView connections={hostingConnections} onConnect={(provider) => { setHostingNotice(''); setHostingProvider(provider); }} />}
       </section>
 
       {hostingProvider && !launchOpen && (
@@ -208,7 +344,7 @@ export default function Home() {
             <header className="hosting-modal-header">
               <span className={`provider-logo ${hostingProvider.toLowerCase()}`}>{hostingProvider === 'cPanel' ? 'cP' : 'H'}</span>
               <div><p className="eyebrow">Hosting connection</p><h2>Connect {hostingProvider}</h2><p>Follow the guide, then prepare the account for its first read-only discovery.</p></div>
-              <span className="setup-status">Connector required</span>
+              <span className={`setup-status ${hostingConnections.length ? 'connected' : ''}`}>{hostingConnections.length ? 'Read-only connected' : 'Ready to connect'}</span>
             </header>
             <div className="hosting-modal-body">
               <section className="connection-guide">
@@ -229,18 +365,18 @@ export default function Home() {
                     <div className="guide-step" key={title}><span>{index + 1}</span><div><strong>{title}</strong><p>{description}</p></div></div>
                   ))}
                 </div>
-                <div className="security-callout"><strong>Local-first security</strong><p>Credentials will be stored by the encrypted local connector—not in this browser screen or in the hosted project database.</p></div>
+                <div className="security-callout"><strong>Token is not stored</strong><p>The token travels through the private server only for this scan. SpyderWeb stores the domain inventory and connection details, but discards the token.</p></div>
               </section>
 
-              <form className="hosting-form" onSubmit={(event) => { event.preventDefault(); setHostingNotice('Setup fields checked. Nothing was saved or sent. The secure local connector must be installed before the live connection test.'); }}>
-                <div><p className="eyebrow">Connection details</p><h3>{hostingProvider} account</h3><p>These fields show exactly what the secure connection will require.</p></div>
-                <label>Connection name<input required placeholder={hostingProvider === 'cPanel' ? 'Main DEV cPanel' : 'Hostinger DEV account'} /></label>
-                {hostingProvider === 'cPanel' && <><label>Secure cPanel URL<input required type="url" placeholder="https://server.example.com:2083" /></label><label>cPanel username<input required autoComplete="username" placeholder="Account username" /></label></>}
-                <label>{hostingProvider === 'cPanel' ? 'cPanel API token' : 'Hostinger API token'}<input required type="password" autoComplete="new-password" placeholder="Paste token when the local connector is ready" /></label>
-                <label>Primary development domain<input required placeholder="dev.example.co.za" /></label>
-                <label className="read-only-option"><input type="checkbox" defaultChecked /><span><strong>Read-only first synchronisation</strong><small>Discover domains and capabilities without changing hosting data.</small></span></label>
+              <form className="hosting-form" onSubmit={connectHosting}>
+                <div><p className="eyebrow">Connection details</p><h3>{hostingProvider} account</h3><p>{hostingProvider === 'cPanel' ? 'Test the real API connection and import the domain inventory.' : 'This provider is still in preparation.'}</p></div>
+                <label>Connection name<input name="name" required placeholder={hostingProvider === 'cPanel' ? 'Main DEV cPanel' : 'Hostinger DEV account'} /></label>
+                {hostingProvider === 'cPanel' && <><label>Secure cPanel URL<input name="baseUrl" required type="url" placeholder="https://server.example.com:2083" /></label><label>cPanel username<input name="username" required autoComplete="username" placeholder="Account username" /></label></>}
+                <label>{hostingProvider === 'cPanel' ? 'cPanel API token' : 'Hostinger API token'}<input name="token" required type="password" autoComplete="new-password" placeholder="Paste the API token" /></label>
+                <label>Primary development domain<input name="primaryDomain" required placeholder="dev.example.co.za" /></label>
+                <label className="read-only-option"><input name="readOnly" type="checkbox" defaultChecked required /><span><strong>Read-only synchronisation</strong><small>This version can discover and save domain information, but cannot change hosting data.</small></span></label>
                 {hostingNotice && <p className="notice">{hostingNotice}</p>}
-                <div className="hosting-form-actions"><button className="text-button" type="button" onClick={() => setHostingProvider(null)}>Cancel</button><button className="primary-button" type="submit">Check setup</button></div>
+                <div className="hosting-form-actions"><button className="text-button" type="button" onClick={() => setHostingProvider(null)}>Close</button><button className="primary-button" type="submit" disabled={hostingBusy}>{hostingBusy ? 'Connecting…' : hostingConnections.length ? 'Reconnect & scan' : 'Connect & scan'}</button></div>
               </form>
             </div>
           </section>
@@ -257,14 +393,15 @@ export default function Home() {
               <div><span>Status</span><strong>{selectedDomain.status}</strong></div>
               <div><span>Developer</span><strong>{selectedDomain.developer ?? 'Not allocated'}</strong></div>
               <div><span>WordPress</span><strong>{selectedDomain.wordpress}</strong></div>
+              <div><span>PHP version</span><strong>{selectedDomain.phpVersion ?? 'Not reported'}</strong></div>
               <div><span>Template</span><strong>{selectedDomain.template}</strong></div>
               <div><span>Current stage</span><strong>{selectedDomain.stage ?? 'Ready to begin'}</strong></div>
             </div>
             <h3>Safe domain actions</h3>
-            <button className="secondary-button" onClick={() => setNotice('Demo only: WordPress installation check prepared.')}>Fresh WordPress installation</button>
-            <button className="secondary-button" onClick={() => setNotice('Demo only: approved template import prepared.')}>Load approved template</button>
+            <button className="secondary-button" disabled>Fresh WordPress installation · Locked</button>
+            <button className="secondary-button" disabled>Load approved template · Locked</button>
             {notice && <p className="notice">{notice}</p>}
-            <small className="simulation-note">Demo only — no live server actions are connected.</small>
+            <small className="simulation-note">Read-only protection is active. Write actions will unlock only after the capability review and protected approval flow are complete.</small>
           </aside>
         </div>
       )}
@@ -340,7 +477,7 @@ export default function Home() {
             <p className="eyebrow">Launch a website build</p><h2>Three simple steps</h2>
             <div className="stepper">{[1, 2, 3].map((step) => <span className={launchStep >= step ? 'active' : ''} key={step}>{step}</span>)}</div>
             {launchStep === 1 && <div className="launch-panel"><h3>Who should build it?</h3><p>Barry handles approved templates. Clive handles custom websites.</p><div className="developer-options">{(['Barry', 'Clive'] as const).map((name) => <button className={developer === name ? 'selected' : ''} key={name} onClick={() => setDeveloper(name)}><span className={`avatar ${name.toLowerCase()}`}>{name[0]}</span><strong>{name}</strong><small>{name === 'Barry' ? 'Template builds' : 'Custom builds'}</small></button>)}</div></div>}
-            {launchStep === 2 && <div className="launch-panel"><h3>Select a development domain</h3><p>Choose one of the available, connected WordPress spaces.</p><div className="domain-options">{domains.filter((domain) => domain.status === 'Available').map((domain) => <button className={selectedDomain?.id === domain.id ? 'selected' : ''} key={domain.id} onClick={() => setSelectedDomain(domain)}><span>◎</span><strong>{domain.domain}</strong><small>Available</small></button>)}</div></div>}
+            {launchStep === 2 && <div className="launch-panel"><h3>Select a development domain</h3><p>Choose one of the available, connected WordPress spaces.</p><div className="domain-options">{managedDomains.filter((domain) => domain.status === 'Available').map((domain) => <button className={selectedDomain?.id === domain.id ? 'selected' : ''} key={domain.id} onClick={() => setSelectedDomain(domain)}><span>◎</span><strong>{domain.domain}</strong><small>Available</small></button>)}</div></div>}
             {launchStep === 3 && <div className="launch-panel"><h3>Client intake & assets</h3><p>Add the essentials now. The detailed form can follow inside the project.</p><label>Client or business name<input placeholder="e.g. Acme Plumbing" /></label><label>Project notes<textarea placeholder="What does the client need?" rows={3} /></label><button className="upload-box"><span>↑</span><strong>Upload client assets</strong><small>Logos, photos and documents</small></button></div>}
             {notice && <p className="notice success">{notice}</p>}
             <div className="modal-footer"><button className="text-button" onClick={() => launchStep > 1 ? setLaunchStep((step) => step - 1) : setLaunchOpen(false)}>{launchStep > 1 ? 'Back' : 'Cancel'}</button><button className="primary-button" onClick={continueLaunch}>{launchStep < 3 ? 'Continue' : 'Prepare Build'}</button></div>
@@ -351,14 +488,16 @@ export default function Home() {
   );
 }
 
-function Dashboard({ onDomain, onLaunch }: { onDomain: (domain: Domain) => void; onLaunch: () => void }) {
+function Dashboard({ domains, onDomain, onLaunch, inventoryIsLive }: { domains: Domain[]; onDomain: (domain: Domain) => void; onLaunch: () => void; inventoryIsLive: boolean }) {
+  const availableCount = domains.filter((domain) => domain.status === 'Available').length;
+  const finalCount = domains.filter((domain) => domain.status === 'Final Stages').length;
   return (
     <>
       <section className="summary-row" aria-label="Platform summary">
-        <div className="summary-card featured"><div><span className="summary-icon">⌁</span><p>Development domains</p><strong>{domains.length}</strong></div><span className="trend">All connected</span></div>
-        <div className="summary-card"><div><span className="summary-icon purple">◇</span><p>Available now</p><strong>2</strong></div><span className="trend positive">Ready</span></div>
+        <div className="summary-card featured"><div><span className="summary-icon">⌁</span><p>Development domains</p><strong>{domains.length}</strong></div><span className="trend">{inventoryIsLive ? 'Live inventory' : 'Demo data'}</span></div>
+        <div className="summary-card"><div><span className="summary-icon purple">◇</span><p>Available now</p><strong>{availableCount}</strong></div><span className="trend positive">Ready</span></div>
         <div className="summary-card"><div><span className="summary-icon blue">▣</span><p>Active builds</p><strong>{projects.length}</strong></div><span className="trend">In progress</span></div>
-        <div className="summary-card"><div><span className="summary-icon navy">✓</span><p>Final stages</p><strong>1</strong></div><span className="trend positive">On track</span></div>
+        <div className="summary-card"><div><span className="summary-icon navy">✓</span><p>Final stages</p><strong>{finalCount}</strong></div><span className="trend positive">On track</span></div>
       </section>
       <section className="board-section">
         <div className="section-heading"><div><p className="eyebrow">Domain board</p><h2>Website workspace</h2></div><div className="board-tools"><button>All developers⌄</button><button>Filter</button></div></div>
@@ -393,17 +532,20 @@ function DomainCard({ domain, onClick }: { domain: Domain; onClick: () => void }
   );
 }
 
-function DomainsView({ onDomain, onNotice, notice }: { onDomain: (domain: Domain) => void; onNotice: (message: string) => void; notice: string }) {
+function DomainsView({ domains, onDomain, onNotice, notice, inventoryIsLive }: { domains: Domain[]; onDomain: (domain: Domain) => void; onNotice: (message: string) => void; notice: string; inventoryIsLive: boolean }) {
+  const availableCount = domains.filter((domain) => domain.status === 'Available').length;
+  const templateCount = domains.filter((domain) => domain.status === 'Template Loaded').length;
+  const attentionCount = domains.filter((domain) => domain.wordpress === 'Not checked yet').length;
   return (
     <div className="view-stack">
       <section className="mini-summary-row">
-        <div><span>Connected domains</span><strong>6</strong><small>All responding</small></div>
-        <div><span>Available</span><strong>2</strong><small>Ready for allocation</small></div>
-        <div><span>Templates loaded</span><strong>2</strong><small>Approved versions</small></div>
-        <div><span>Needs attention</span><strong>0</strong><small>No current blockers</small></div>
+        <div><span>{inventoryIsLive ? 'Connected domains' : 'Demo domains'}</span><strong>{domains.length}</strong><small>{inventoryIsLive ? 'Imported from cPanel' : 'Waiting for connection'}</small></div>
+        <div><span>Available</span><strong>{availableCount}</strong><small>Ready for allocation</small></div>
+        <div><span>Templates loaded</span><strong>{templateCount}</strong><small>Project-linked status</small></div>
+        <div><span>Needs inspection</span><strong>{attentionCount}</strong><small>WordPress scan comes next</small></div>
       </section>
       <section className="panel">
-        <div className="section-heading"><div><p className="eyebrow">Connected installations</p><h2>WordPress domain inventory</h2></div><button className="outline-button" onClick={() => onNotice('Demo connection check completed: all domains responded.')}>Check all connections</button></div>
+        <div className="section-heading"><div><p className="eyebrow">Connected installations</p><h2>WordPress domain inventory</h2></div><button className="outline-button" onClick={() => onNotice(inventoryIsLive ? 'For safety, open Settings and provide the API token again to refresh this inventory.' : 'Connect cPanel in Settings to replace this demo inventory with live domains.')}>{inventoryIsLive ? 'How to refresh' : 'Connection status'}</button></div>
         {notice && <p className="notice inline-notice">{notice}</p>}
         <div className="data-table domain-table">
           <div className="table-row table-head"><span>Domain</span><span>Status</span><span>WordPress</span><span>Template</span><span>Host</span><span /></div>
@@ -482,7 +624,8 @@ function AgentActivity({ filter, onFilter }: { filter: 'All' | Developer; onFilt
   );
 }
 
-function SettingsView({ onConnect }: { onConnect: (provider: HostingProvider) => void }) {
+function SettingsView({ connections, onConnect }: { connections: HostingConnection[]; onConnect: (provider: HostingProvider) => void }) {
+  const cpanelConnection = connections.find((connection) => connection.provider === 'cpanel');
   return (
     <div className="settings-stack">
       <section className="settings-account-grid">
@@ -498,13 +641,14 @@ function SettingsView({ onConnect }: { onConnect: (provider: HostingProvider) =>
       </section>
 
       <section className="panel hosting-settings-panel">
-        <div className="section-heading"><div><p className="eyebrow">Hosting accounts</p><h2>Connect your development hosting</h2><p>Start with read-only discovery. Live server actions will always show an approval step.</p></div><span className="connection-count">0 connected</span></div>
+        <div className="section-heading"><div><p className="eyebrow">Hosting accounts</p><h2>Connect your development hosting</h2><p>Start with read-only discovery. cPanel project reporting remains completely separate.</p></div><span className={`connection-count ${connections.length ? 'connected' : ''}`}>{connections.length} connected</span></div>
         <div className="hosting-provider-grid">
           <article className="hosting-provider-card">
-            <div className="provider-card-top"><span className="provider-logo cpanel">cP</span><span className="not-connected">Not connected</span></div>
+            <div className="provider-card-top"><span className="provider-logo cpanel">cP</span><span className={`not-connected ${cpanelConnection ? 'connected' : ''}`}>{cpanelConnection ? 'Read-only connected' : 'Not connected'}</span></div>
             <h3>cPanel</h3><p>Connect the shared hosting account that manages your main development domain and WordPress subdomains.</p>
-            <ul><li>Discover development domains</li><li>Check WordPress and PHP</li><li>Prepare safe hosting actions</li></ul>
-            <button className="primary-button" onClick={() => onConnect('cPanel')}>Set up cPanel</button>
+            <ul><li>Discover and save live domains</li><li>Check available cPanel features</li><li>Keep all write actions locked</li></ul>
+            {cpanelConnection && <div className="connection-summary"><strong>{cpanelConnection.name}</strong><small>{cpanelConnection.baseUrl}</small><small>Last scan: {new Date(cpanelConnection.lastSyncAt).toLocaleString()}</small></div>}
+            <button className="primary-button" onClick={() => onConnect('cPanel')}>{cpanelConnection ? 'Reconnect & scan' : 'Set up cPanel'}</button>
           </article>
           <article className="hosting-provider-card">
             <div className="provider-card-top"><span className="provider-logo hostinger">H</span><span className="not-connected">Not connected</span></div>
@@ -515,7 +659,17 @@ function SettingsView({ onConnect }: { onConnect: (provider: HostingProvider) =>
         </div>
       </section>
 
-      <section className="settings-note"><span>⌁</span><div><strong>Local connector comes next</strong><p>The connector will keep hosting tokens on this computer, communicate with cPanel and Hostinger, and send only domain status information back to SpyderWeb.</p></div></section>
+      <section className="safety-policy-panel">
+        <div><span className="safety-icon">✓</span><div><p className="eyebrow">Hosting safety</p><h2>Destructive action lock</h2><p>Write and destructive operations are disabled in both the interface and backend.</p></div></div>
+        <div className="safety-rules">
+          <span><b>1</b><strong>Fresh backup required</strong><small>No overwrite or deletion without a verified restore point.</small></span>
+          <span><b>2</b><strong>Exact domain confirmation</strong><small>The full domain must be entered before the action can continue.</small></span>
+          <span><b>3</b><strong>Owner one-time code</strong><small>A separate expiring approval code will be required when write access is introduced.</small></span>
+        </div>
+        <strong className="hard-lock">Read-only hard lock active</strong>
+      </section>
+
+      <section className="settings-note"><span>⌁</span><div><strong>Easy to extend after the scan</strong><p>The cPanel API and domain inventory are now separated from the project workflow. WordPress, PHP and user-management actions can be added behind the safety policy without rebuilding the dashboard.</p></div></section>
     </div>
   );
 }
