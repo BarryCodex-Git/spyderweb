@@ -46,6 +46,9 @@ type Api2Envelope = {
   };
 };
 
+class CpanelAuthenticationError extends Error {}
+class CpanelFunctionError extends Error {}
+
 const allowedPorts = new Set(['443', '2083']);
 
 function isPrivateIpv4(hostname: string) {
@@ -119,7 +122,7 @@ async function uapi(
     );
   }
   if (response.status === 401 || response.status === 403) {
-    throw new Error('cPanel rejected the username or API token. Check both and try again.');
+    throw new CpanelAuthenticationError('cPanel rejected the username or API token. Check both and try again.');
   }
   if (!response.ok) {
     throw new Error(`The cPanel server returned ${response.status}. Check the secure URL and hosting access.`);
@@ -132,7 +135,7 @@ async function uapi(
     const detail =
       (Array.isArray(errors) ? errors[0] : errors) ||
       (Array.isArray(messages) ? messages[0] : messages);
-    throw new Error(detail || `cPanel could not run ${module}/${fn}.`);
+    throw new CpanelFunctionError(detail || `cPanel could not run ${module}/${fn}.`);
   }
   return payload.result.data;
 }
@@ -159,7 +162,7 @@ async function api2ListSubdomains(baseUrl: string, username: string, token: stri
     throw new Error('The shared-host compatibility endpoint redirected the request.');
   }
   if (response.status === 401 || response.status === 403) {
-    throw new Error('cPanel did not authorise the shared-host compatibility endpoint.');
+    throw new CpanelAuthenticationError('cPanel rejected the username or API token. Check both and try again.');
   }
   if (!response.ok) {
     throw new Error(`The shared-host compatibility endpoint returned ${response.status}.`);
@@ -168,7 +171,7 @@ async function api2ListSubdomains(baseUrl: string, username: string, token: stri
   const payload = (await response.json()) as Api2Envelope;
   const result = payload.cpanelresult;
   if (!result || result.event?.result !== 1) {
-    throw new Error(result?.reason || result?.error || 'The shared-host compatibility endpoint was unavailable.');
+    throw new CpanelFunctionError(result?.reason || result?.error || 'The shared-host compatibility endpoint was unavailable.');
   }
   return result.data;
 }
@@ -251,23 +254,24 @@ export async function discoverCpanel(input: {
   const username = validateCredentialPart(input.username, 'cPanel username', 128);
   const token = validateCredentialPart(input.token, 'cPanel API token', 4096);
 
-  // Authentication and inventory are separate stages. A valid connection should
-  // remain usable and retryable even if one host-specific inventory API is blank.
-  await uapi(baseUrl, username, token, 'Variables', 'get_user_information');
-
   let listData: Record<string, unknown> | null = null;
   let detailData: unknown = null;
   let webVhostData: unknown = null;
   let legacySubdomainData: unknown = null;
   const inventoryAttempts: CpanelInventoryAttempt[] = [];
+  let authenticatedResponses = 0;
+  let authenticationRejections = 0;
 
   const recordAttempt = (source: string, data: unknown) => {
+    authenticatedResponses += 1;
     const domainCount = collectDetails(data).size;
     inventoryAttempts.push({ source, status: domainCount ? 'complete' : 'empty', domainCount });
     return data;
   };
 
   const recordFailure = (source: string, error: unknown) => {
+    if (error instanceof CpanelFunctionError) authenticatedResponses += 1;
+    if (error instanceof CpanelAuthenticationError) authenticationRejections += 1;
     inventoryAttempts.push({
       source,
       status: 'unavailable',
@@ -290,6 +294,13 @@ export async function discoverCpanel(input: {
       .then((data) => (legacySubdomainData = recordAttempt('Shared-host compatibility scan', data)))
       .catch((error) => recordFailure('Shared-host compatibility scan', error)),
   ]);
+
+  if (!authenticatedResponses) {
+    if (authenticationRejections) {
+      throw new Error('cPanel rejected the username or API token. Check both and try again.');
+    }
+    throw new Error('SpyderWeb could not verify this cPanel endpoint. Check the secure cPanel URL and try again.');
+  }
 
   const domainTypes = new Map<string, CpanelDomain['domainType']>();
   const add = (items: string[], type: CpanelDomain['domainType']) =>
