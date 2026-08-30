@@ -12,7 +12,7 @@ The first clickable GUI is running and includes:
 - A three-step **Launch Build** flow.
 - Assignment to Barry for template builds or Clive for custom builds.
 - Development-domain selection, client notes, and an asset-upload placeholder.
-- A successful cPanel connection immediately activates domain inventory and PHP controls using the encrypted API token. Softaculous WordPress controls are activated once from the saved account in Settings with the cPanel account password, because this host does not accept cPanel API tokens for Softaculous. Activation performs only a read-only installation-list check before encrypting the password. Live WordPress installation, removal, backup and template cloning remain protected by per-domain soft locks and clear confirmations. Clean installation and template loading re-check the live inventory, fully remove and verify any existing Softaculous installation, and only then create the replacement.
+- A successful cPanel connection immediately activates domain inventory and PHP controls using the encrypted API token. Softaculous WordPress controls are activated once from the saved account in Settings with the cPanel account password, because this host does not accept cPanel API tokens for Softaculous. Activation performs only a read-only installation-list check before encrypting the password. Live WordPress installation, removal, backup and template cloning remain protected by per-domain soft locks and clear confirmations. Clean installation and template loading re-check the live inventory, fully remove and verify any existing Softaculous installation, generate a new unique database, and only then create the replacement.
 
 The interface uses mid blue, dark blue, and dark purple accents with a custom SpyderWeb logo.
 

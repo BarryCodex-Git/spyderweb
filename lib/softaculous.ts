@@ -161,13 +161,15 @@ export async function softaculousAction(input: {
   adminPassword?: string;
   adminEmail?: string;
   siteName?: string;
+  databaseName?: string;
 }) {
   if (input.action === 'install') {
+    if (!input.databaseName) throw new Error('SpyderWeb could not prepare a fresh WordPress database name.');
     return request({
       baseUrl: input.baseUrl, credential: input.credential,
       query: { act: 'software', soft: '26' },
       form: {
-        softsubmit: '1', softdomain: input.domain, softdirectory: '', softproto: '3',
+        softsubmit: '1', softdomain: input.domain, softdirectory: '', softproto: '3', softdb: input.databaseName,
         site_name: input.siteName || 'New Client Website',
         admin_username: input.adminUsername || '', admin_pass: input.adminPassword || '',
         admin_email: input.adminEmail || '',
@@ -177,10 +179,11 @@ export async function softaculousAction(input: {
     });
   }
   if (input.action === 'clone') {
+    if (!input.databaseName) throw new Error('SpyderWeb could not prepare a fresh template database name.');
     return request({
       baseUrl: input.baseUrl, credential: input.credential,
       query: { act: 'sclone', insid: input.sourceInstallationId || '' },
-      form: { softsubmit: '1', softdomain: input.domain, softdirectory: '', softproto: '3' },
+      form: { softsubmit: '1', softdomain: input.domain, softdirectory: '', softproto: '3', softdb: input.databaseName },
     });
   }
   if (input.action === 'backup') {

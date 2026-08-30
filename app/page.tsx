@@ -793,8 +793,15 @@ export default function Home() {
   async function executeWordpressAction(domain: Domain, action: WordPressAction, confirmReplacement = false) {
     if (typeof domain.id !== 'string') return;
     const toastId = `wordpress-${action}-${domain.id}`;
+    const actionLabels: Record<WordPressAction, string> = {
+      install: 'Installing clean WordPress',
+      clone_template: 'Loading the default template',
+      create_restore_point: 'Creating the optional backup',
+      apply_php_profile: 'Applying recommended PHP limits',
+      delete: 'Deleting WordPress',
+    };
     setWordpressActionBusy(true);
-    showActionToast({ id: toastId, status: 'progress', title: 'Authorising WordPress action', message: `Checking every safety gate for ${domain.domain}.` });
+    showActionToast({ id: toastId, status: 'progress', title: actionLabels[action], message: `Working on ${domain.domain}. This may take a few minutes.` });
     try {
       const response = await fetch(`/api/hosting/domains/${domain.id}/wordpress`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -811,7 +818,7 @@ export default function Home() {
       await loadHostingInventory();
       showActionToast({ id: toastId, status: result.warning ? 'warning' : 'success', title: result.warning ? 'Action needs verification' : 'Action completed', message: result.message || 'The action completed.' });
     } catch (error) {
-      showActionToast({ id: toastId, status: 'error', title: 'Action blocked', message: error instanceof Error ? error.message : 'The WordPress action was blocked.' });
+      showActionToast({ id: toastId, status: 'error', title: 'WordPress action failed', message: error instanceof Error ? error.message : 'The WordPress action could not be completed.' });
     } finally { setWordpressActionBusy(false); }
   }
 

@@ -104,6 +104,12 @@ export async function POST(request: Request, { params }: { params: Promise<{ dom
     const baseUrl = String(connection.baseUrl);
     const replacementConfirmed = body.confirmReplacement === true;
 
+    function freshDatabaseName() {
+      // Softaculous requires a database for both fresh installs and clones.
+      // Keep the suffix short so cPanel can safely add its account prefix.
+      return `sw${crypto.randomUUID().replaceAll('-', '').slice(0, 10)}`;
+    }
+
     async function prepareCleanDestination(operationLabel: string) {
       if (!record) throw new Error('This development domain was not found.');
       const installations = await listSoftaculousInstallations(baseUrl, secrets);
@@ -165,7 +171,8 @@ export async function POST(request: Request, { params }: { params: Promise<{ dom
     } else if (action === 'install') {
       await prepareCleanDestination('installing clean WordPress');
       await softaculousAction({ baseUrl, credential: secrets, action: 'install', domain: record.domain,
-        adminUsername: secrets.adminUsername, adminPassword: secrets.adminPassword, adminEmail: secrets.adminEmail });
+        databaseName: freshDatabaseName(), adminUsername: secrets.adminUsername,
+        adminPassword: secrets.adminPassword, adminEmail: secrets.adminEmail });
       const refreshed = await refreshDomainWordPress(db, { ownerUserId: identity.userId, domainId: record.id,
         domain: record.domain, baseUrl, credential: secrets, expected: 'installed' });
       if (!refreshed.verified) verificationWarning = 'Softaculous accepted the installation but has not reported the new installation yet. SpyderWeb marked it for inspection; scan again shortly.';
@@ -184,7 +191,8 @@ export async function POST(request: Request, { params }: { params: Promise<{ dom
       const template = liveInstallations.find((installation) => installation.domain === templateDomain);
       if (!template?.id) throw new Error(`Softaculous did not identify the template installation on ${templateDomain}. Scan the hosting account again before loading it.`);
       await prepareCleanDestination('loading the default template');
-      await softaculousAction({ baseUrl, credential: secrets, action: 'clone', domain: record.domain, sourceInstallationId: template.id });
+      await softaculousAction({ baseUrl, credential: secrets, action: 'clone', domain: record.domain,
+        sourceInstallationId: template.id, databaseName: freshDatabaseName() });
       const refreshed = await refreshDomainWordPress(db, { ownerUserId: identity.userId, domainId: record.id,
         domain: record.domain, baseUrl, credential: secrets, expected: 'template' });
       if (!refreshed.verified) verificationWarning = 'Softaculous accepted the clone but has not reported the destination yet. SpyderWeb marked it for inspection; scan again shortly.';
