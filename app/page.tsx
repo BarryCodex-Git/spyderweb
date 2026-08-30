@@ -288,7 +288,7 @@ export default function Home() {
   const [settingsHostingNotice, setSettingsHostingNotice] = useState('');
   const [actionToasts, setActionToasts] = useState<ActionToast[]>([]);
   const [auditEvents, setAuditEvents] = useState<AuditEvent[]>([]);
-  const [wordpressAction, setWordpressAction] = useState<{ domain: Domain; action: WordPressAction } | null>(null);
+  const [wordpressAction, setWordpressAction] = useState<{ domain: Domain; action: WordPressAction; detectedSiteName?: string } | null>(null);
   const [wordpressActionBusy, setWordpressActionBusy] = useState(false);
   const [projectRecords, setProjectRecords] = useState<Project[]>([]);
   const [projectEvents, setProjectEvents] = useState<ProjectEvent[]>([]);
@@ -790,7 +790,7 @@ export default function Home() {
     }
   }
 
-  async function executeWordpressAction(domain: Domain, action: WordPressAction) {
+  async function executeWordpressAction(domain: Domain, action: WordPressAction, confirmReplacement = false) {
     if (typeof domain.id !== 'string') return;
     const toastId = `wordpress-${action}-${domain.id}`;
     setWordpressActionBusy(true);
@@ -798,9 +798,14 @@ export default function Home() {
     try {
       const response = await fetch(`/api/hosting/domains/${domain.id}/wordpress`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action }),
+        body: JSON.stringify({ action, confirmReplacement }),
       });
-      const result = await response.json() as { error?: string; message?: string; warning?: boolean };
+      const result = await response.json() as { error?: string; message?: string; warning?: boolean; requiresConfirmation?: boolean; replacementSiteName?: string | null };
+      if (!response.ok && result.requiresConfirmation) {
+        setWordpressAction({ domain, action, detectedSiteName: result.replacementSiteName || undefined });
+        showActionToast({ id: toastId, status: 'warning', title: 'Replacement confirmation required', message: result.error || `Confirm the clean replacement of ${domain.domain}.` });
+        return;
+      }
       if (!response.ok) throw new Error(result.error || 'The WordPress action was blocked.');
       setWordpressAction(null);
       await loadHostingInventory();
@@ -813,7 +818,7 @@ export default function Home() {
   async function runWordpressAction(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!wordpressAction) return;
-    await executeWordpressAction(wordpressAction.domain, wordpressAction.action);
+    await executeWordpressAction(wordpressAction.domain, wordpressAction.action, true);
   }
 
   return (
@@ -989,6 +994,7 @@ export default function Home() {
                     <button className="secondary-button" disabled={wordpressActionBusy || !selectedDomainOperational} onClick={() => void executeWordpressAction(selectedDomain, 'clone_template')}>Load default template</button>
                   </>}
                   {selectedDomain.wordpress.startsWith('Installed') && <>
+                    <button className="secondary-button" disabled={wordpressActionBusy || selectedDomain.softLocked || !selectedDomainOperational} onClick={() => setWordpressAction({ domain: selectedDomain, action: 'install' })}>{selectedDomain.softLocked ? 'Install clean WordPress · unlock first' : 'Replace with clean WordPress'}</button>
                     <button className="secondary-button" disabled={wordpressActionBusy || selectedDomain.softLocked || !selectedDomainOperational} onClick={() => setWordpressAction({ domain: selectedDomain, action: 'clone_template' })}>{selectedDomain.softLocked ? 'Load default template · unlock first' : 'Overwrite with default template'}</button>
                     <button className="secondary-button" disabled={wordpressActionBusy || !selectedDomainOperational} onClick={() => void executeWordpressAction(selectedDomain, 'create_restore_point')}>{selectedDomain.restorePointAt ? 'Refresh optional backup' : 'Create optional backup'}</button>
                     <button className="secondary-button" disabled={wordpressActionBusy || selectedDomain.softLocked || !selectedDomainOperational} onClick={() => setWordpressAction({ domain: selectedDomain, action: 'delete' })}>{selectedDomain.softLocked ? 'Delete WordPress · soft locked' : 'Delete WordPress installation'}</button>
@@ -1000,7 +1006,7 @@ export default function Home() {
                       {domainAvailabilityId === selectedDomain.id ? 'Updating…' : 'Mark available for a new build'}
                     </button>
                   )}
-                  <small>{!selectedDomain.operationalReady ? 'The existing cPanel token already supports inventory and PHP controls. Activate Softaculous once to unlock live WordPress installation, cloning, backup and removal.' : selectedDomain.softLocked ? 'The soft lock blocks WordPress deletion and template overwrite. Fresh installation, optional backup and PHP maintenance remain available.' : 'Delete and template overwrite use one clear confirmation. Other routine actions run immediately.'}</small>
+                  <small>{!selectedDomain.operationalReady ? 'The existing cPanel token already supports inventory and PHP controls. Activate Softaculous once to unlock live WordPress installation, cloning, backup and removal.' : selectedDomain.softLocked ? 'The soft lock blocks every action that would delete or replace an existing WordPress website. Empty-domain installation, optional backup and PHP maintenance remain available.' : 'Clean installation and template loading always remove and verify any existing WordPress installation first. Replacement and deletion use one clear confirmation.'}</small>
                 </section>
                 {notice && <p className="notice">{notice}</p>}
               </aside>
@@ -1018,9 +1024,10 @@ export default function Home() {
             <h2>{({ install: 'Install clean WordPress', clone_template: 'Load the default template', create_restore_point: 'Create a restore point', apply_php_profile: 'Apply the recommended PHP limits', delete: 'Delete this WordPress installation' } as Record<WordPressAction, string>)[wordpressAction.action]}</h2>
             <p>This will run against <strong>{wordpressAction.domain.domain}</strong> through the verified cPanel management connection.</p>
             {wordpressAction.action === 'delete' && <div className="danger-callout"><strong>Are you sure?</strong><span>This will delete the WordPress installation on {wordpressAction.domain.domain}. This cannot run while the domain is soft locked.</span></div>}
-            {wordpressAction.action === 'clone_template' && <div className="danger-callout"><strong>This will overwrite the existing website.</strong><span>The current WordPress installation will be removed and replaced with the default template. This cannot run while the domain is soft locked.</span></div>}
+            {wordpressAction.action === 'install' && <div className="danger-callout"><strong>This will delete “{wordpressAction.detectedSiteName || wordpressAction.domain.client || wordpressAction.domain.domain}”.</strong><span>SpyderWeb will remove the current WordPress files, database and database user, verify that the installation is gone, and only then install clean WordPress. This cannot run while the domain is soft locked.</span></div>}
+            {wordpressAction.action === 'clone_template' && <div className="danger-callout"><strong>This will delete “{wordpressAction.detectedSiteName || wordpressAction.domain.client || wordpressAction.domain.domain}”.</strong><span>SpyderWeb will remove the current WordPress files, database and database user, verify that the installation is gone, and then clone the default template directly onto the empty domain. This cannot run while the domain is soft locked.</span></div>}
             {wordpressAction.action === 'apply_php_profile' && <div className="info-callout">Applies 512 MB memory, 512 MB upload/post limits, 300-second timeouts and 5,000 input variables where your host permits them. PHP runtime versions are not changed blindly; version upgrades will require a compatibility check and rollback path.</div>}
-            <div className="operation-confirm-actions"><button className="text-button" type="button" disabled={wordpressActionBusy} onClick={() => setWordpressAction(null)}>Cancel</button><button className={`primary-button ${wordpressAction.action === 'delete' || wordpressAction.action === 'clone_template' ? 'danger-button' : ''}`} type="submit" disabled={wordpressActionBusy}>{wordpressActionBusy ? 'Working…' : wordpressAction.action === 'delete' ? 'Yes, delete WordPress' : 'Yes, overwrite website'}</button></div>
+            <div className="operation-confirm-actions"><button className="text-button" type="button" disabled={wordpressActionBusy} onClick={() => setWordpressAction(null)}>Cancel</button><button className={`primary-button ${wordpressAction.action === 'delete' || wordpressAction.action === 'clone_template' || wordpressAction.action === 'install' ? 'danger-button' : ''}`} type="submit" disabled={wordpressActionBusy}>{wordpressActionBusy ? 'Working…' : wordpressAction.action === 'delete' ? 'Yes, delete WordPress' : wordpressAction.action === 'install' ? 'Yes, delete it and install clean WordPress' : 'Yes, delete it and load the template'}</button></div>
           </form>
         </div>
       )}

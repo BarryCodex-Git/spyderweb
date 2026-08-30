@@ -75,6 +75,8 @@ export async function POST(request: Request, { params }: { params: Promise<{ dom
   let record: Awaited<ReturnType<typeof loadDomainActionRecord>> | null = null;
   let action = 'unknown';
   let verificationWarning = '';
+  let replacementRemoved = false;
+  let replacementSiteName = '';
   try {
     const body = await request.json() as Record<string, unknown>;
     action = String(body.action || '');
@@ -98,6 +100,48 @@ export async function POST(request: Request, { params }: { params: Promise<{ dom
     if (!connection?.encryptedOperationalSecret || !connection.operationalSecretIv) throw new Error('Save the WordPress management credential in Settings first.');
     const secrets = JSON.parse(await decryptSecret(String(connection.encryptedOperationalSecret), String(connection.operationalSecretIv), identity.userId, `operational:${record.connectionId}`)) as OperationalCredential & { adminUsername: string; adminPassword: string; adminEmail: string };
     const baseUrl = String(connection.baseUrl);
+    const replacementConfirmed = body.confirmReplacement === true;
+
+    async function prepareCleanDestination(operationLabel: string) {
+      if (!record) throw new Error('This development domain was not found.');
+      const installations = await listSoftaculousInstallations(baseUrl, secrets);
+      const existing = installations.find((item) => item.domain === record?.domain);
+      if (!existing) {
+        if (record.wordpressStatus === 'installed') {
+          throw new Error(`SpyderWeb and Softaculous disagree about the installation on ${record.domain}. Scan the hosting account again before ${operationLabel}.`);
+        }
+        return null;
+      }
+
+      requireUnlocked(record);
+      const siteName = existing.siteName || existing.domain;
+      replacementSiteName = siteName;
+      if (!replacementConfirmed) {
+        throw new Error(`Confirmation required: this will delete “${siteName}” from ${record.domain} before ${operationLabel}. Open the action again and confirm the replacement.`);
+      }
+      if (!existing.id) {
+        throw new Error(`Softaculous detected “${siteName}” on ${record.domain} but did not provide an installation ID. Scan the hosting account again before replacing it.`);
+      }
+
+      await softaculousAction({ baseUrl, credential: secrets, action: 'remove', domain: record.domain, installationId: existing.id });
+      for (const delay of [0, 800, 1600]) {
+        if (delay) await new Promise((resolve) => setTimeout(resolve, delay));
+        const remaining = await listSoftaculousInstallations(baseUrl, secrets);
+        if (!remaining.some((item) => item.domain === record?.domain)) {
+          replacementRemoved = true;
+          await audit(db, {
+            ownerUserId: identity.userId,
+            connectionId: record.connectionId,
+            action: 'wordpress.clean_destination',
+            target: record.domain,
+            outcome: 'success',
+            details: { removedSiteName: siteName, nextAction: action },
+          });
+          return existing;
+        }
+      }
+      throw new Error(`Softaculous still reports “${siteName}” on ${record.domain}. The new installation was not started.`);
+    }
 
     if (action === 'create_restore_point') {
       if (record.wordpressStatus !== 'installed' || !record.wordpressInstallationId) throw new Error('Softaculous must identify this WordPress installation before it can create a restore point. Scan the connection in Settings.');
@@ -117,7 +161,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ dom
         domain: record.domain, baseUrl, credential: secrets, expected: 'removed' });
       if (!refreshed.verified) verificationWarning = 'Softaculous accepted the removal but still reports the installation. SpyderWeb kept the live status unchanged; scan again before retrying.';
     } else if (action === 'install') {
-      if (record.wordpressStatus === 'installed') throw new Error('This domain already has WordPress. Use Delete WordPress or Overwrite with default template instead.');
+      await prepareCleanDestination('installing clean WordPress');
       await softaculousAction({ baseUrl, credential: secrets, action: 'install', domain: record.domain,
         adminUsername: secrets.adminUsername, adminPassword: secrets.adminPassword, adminEmail: secrets.adminEmail });
       const refreshed = await refreshDomainWordPress(db, { ownerUserId: identity.userId, domainId: record.id,
@@ -130,11 +174,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ dom
         WHERE connection_id = ? AND owner_user_id = ? AND domain = ? AND active = 1 LIMIT 1`)
         .bind(record.connectionId, identity.userId, templateDomain).first<Record<string, unknown>>();
       if (!template?.installationId) throw new Error('The default template is not identified in Softaculous. Re-verify WordPress management in Settings.');
-      if (record.wordpressStatus === 'installed') {
-        requireUnlocked(record);
-        if (!record.wordpressInstallationId) throw new Error('Softaculous must identify the existing WordPress installation before it can be overwritten. Scan the connection in Settings.');
-        await softaculousAction({ baseUrl, credential: secrets, action: 'remove', domain: record.domain, installationId: record.wordpressInstallationId });
-      }
+      await prepareCleanDestination('loading the default template');
       await softaculousAction({ baseUrl, credential: secrets, action: 'clone', domain: record.domain, sourceInstallationId: String(template.installationId) });
       const refreshed = await refreshDomainWordPress(db, { ownerUserId: identity.userId, domainId: record.id,
         domain: record.domain, baseUrl, credential: secrets, expected: 'template' });
@@ -154,8 +194,12 @@ export async function POST(request: Request, { params }: { params: Promise<{ dom
       warning: Boolean(verificationWarning),
     });
   } catch (error) {
-    const message = error instanceof Error ? error.message : 'The WordPress action could not be completed.';
+    const cause = error instanceof Error ? error.message : 'The WordPress action could not be completed.';
+    const message = replacementRemoved
+      ? `The previous WordPress website was removed, but the new ${action === 'clone_template' ? 'template clone' : 'WordPress installation'} did not complete. The destination is empty. ${cause}`
+      : cause;
     if (record) await audit(db, { ownerUserId: identity.userId, connectionId: record.connectionId, action: `wordpress.${action}`, target: record.domain, outcome: 'blocked', details: { message } }).catch(() => undefined);
-    return json({ error: message }, 400);
+    const requiresConfirmation = message.startsWith('Confirmation required:');
+    return json({ error: message, requiresConfirmation, replacementSiteName: replacementSiteName || null }, requiresConfirmation ? 409 : 400);
   }
 }
