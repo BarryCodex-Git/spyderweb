@@ -36,6 +36,7 @@ type Domain = {
   stage?: string;
   progress: number;
   wordpress: string;
+  wordpressUrl?: string | null;
   host: string;
   template: string;
   source?: 'demo' | 'cpanel';
@@ -216,6 +217,7 @@ function mapHostingDomains(records: HostingDomain[], connections: HostingConnect
         installed
           ? record.wordpressVersion ? `Installed · ${record.wordpressVersion}` : 'Installed'
           : record.wordpressStatus === 'not_installed' ? 'Not installed' : 'Scan pending',
+      wordpressUrl: record.wordpressUrl,
       host: connection?.name ?? 'Connected cPanel',
       template: isTemplate
         ? record.wordpressSiteName ?? 'Template detected'
@@ -234,6 +236,31 @@ function mapHostingDomains(records: HostingDomain[], connections: HostingConnect
       phpProfileStatus: record.phpProfileStatus,
     };
   });
+}
+
+function websiteLinks(domainOrUrl: string) {
+  const rawValue = domainOrUrl.trim();
+  const candidate = /^https?:\/\//i.test(rawValue) ? rawValue : `https://${rawValue}`;
+
+  try {
+    const url = new URL(candidate);
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') throw new Error('Unsupported website protocol');
+    const website = url.toString().replace(/\/+$/, '');
+    return { website, wordpressAdmin: `${website}/wp-admin/` };
+  } catch {
+    const fallback = `https://${rawValue.replace(/^\/+|\/+$/g, '')}`;
+    return { website: fallback, wordpressAdmin: `${fallback}/wp-admin/` };
+  }
+}
+
+function SiteQuickLinks({ domainOrUrl, label }: { domainOrUrl: string; label: string }) {
+  const links = websiteLinks(domainOrUrl);
+  return (
+    <nav className="site-quick-links" aria-label={`${label} website shortcuts`}>
+      <a href={links.website} target="_blank" rel="noopener noreferrer" title={`Open ${label} website`}><span aria-hidden="true">↗</span>Open Website</a>
+      <a href={links.wordpressAdmin} target="_blank" rel="noopener noreferrer" title={`Open ${label} WordPress admin`}><span className="wp-mark" aria-hidden="true">W</span>WP Admin</a>
+    </nav>
+  );
 }
 
 export default function Home() {
@@ -702,7 +729,10 @@ export default function Home() {
             <header className="domain-modal-header">
               <span className="drawer-logo"><Image src="/spyderweb-logo.png" alt="" width={61} height={61} /></span>
               <div><p className="eyebrow">WordPress domain control</p><h2>{selectedDomain.domain}</h2><p>{selectedDomain.client}</p></div>
-              <span className={`status-pill ${selectedDomain.status.toLowerCase().replaceAll(' ', '-')}`}>{selectedDomain.status}</span>
+              <div className="modal-header-tools">
+                <span className={`status-pill ${selectedDomain.status.toLowerCase().replaceAll(' ', '-')}`}>{selectedDomain.status}</span>
+                <SiteQuickLinks domainOrUrl={selectedDomain.wordpressUrl || selectedDomain.domain} label={selectedDomain.domain} />
+              </div>
             </header>
 
             <div className="domain-modal-body">
@@ -823,7 +853,10 @@ export default function Home() {
                 <h2>{selectedProject.client}</h2>
                 <p>{selectedProject.buildType} website managed by {selectedProject.developer}</p>
               </div>
-              <span className={`developer modal-owner ${selectedProject.developer.toLowerCase()}`}>{selectedProject.developer}</span>
+              <div className="modal-header-tools">
+                <span className={`developer modal-owner ${selectedProject.developer.toLowerCase()}`}>{selectedProject.developer}</span>
+                <SiteQuickLinks domainOrUrl={selectedProject.domain} label={selectedProject.client} />
+              </div>
             </header>
 
             <div className="project-modal-body">
