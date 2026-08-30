@@ -387,7 +387,7 @@ function fileContent(value: unknown): string | null {
   return null;
 }
 
-type PublicWordPressInfo = {
+export type PublicWordPressInfo = {
   detected: boolean;
   checked: boolean;
   siteName: string | null;
@@ -395,7 +395,7 @@ type PublicWordPressInfo = {
   version: string | null;
 };
 
-async function publicWordPressInfo(domain: string): Promise<PublicWordPressInfo> {
+export async function publicWordPressInfo(domain: string): Promise<PublicWordPressInfo> {
   const baseUrl = `https://${domain}`;
   let receivedResponse = false;
 

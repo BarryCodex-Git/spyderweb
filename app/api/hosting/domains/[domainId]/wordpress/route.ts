@@ -1,4 +1,4 @@
-import { applyRecommendedPhpProfile } from '@/lib/cpanel';
+import { applyRecommendedPhpProfile, publicWordPressInfo } from '@/lib/cpanel';
 import { decryptHostingToken, decryptSecret } from '@/lib/credential-crypto';
 import { ensureHostingSchema } from '@/lib/hosting-db';
 import {
@@ -49,6 +49,28 @@ async function refreshDomainWordPress(
         input.ownerUserId,
       ).run();
     return { installation, verified: input.expected !== 'removed' };
+  }
+
+  // Softaculous can finish a clone before its installation inventory catches up.
+  // Confirm the new WordPress site directly so the UI does not fall back to a
+  // misleading "scan pending" state after a successful operation.
+  if (input.expected !== 'removed') {
+    const publicInfo = await publicWordPressInfo(input.domain);
+    if (publicInfo.detected) {
+      await db.prepare(`UPDATE hosting_domains SET wordpress_status = 'installed', wordpress_version = ?,
+        wordpress_site_name = ?, wordpress_url = ?, wordpress_installation_id = NULL,
+        wordpress_source = 'Public WordPress endpoint', restore_point_at = NULL,
+        workflow_status_override = COALESCE(?, workflow_status_override) WHERE id = ? AND owner_user_id = ?`)
+        .bind(
+          publicInfo.version,
+          publicInfo.siteName,
+          publicInfo.url || `https://${input.domain}`,
+          input.expected === 'template' ? 'Template Loaded' : 'Available',
+          input.domainId,
+          input.ownerUserId,
+        ).run();
+      return { installation: null, verified: true };
+    }
   }
 
   await db.prepare(`UPDATE hosting_domains SET wordpress_status = ?, wordpress_version = NULL,
