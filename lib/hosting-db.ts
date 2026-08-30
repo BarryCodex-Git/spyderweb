@@ -76,6 +76,45 @@ const schemaStatements = [
     ON hosting_domains (owner_user_id, active)`,
   `CREATE INDEX IF NOT EXISTS idx_hosting_audit_owner_created
     ON hosting_audit_events (owner_user_id, created_at)`,
+  `CREATE TABLE IF NOT EXISTS projects (
+    id TEXT PRIMARY KEY NOT NULL,
+    owner_user_id TEXT NOT NULL,
+    domain_id TEXT REFERENCES hosting_domains(id) ON DELETE SET NULL,
+    domain TEXT NOT NULL,
+    client_name TEXT NOT NULL,
+    build_type TEXT NOT NULL,
+    assigned_developer TEXT NOT NULL,
+    current_stage TEXT NOT NULL DEFAULT 'Setup',
+    stage_status TEXT NOT NULL DEFAULT 'not_started',
+    progress INTEGER NOT NULL DEFAULT 0,
+    target_date TEXT,
+    next_action TEXT NOT NULL DEFAULT 'Complete setup and pre-flight check',
+    intake_notes TEXT,
+    lifecycle_status TEXT NOT NULL DEFAULT 'active',
+    last_reported_by TEXT NOT NULL DEFAULT 'Owner Account',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_projects_owner_updated
+    ON projects (owner_user_id, updated_at)`,
+  `CREATE INDEX IF NOT EXISTS idx_projects_owner_domain
+    ON projects (owner_user_id, domain)`,
+  `CREATE TABLE IF NOT EXISTS project_events (
+    id TEXT PRIMARY KEY NOT NULL,
+    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    owner_user_id TEXT NOT NULL,
+    event_type TEXT NOT NULL,
+    source TEXT NOT NULL DEFAULT 'Owner Account',
+    stage TEXT,
+    stage_status TEXT,
+    note TEXT,
+    details_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_project_events_project_created
+    ON project_events (project_id, created_at)`,
+  `CREATE INDEX IF NOT EXISTS idx_project_events_owner_created
+    ON project_events (owner_user_id, created_at)`,
   `CREATE TABLE IF NOT EXISTS owner_security (
     owner_user_id TEXT PRIMARY KEY NOT NULL,
     encrypted_totp_secret TEXT,

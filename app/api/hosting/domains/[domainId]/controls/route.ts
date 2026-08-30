@@ -58,6 +58,19 @@ export async function POST(
         db.prepare(`UPDATE hosting_domains SET assigned_developer = ?
           WHERE id = ? AND owner_user_id = ?`)
           .bind(assignedDeveloper, domainId, identity.userId),
+        db.prepare(`UPDATE projects SET assigned_developer = COALESCE(?, assigned_developer),
+          last_reported_by = 'Owner Account', updated_at = ?
+          WHERE domain_id = ? AND owner_user_id = ? AND lifecycle_status != 'archived'`)
+          .bind(assignedDeveloper, now, domainId, identity.userId),
+        db.prepare(`INSERT INTO project_events (
+          id, project_id, owner_user_id, event_type, source, stage, stage_status, note, details_json, created_at
+        ) SELECT ?, id, owner_user_id, 'project.assignment_changed', 'Owner Account', current_stage,
+          stage_status, ?, ?, ? FROM projects
+          WHERE domain_id = ? AND owner_user_id = ? AND lifecycle_status != 'archived'`)
+          .bind(crypto.randomUUID(), assignedDeveloper
+            ? `Project transferred to ${assignedDeveloper}.`
+            : 'Domain assignment was cleared; the project keeps its current owner until reassigned in Projects.',
+          JSON.stringify({ assignedDeveloper }), now, domainId, identity.userId),
         db.prepare(`INSERT INTO hosting_audit_events (
           id, owner_user_id, connection_id, action, target, outcome, details_json, created_at
         ) VALUES (?, ?, ?, 'domain.developer_assignment', ?, 'success', ?, ?)`).bind(
@@ -77,6 +90,17 @@ export async function POST(
       await db.batch([
         db.prepare(`UPDATE hosting_domains SET workflow_status_override = 'Busy Working'
           WHERE id = ? AND owner_user_id = ?`).bind(domainId, identity.userId),
+        db.prepare(`UPDATE projects SET current_stage = 'Build Home Page', stage_status = 'in_progress',
+          progress = CASE WHEN progress < 12 THEN 12 ELSE progress END,
+          next_action = 'Build and review the home page', last_reported_by = 'Owner Account', updated_at = ?
+          WHERE domain_id = ? AND owner_user_id = ? AND lifecycle_status != 'archived'`)
+          .bind(now, domainId, identity.userId),
+        db.prepare(`INSERT INTO project_events (
+          id, project_id, owner_user_id, event_type, source, stage, stage_status, note, details_json, created_at
+        ) SELECT ?, id, owner_user_id, 'project.homepage_started', 'Owner Account',
+          'Build Home Page', 'in_progress', 'Home-page build started from Domain Management.', '{}', ?
+          FROM projects WHERE domain_id = ? AND owner_user_id = ? AND lifecycle_status != 'archived'`)
+          .bind(crypto.randomUUID(), now, domainId, identity.userId),
         db.prepare(`INSERT INTO hosting_audit_events (
           id, owner_user_id, connection_id, action, target, outcome, details_json, created_at
         ) VALUES (?, ?, ?, 'domain.homepage_build_started', ?, 'success', '{}', ?)`).bind(

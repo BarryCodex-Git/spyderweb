@@ -102,3 +102,52 @@ export const hostingAuditEvents = sqliteTable(
   },
   (table) => [index('idx_hosting_audit_owner_created').on(table.ownerUserId, table.createdAt)],
 );
+
+export const projects = sqliteTable(
+  'projects',
+  {
+    id: text('id').primaryKey(),
+    ownerUserId: text('owner_user_id').notNull(),
+    domainId: text('domain_id').references(() => hostingDomains.id, { onDelete: 'set null' }),
+    domain: text('domain').notNull(),
+    clientName: text('client_name').notNull(),
+    buildType: text('build_type').notNull(),
+    assignedDeveloper: text('assigned_developer').notNull(),
+    currentStage: text('current_stage').notNull().default('Setup'),
+    stageStatus: text('stage_status').notNull().default('not_started'),
+    progress: integer('progress').notNull().default(0),
+    targetDate: text('target_date'),
+    nextAction: text('next_action').notNull().default('Complete setup and pre-flight check'),
+    intakeNotes: text('intake_notes'),
+    lifecycleStatus: text('lifecycle_status').notNull().default('active'),
+    lastReportedBy: text('last_reported_by').notNull().default('Owner Account'),
+    createdAt: text('created_at').notNull(),
+    updatedAt: text('updated_at').notNull(),
+  },
+  (table) => [
+    index('idx_projects_owner_updated').on(table.ownerUserId, table.updatedAt),
+    index('idx_projects_owner_domain').on(table.ownerUserId, table.domain),
+  ],
+);
+
+export const projectEvents = sqliteTable(
+  'project_events',
+  {
+    id: text('id').primaryKey(),
+    projectId: text('project_id')
+      .notNull()
+      .references(() => projects.id, { onDelete: 'cascade' }),
+    ownerUserId: text('owner_user_id').notNull(),
+    eventType: text('event_type').notNull(),
+    source: text('source').notNull().default('Owner Account'),
+    stage: text('stage'),
+    stageStatus: text('stage_status'),
+    note: text('note'),
+    detailsJson: text('details_json').notNull().default('{}'),
+    createdAt: text('created_at').notNull(),
+  },
+  (table) => [
+    index('idx_project_events_project_created').on(table.projectId, table.createdAt),
+    index('idx_project_events_owner_created').on(table.ownerUserId, table.createdAt),
+  ],
+);

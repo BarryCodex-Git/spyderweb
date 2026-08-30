@@ -2,12 +2,14 @@
 
 import Image from 'next/image';
 import { type FormEvent, useCallback, useEffect, useRef, useState } from 'react';
+import { PROJECT_STAGES } from '@/lib/project-workflow';
 
 type View = 'Dashboard' | 'Domains' | 'Projects' | 'Agent Activity' | 'Settings';
 type Developer = 'Barry' | 'Clive' | 'Owner Account';
 type DomainStatus = 'Available' | 'Template Loaded' | 'Busy Working' | 'Final Stages' | 'Needs Inspection';
 type HostingProvider = 'cPanel' | 'Hostinger';
 type ActionToastStatus = 'progress' | 'success' | 'warning' | 'error';
+type ProjectStageStatus = 'not_started' | 'in_progress' | 'awaiting_review' | 'blocked' | 'completed';
 
 type ActionToast = {
   id: string;
@@ -92,15 +94,36 @@ type HostingDomain = {
 };
 
 type Project = {
-  id: number;
+  id: string;
+  domainId: string | null;
   client: string;
   buildType: 'Template' | 'Custom';
   developer: Developer;
   domain: string;
   stage: string;
+  stageStatus: ProjectStageStatus;
   progress: number;
   due: string;
   next: string;
+  intakeNotes: string;
+  lifecycleStatus: string;
+  lastReportedBy: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+type ProjectEvent = {
+  id: string;
+  projectId: string;
+  project: string;
+  developer: Developer;
+  eventType: string;
+  source: string;
+  stage: string | null;
+  stageStatus: ProjectStageStatus | null;
+  note: string | null;
+  details: Record<string, unknown>;
+  createdAt: string;
 };
 
 const navItems: { label: View; icon: string }[] = [
@@ -141,19 +164,13 @@ const viewCopy: Record<View, { eyebrow: string; title: string; subtitle: string 
 
 const columns: DomainStatus[] = ['Needs Inspection', 'Available', 'Template Loaded', 'Busy Working', 'Final Stages'];
 const assignableDevelopers: Developer[] = ['Barry', 'Clive', 'Owner Account'];
-const buildStages = [
-  'Setup',
-  'Build Home Page',
-  'Review Home Page',
-  'Set Up Service Page Template',
-  'Build First Service Page',
-  'Build All Service Pages',
-  'Build Service Page Hub',
-  'Location Pages (optional)',
-  'Review Full Build',
-  'Launch Preparation',
-  'Migrated to Live Site',
-  'Ready to Delete',
+const buildStages = [...PROJECT_STAGES];
+const projectStageStatuses: { value: ProjectStageStatus; label: string }[] = [
+  { value: 'not_started', label: 'Not started' },
+  { value: 'in_progress', label: 'In progress' },
+  { value: 'awaiting_review', label: 'Awaiting review' },
+  { value: 'blocked', label: 'Blocked' },
+  { value: 'completed', label: 'Completed' },
 ];
 
 const demoDomains: Domain[] = [
@@ -163,24 +180,6 @@ const demoDomains: Domain[] = [
   { id: 4, domain: 'northstar-dev.co.za', client: 'Northstar Exterior', status: 'Busy Working', developer: 'Barry', stage: 'Build All Service Pages', progress: 62, wordpress: '6.8.2', host: 'HostAfrica', template: 'Barry Core v4', source: 'demo' },
   { id: 5, domain: 'clearwater-dev.co.za', client: 'Clearwater Plumbing', status: 'Busy Working', developer: 'Clive', stage: 'Review Home Page', progress: 38, wordpress: '6.8.2', host: 'HostAfrica', template: 'Custom', source: 'demo' },
   { id: 6, domain: 'oakandstone-dev.co.za', client: 'Oak & Stone', status: 'Final Stages', developer: 'Barry', stage: 'Launch Preparation', progress: 91, wordpress: '6.8.2', host: 'HostAfrica', template: 'Barry Core v4', source: 'demo' },
-];
-
-const projects: Project[] = [
-  { id: 1, client: 'Northstar Exterior', buildType: 'Template', developer: 'Barry', domain: 'northstar-dev.co.za', stage: 'Build All Service Pages', progress: 62, due: '2 Sep', next: 'Complete remaining service pages' },
-  { id: 2, client: 'Clearwater Plumbing', buildType: 'Custom', developer: 'Clive', domain: 'clearwater-dev.co.za', stage: 'Review Home Page', progress: 38, due: '30 Aug', next: 'Customer home-page feedback' },
-  { id: 3, client: 'Oak & Stone', buildType: 'Template', developer: 'Barry', domain: 'oakandstone-dev.co.za', stage: 'Launch Preparation', progress: 91, due: '28 Aug', next: 'Final launch approval' },
-  { id: 4, client: 'Horizon Solar', buildType: 'Template', developer: 'Barry', domain: 'dev-04.spyderweb.co.za', stage: 'Set Up Service Page Template', progress: 47, due: '5 Sep', next: 'Build first service page' },
-  { id: 5, client: 'Warren Attorneys', buildType: 'Custom', developer: 'Clive', domain: 'legal-dev.spyderweb.co.za', stage: 'Setup', progress: 18, due: '12 Sep', next: 'Confirm custom design direction' },
-  { id: 6, client: 'Tranquil Health', buildType: 'Template', developer: 'Barry', domain: 'health-dev.spyderweb.co.za', stage: 'Review Full Build', progress: 82, due: '31 Aug', next: 'Internal full-site review' },
-];
-
-const activities = [
-  { time: '12:42', agent: 'Barry', project: 'Northstar Exterior', action: 'Reported all core service pages complete.', status: 'Completed' },
-  { time: '12:18', agent: 'Clive', project: 'Clearwater Plumbing', action: 'Submitted the custom home page for review.', status: 'Review' },
-  { time: '11:52', agent: 'System', project: 'Warren Attorneys', action: 'Pre-flight check completed with no blockers.', status: 'Ready' },
-  { time: '11:20', agent: 'Barry', project: 'Horizon Solar', action: 'Imported the approved template and verified pages.', status: 'Completed' },
-  { time: '10:36', agent: 'Clive', project: 'Warren Attorneys', action: 'Created the new client project folder.', status: 'Started' },
-  { time: '09:55', agent: 'Barry', project: 'Oak & Stone', action: 'Moved the build into launch preparation.', status: 'Updated' },
 ];
 
 function mapHostingDomains(records: HostingDomain[], connections: HostingConnection[]): Domain[] {
@@ -266,6 +265,7 @@ function SiteQuickLinks({ domainOrUrl, label }: { domainOrUrl: string; label: st
 export default function Home() {
   const [activeView, setActiveView] = useState<View>('Dashboard');
   const [launchOpen, setLaunchOpen] = useState(false);
+  const [manualProjectOpen, setManualProjectOpen] = useState(false);
   const [selectedDomain, setSelectedDomain] = useState<Domain | null>(null);
   const [selectedProject, setSelectedProject] = useState<Project | null>(null);
   const [developer, setDeveloper] = useState<Developer>('Barry');
@@ -290,6 +290,11 @@ export default function Home() {
   const [auditEvents, setAuditEvents] = useState<AuditEvent[]>([]);
   const [wordpressAction, setWordpressAction] = useState<{ domain: Domain; action: WordPressAction } | null>(null);
   const [wordpressActionBusy, setWordpressActionBusy] = useState(false);
+  const [projectRecords, setProjectRecords] = useState<Project[]>([]);
+  const [projectEvents, setProjectEvents] = useState<ProjectEvent[]>([]);
+  const [projectBusy, setProjectBusy] = useState(false);
+  const [launchClientName, setLaunchClientName] = useState('');
+  const [launchNotes, setLaunchNotes] = useState('');
   const toastTimers = useRef(new Map<string, number>());
   const inventoryRequestCounter = useRef(0);
 
@@ -297,6 +302,18 @@ export default function Home() {
   const selectedStageIndex = selectedProject
     ? Math.max(buildStages.indexOf(selectedProject.stage), 0)
     : 0;
+  const selectedProjectEvents = selectedProject
+    ? projectEvents.filter((event) => event.projectId === selectedProject.id)
+    : [];
+  const projectAwareDomains = managedDomains.map((domain) => {
+    const project = projectRecords.find((item) => item.domain === domain.domain);
+    return project
+      ? { ...domain, client: project.client, developer: project.developer, stage: project.stage, progress: project.progress }
+      : domain;
+  });
+  const selectedDomainProject = selectedDomain
+    ? projectRecords.find((project) => project.domain === selectedDomain.domain)
+    : null;
 
   const dismissActionToast = useCallback((id: string) => {
     const timer = toastTimers.current.get(id);
@@ -362,6 +379,22 @@ export default function Home() {
     }
   }, []);
 
+  const loadProjectData = useCallback(async () => {
+    try {
+      const response = await fetch('/api/projects', { cache: 'no-store' });
+      if (!response.ok) return null;
+      const data = await response.json() as { projects: Project[]; events: ProjectEvent[] };
+      setProjectRecords((current) => JSON.stringify(current) === JSON.stringify(data.projects) ? current : data.projects);
+      setProjectEvents((current) => JSON.stringify(current) === JSON.stringify(data.events) ? current : data.events);
+      setSelectedProject((current) => current
+        ? data.projects.find((project) => project.id === current.id) ?? current
+        : null);
+      return data;
+    } catch {
+      return null;
+    }
+  }, []);
+
   useEffect(() => {
     let active = true;
     const refreshVisibleInventory = () => {
@@ -382,11 +415,27 @@ export default function Home() {
     };
   }, [loadHostingInventory]);
 
+  useEffect(() => {
+    let active = true;
+    const refreshProjects = () => {
+      if (active && document.visibilityState === 'visible') void loadProjectData();
+    };
+    refreshProjects();
+    const timer = window.setInterval(refreshProjects, 30_000);
+    window.addEventListener('focus', refreshProjects);
+    return () => {
+      active = false;
+      window.clearInterval(timer);
+      window.removeEventListener('focus', refreshProjects);
+    };
+  }, [loadProjectData]);
+
   function changeView(view: View) {
     setActiveView(view);
     setSelectedDomain(null);
     setSelectedProject(null);
     setHostingProvider(null);
+    setManualProjectOpen(false);
     setNotice('');
   }
 
@@ -394,6 +443,8 @@ export default function Home() {
     setSelectedDomain(null);
     setSelectedProject(null);
     setLaunchStep(1);
+    setLaunchClientName('');
+    setLaunchNotes('');
     setNotice('');
     setLaunchOpen(true);
   }
@@ -405,12 +456,121 @@ export default function Home() {
     setSelectedDomain(domain);
   }
 
-  function continueLaunch() {
+  async function continueLaunch() {
     if (launchStep < 3) {
+      if (launchStep === 2 && !selectedDomain) {
+        showActionToast({ id: 'launch-domain', status: 'warning', title: 'Choose a domain', message: 'Select the development domain that will hold this project.' });
+        return;
+      }
       setLaunchStep((step) => step + 1);
       return;
     }
-    setNotice(`Demo build prepared for ${developer}. No live domain was changed.`);
+    if (!selectedDomain || typeof selectedDomain.id !== 'string' || !launchClientName.trim()) {
+      showActionToast({ id: 'launch-project', status: 'warning', title: 'Complete the intake', message: 'Choose a connected domain and enter the client or business name.' });
+      return;
+    }
+    setProjectBusy(true);
+    showActionToast({ id: 'launch-project', status: 'progress', title: 'Creating project', message: `Preparing ${launchClientName.trim()} for ${developer}.` });
+    try {
+      const response = await fetch('/api/projects', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          domainId: selectedDomain.id,
+          client: launchClientName,
+          buildType: developer === 'Barry' ? 'Template' : 'Custom',
+          developer,
+          stage: 'Setup',
+          stageStatus: 'not_started',
+          progress: 0,
+          nextAction: 'Complete setup and pre-flight check',
+          intakeNotes: launchNotes,
+          note: 'New client project created from Launch Build.',
+        }),
+      });
+      const result = await response.json() as { error?: string; message?: string; projectId?: string };
+      if (!response.ok) throw new Error(result.error || 'The project could not be created.');
+      const data = await loadProjectData();
+      await loadHostingInventory();
+      setLaunchOpen(false);
+      setSelectedDomain(null);
+      setActiveView('Projects');
+      if (result.projectId && data) setSelectedProject(data.projects.find((project) => project.id === result.projectId) ?? null);
+      showActionToast({ id: 'launch-project', status: 'success', title: 'Project ready', message: result.message || 'The project is ready for manual progress tracking.' });
+    } catch (error) {
+      showActionToast({ id: 'launch-project', status: 'error', title: 'Project not created', message: error instanceof Error ? error.message : 'The project could not be created.' });
+    } finally {
+      setProjectBusy(false);
+    }
+  }
+
+  async function createManualProject(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const formData = new FormData(event.currentTarget);
+    setProjectBusy(true);
+    showActionToast({ id: 'manual-project', status: 'progress', title: 'Adding existing project', message: 'Saving its current assignment and workflow stage.' });
+    try {
+      const response = await fetch('/api/projects', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          domainId: formData.get('domainId'),
+          client: formData.get('client'),
+          buildType: formData.get('buildType'),
+          developer: formData.get('developer'),
+          stage: formData.get('stage'),
+          stageStatus: formData.get('stageStatus'),
+          progress: Number(formData.get('progress')),
+          due: formData.get('due'),
+          nextAction: formData.get('nextAction'),
+          note: formData.get('note'),
+        }),
+      });
+      const result = await response.json() as { error?: string; message?: string; projectId?: string };
+      if (!response.ok) throw new Error(result.error || 'The project could not be added.');
+      const data = await loadProjectData();
+      await loadHostingInventory();
+      setManualProjectOpen(false);
+      if (result.projectId && data) setSelectedProject(data.projects.find((project) => project.id === result.projectId) ?? null);
+      showActionToast({ id: 'manual-project', status: 'success', title: 'Project added', message: result.message || 'Manual tracking is now active.' });
+    } catch (error) {
+      showActionToast({ id: 'manual-project', status: 'error', title: 'Project not added', message: error instanceof Error ? error.message : 'The project could not be added.' });
+    } finally {
+      setProjectBusy(false);
+    }
+  }
+
+  async function updateProject(project: Project, body: Record<string, unknown>, toastTitle: string) {
+    setProjectBusy(true);
+    const toastId = `project-${project.id}`;
+    showActionToast({ id: toastId, status: 'progress', title: toastTitle, message: `Updating ${project.client}.` });
+    try {
+      const response = await fetch(`/api/projects/${project.id}`, {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+      });
+      const result = await response.json() as { error?: string; message?: string };
+      if (!response.ok) throw new Error(result.error || 'The project could not be updated.');
+      await Promise.all([loadProjectData(), loadHostingInventory()]);
+      showActionToast({ id: toastId, status: 'success', title: 'Project updated', message: result.message || 'The manual project record is current.' });
+    } catch (error) {
+      showActionToast({ id: toastId, status: 'error', title: 'Update failed', message: error instanceof Error ? error.message : 'The project could not be updated.' });
+    } finally {
+      setProjectBusy(false);
+    }
+  }
+
+  async function saveProjectUpdate(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!selectedProject) return;
+    const formData = new FormData(event.currentTarget);
+    await updateProject(selectedProject, {
+      action: 'save',
+      stage: formData.get('stage'),
+      stageStatus: formData.get('stageStatus'),
+      progress: Number(formData.get('progress')),
+      developer: formData.get('developer'),
+      due: formData.get('due'),
+      nextAction: formData.get('nextAction'),
+      note: formData.get('note'),
+    }, 'Saving manual progress');
   }
 
   async function connectHosting(event: FormEvent<HTMLFormElement>) {
@@ -669,11 +829,11 @@ export default function Home() {
           </div>
         </header>
 
-        {activeView === 'Dashboard' && <Dashboard domains={managedDomains} onDomain={openDomain} onLaunch={openLaunch} inventoryIsLive={inventoryIsLive} inventoryRefreshing={inventoryRefreshing} inventoryLastRefreshedAt={inventoryLastRefreshedAt} />}
-        {activeView === 'Domains' && <DomainsView domains={managedDomains} onDomain={openDomain} onNotice={setNotice} notice={notice} inventoryIsLive={inventoryIsLive} />}
-        {activeView === 'Projects' && <ProjectsView domains={managedDomains} onProject={setSelectedProject} onManageDomains={() => changeView('Domains')} />}
-        {activeView === 'Agent Activity' && <AgentActivity auditEvents={auditEvents} filter={activityFilter} onFilter={setActivityFilter} />}
-        {activeView === 'Settings' && <SettingsView connections={hostingConnections} domains={managedDomains} syncingId={hostingSyncingId} modeChangingId={hostingModeChangingId} notice={settingsHostingNotice} onSync={syncHostingConnection} onModeChange={changeHostingMode} onConnect={(provider) => { setHostingNotice(''); setHostingProvider(provider); }} onSaveOperational={saveOperationalCredential} />}
+        {activeView === 'Dashboard' && <Dashboard domains={projectAwareDomains} onDomain={openDomain} onLaunch={openLaunch} inventoryIsLive={inventoryIsLive} inventoryRefreshing={inventoryRefreshing} inventoryLastRefreshedAt={inventoryLastRefreshedAt} />}
+        {activeView === 'Domains' && <DomainsView domains={projectAwareDomains} onDomain={openDomain} onNotice={setNotice} notice={notice} inventoryIsLive={inventoryIsLive} />}
+        {activeView === 'Projects' && <ProjectsView domains={projectAwareDomains} projects={projectRecords} onProject={setSelectedProject} onManageDomains={() => changeView('Domains')} onAddProject={() => setManualProjectOpen(true)} />}
+        {activeView === 'Agent Activity' && <AgentActivity auditEvents={auditEvents} projects={projectRecords} projectEvents={projectEvents} filter={activityFilter} onFilter={setActivityFilter} />}
+        {activeView === 'Settings' && <SettingsView connections={hostingConnections} domains={projectAwareDomains} syncingId={hostingSyncingId} modeChangingId={hostingModeChangingId} notice={settingsHostingNotice} onSync={syncHostingConnection} onModeChange={changeHostingMode} onConnect={(provider) => { setHostingNotice(''); setHostingProvider(provider); }} onSaveOperational={saveOperationalCredential} />}
       </section>
 
       {hostingProvider && !launchOpen && (
@@ -751,12 +911,14 @@ export default function Home() {
                   <section className="compact-project-report">
                     <div className="modal-section-heading"><div><p className="eyebrow">Project report</p><h3>{selectedDomain.client}</h3></div><span>{selectedDomain.status}</span></div>
                     <div className="compact-report-grid">
-                      <div><span>Assigned to</span><strong>{selectedDomain.developer ?? 'Not allocated'}</strong></div>
-                      <div><span>Build phase</span><strong>{selectedDomain.status === 'Final Stages' ? 'Final stages' : 'Active build'}</strong></div>
-                      <div><span>Agent report</span><strong>Connection pending</strong></div>
-                      <div><span>Detailed workflow</span><strong>Projects tab</strong></div>
+                      <div><span>Assigned to</span><strong>{selectedDomainProject?.developer ?? selectedDomain.developer ?? 'Not allocated'}</strong></div>
+                      <div><span>Current stage</span><strong>{selectedDomainProject?.stage ?? (selectedDomain.status === 'Final Stages' ? 'Final stages' : 'Needs manual project setup')}</strong></div>
+                      <div><span>Stage status</span><strong>{selectedDomainProject?.stageStatus.replaceAll('_', ' ') ?? 'Not tracked yet'}</strong></div>
+                      <div><span>Progress</span><strong>{selectedDomainProject ? `${selectedDomainProject.progress}%` : 'Add in Projects'}</strong></div>
                     </div>
-                    <p>The dashboard keeps this report compact and focused on the WordPress workspace. Detailed stages will come from the assigned developer or agent in Projects.</p>
+                    {selectedDomainProject
+                      ? <button className="outline-button compact-project-open" onClick={() => { setSelectedDomain(null); setSelectedProject(selectedDomainProject); setActiveView('Projects'); }}>Open full project workflow</button>
+                      : <button className="outline-button compact-project-open" onClick={() => { setSelectedDomain(null); setManualProjectOpen(true); setActiveView('Projects'); }}>Add this project manually</button>}
                   </section>
                 ) : (
                   <section className="domain-readiness-card">
@@ -851,13 +1013,12 @@ export default function Home() {
             <button className="close-button" onClick={() => setSelectedProject(null)}>×</button>
             <header className="project-modal-header">
               <span className={`project-avatar ${selectedProject.developer.toLowerCase()}`}>{selectedProject.client.slice(0, 1)}</span>
-              <div>
+              <div className="project-heading-copy">
                 <p className="eyebrow">Project control</p>
-                <h2>{selectedProject.client}</h2>
+                <div className="project-title-row"><h2>{selectedProject.client}</h2><span className={`developer modal-owner ${selectedProject.developer.toLowerCase()}`}>{selectedProject.developer}</span></div>
                 <p>{selectedProject.buildType} website managed by {selectedProject.developer}</p>
               </div>
               <div className="modal-header-tools">
-                <span className={`developer modal-owner ${selectedProject.developer.toLowerCase()}`}>{selectedProject.developer}</span>
                 <SiteQuickLinks domainOrUrl={selectedProject.domain} label={selectedProject.client} />
               </div>
             </header>
@@ -867,7 +1028,7 @@ export default function Home() {
                 <section className="project-progress-card">
                   <div><p>Overall build progress</p><strong>{selectedProject.progress}%</strong></div>
                   <div className="progress-track large"><span style={{ width: `${selectedProject.progress}%` }} /></div>
-                  <div className="progress-card-meta"><span>Current stage: <b>{selectedProject.stage}</b></span><span>Target: <b>{selectedProject.due}</b></span></div>
+                  <div className="progress-card-meta"><span>Current stage: <b>{selectedProject.stage}</b></span><span>Status: <b>{selectedProject.stageStatus.replaceAll('_', ' ')}</b></span><span>Target: <b>{selectedProject.due || 'Not set'}</b></span></div>
                 </section>
 
                 <section className="build-stage-panel">
@@ -885,6 +1046,20 @@ export default function Home() {
                     })}
                   </div>
                 </section>
+
+                <section className="project-history-panel">
+                  <div className="modal-section-heading"><div><p className="eyebrow">Progress history</p><h3>Manual updates</h3></div><span>{selectedProjectEvents.length} updates</span></div>
+                  <div className="project-history-list">
+                    {selectedProjectEvents.slice(0, 8).map((event) => (
+                      <div key={event.id}>
+                        <span className="history-dot" />
+                        <div><strong>{event.note || event.eventType.replaceAll('.', ' ')}</strong><small>{event.source} · {new Date(event.createdAt).toLocaleString()}</small></div>
+                        <b>{event.stageStatus?.replaceAll('_', ' ') || 'Updated'}</b>
+                      </div>
+                    ))}
+                    {selectedProjectEvents.length === 0 && <p>No progress updates have been added yet.</p>}
+                  </div>
+                </section>
               </div>
 
               <aside className="project-control-sidebar">
@@ -897,17 +1072,53 @@ export default function Home() {
                     <div><span>Target date</span><strong>{selectedProject.due}</strong></div>
                   </div>
                 </section>
-                <section className="next-action-card"><span>Next required action</span><strong>{selectedProject.next}</strong><p>This is the next item SpyderWeb would send to Codex or place into review.</p></section>
-                <section className="project-actions">
-                  <p className="eyebrow">Project controls</p>
-                  <button className="primary-button wide" onClick={() => setNotice(`Demo instruction prepared for ${selectedProject.developer} in Codex.`)}>Send instruction to Codex</button>
-                  <button className="secondary-button" onClick={() => setNotice('Demo only: current stage marked ready for completion.')}>Complete current stage</button>
-                  <button className="secondary-button" onClick={() => setNotice('Demo only: project review request prepared.')}>Request project review</button>
-                </section>
-                {notice && <p className="notice">{notice}</p>}
-                <small className="simulation-note">Demo controls only — no live project or agent data is changed.</small>
+                <section className="next-action-card"><span>Next required action</span><strong>{selectedProject.next}</strong><p>This remains manual until Barry and Clive are connected.</p></section>
+                <form className="manual-progress-form" key={selectedProject.updatedAt} onSubmit={saveProjectUpdate}>
+                  <p className="eyebrow">Manual project controls</p>
+                  <label>Assigned developer<select name="developer" defaultValue={selectedProject.developer}>{assignableDevelopers.map((name) => <option key={name}>{name}</option>)}</select></label>
+                  <label>Current stage<select name="stage" defaultValue={selectedProject.stage}>{buildStages.map((stage) => <option key={stage}>{stage}</option>)}</select></label>
+                  <label>Stage status<select name="stageStatus" defaultValue={selectedProject.stageStatus}>{projectStageStatuses.map((status) => <option key={status.value} value={status.value}>{status.label}</option>)}</select></label>
+                  <div className="manual-progress-row">
+                    <label>Progress %<input name="progress" type="number" min="0" max="100" defaultValue={selectedProject.progress} /></label>
+                    <label>Target date<input name="due" defaultValue={selectedProject.due} placeholder="e.g. 12 Sep" /></label>
+                  </div>
+                  <label>Next required action<input name="nextAction" defaultValue={selectedProject.next} /></label>
+                  <label>Progress note<textarea name="note" rows={3} placeholder="What changed or needs attention?" /></label>
+                  <button className="primary-button wide" type="submit" disabled={projectBusy}>{projectBusy ? 'Saving…' : 'Save manual update'}</button>
+                  <div className="project-quick-actions">
+                    <button className="secondary-button" type="button" disabled={projectBusy} onClick={() => updateProject(selectedProject, { action: 'complete_stage' }, 'Completing current stage')}>Complete current stage</button>
+                    <button className="secondary-button" type="button" disabled={projectBusy} onClick={() => updateProject(selectedProject, { action: 'request_review' }, 'Requesting review')}>Request review</button>
+                  </div>
+                </form>
+                <small className="simulation-note live-note">Saved updates are live across the Owner dashboard. Agent reporting will use this same history later.</small>
               </aside>
             </div>
+          </section>
+        </div>
+      )}
+
+      {manualProjectOpen && !selectedProject && !launchOpen && (
+        <div className="project-modal-backdrop" onClick={() => setManualProjectOpen(false)}>
+          <section className="manual-project-entry-modal" onClick={(event) => event.stopPropagation()}>
+            <button className="close-button" onClick={() => setManualProjectOpen(false)}>×</button>
+            <header>
+              <p className="eyebrow">Manual project setup</p>
+              <h2>Add an existing project</h2>
+              <p>Connect a live development domain to its real client, owner, and current workflow stage.</p>
+            </header>
+            <form className="project-entry-form" onSubmit={createManualProject}>
+              <label className="full-field">Development domain<select name="domainId" required defaultValue=""><option value="" disabled>Choose a connected domain</option>{projectAwareDomains.filter((domain) => domain.source === 'cpanel' && !projectRecords.some((project) => project.domain === domain.domain)).map((domain) => <option key={domain.id} value={domain.id}>{domain.domain} · {domain.client}</option>)}</select></label>
+              <label className="full-field">Client or business name<input name="client" required placeholder="e.g. Clearwater Plumbing" /></label>
+              <label>Build type<select name="buildType" defaultValue="Template"><option>Template</option><option>Custom</option></select></label>
+              <label>Assigned developer<select name="developer" defaultValue="Barry">{assignableDevelopers.map((name) => <option key={name}>{name}</option>)}</select></label>
+              <label>Current stage<select name="stage" defaultValue="Setup">{buildStages.map((stage) => <option key={stage}>{stage}</option>)}</select></label>
+              <label>Stage status<select name="stageStatus" defaultValue="in_progress">{projectStageStatuses.map((status) => <option key={status.value} value={status.value}>{status.label}</option>)}</select></label>
+              <label>Current progress %<input name="progress" type="number" min="0" max="100" defaultValue="0" required /></label>
+              <label>Target date<input name="due" placeholder="e.g. 12 Sep" /></label>
+              <label className="full-field">Next required action<input name="nextAction" required placeholder="What needs to happen next?" /></label>
+              <label className="full-field">Opening progress note<textarea name="note" rows={3} placeholder="Where is the project currently, and is anything blocked?" /></label>
+              <div className="manual-project-actions full-field"><button className="text-button" type="button" onClick={() => setManualProjectOpen(false)}>Cancel</button><button className="primary-button" type="submit" disabled={projectBusy}>{projectBusy ? 'Adding project…' : 'Add project'}</button></div>
+            </form>
           </section>
         </div>
       )}
@@ -919,10 +1130,10 @@ export default function Home() {
             <p className="eyebrow">Launch a website build</p><h2>Three simple steps</h2>
             <div className="stepper">{[1, 2, 3].map((step) => <span className={launchStep >= step ? 'active' : ''} key={step}>{step}</span>)}</div>
             {launchStep === 1 && <div className="launch-panel"><h3>Who should build it?</h3><p>Barry handles approved templates. Clive handles custom websites.</p><div className="developer-options">{(['Barry', 'Clive'] as const).map((name) => <button className={developer === name ? 'selected' : ''} key={name} onClick={() => setDeveloper(name)}><span className={`avatar ${name.toLowerCase()}`}>{name[0]}</span><strong>{name}</strong><small>{name === 'Barry' ? 'Template builds' : 'Custom builds'}</small></button>)}</div></div>}
-            {launchStep === 2 && <div className="launch-panel"><h3>Select a development domain</h3><p>Choose one of the available, connected WordPress spaces.</p><div className="domain-options">{managedDomains.filter((domain) => domain.status === 'Available').map((domain) => <button className={selectedDomain?.id === domain.id ? 'selected' : ''} key={domain.id} onClick={() => setSelectedDomain(domain)}><span>◎</span><strong>{domain.domain}</strong><small>Available</small></button>)}</div></div>}
-            {launchStep === 3 && <div className="launch-panel"><h3>Client intake & assets</h3><p>Add the essentials now. The detailed form can follow inside the project.</p><label>Client or business name<input placeholder="e.g. Acme Plumbing" /></label><label>Project notes<textarea placeholder="What does the client need?" rows={3} /></label><button className="upload-box"><span>↑</span><strong>Upload client assets</strong><small>Logos, photos and documents</small></button></div>}
+            {launchStep === 2 && <div className="launch-panel"><h3>Select a development domain</h3><p>Choose one of the available, connected WordPress spaces.</p><div className="domain-options">{projectAwareDomains.filter((domain) => domain.status === 'Available').map((domain) => <button className={selectedDomain?.id === domain.id ? 'selected' : ''} key={domain.id} onClick={() => setSelectedDomain(domain)}><span>◎</span><strong>{domain.domain}</strong><small>Available</small></button>)}</div></div>}
+            {launchStep === 3 && <div className="launch-panel"><h3>Client intake & assets</h3><p>Add the essentials now. The detailed form can follow inside the project.</p><label>Client or business name<input value={launchClientName} onChange={(event) => setLaunchClientName(event.target.value)} placeholder="e.g. Acme Plumbing" /></label><label>Project notes<textarea value={launchNotes} onChange={(event) => setLaunchNotes(event.target.value)} placeholder="What does the client need?" rows={3} /></label><button className="upload-box" type="button"><span>↑</span><strong>Upload client assets</strong><small>File storage will be connected in the next layer</small></button></div>}
             {notice && <p className="notice success">{notice}</p>}
-            <div className="modal-footer"><button className="text-button" onClick={() => launchStep > 1 ? setLaunchStep((step) => step - 1) : setLaunchOpen(false)}>{launchStep > 1 ? 'Back' : 'Cancel'}</button><button className="primary-button" onClick={continueLaunch}>{launchStep < 3 ? 'Continue' : 'Prepare Build'}</button></div>
+            <div className="modal-footer"><button className="text-button" onClick={() => launchStep > 1 ? setLaunchStep((step) => step - 1) : setLaunchOpen(false)}>{launchStep > 1 ? 'Back' : 'Cancel'}</button><button className="primary-button" disabled={projectBusy} onClick={() => void continueLaunch()}>{projectBusy ? 'Creating…' : launchStep < 3 ? 'Continue' : 'Create Project'}</button></div>
           </section>
         </div>
       )}
@@ -1019,9 +1230,13 @@ function DomainsView({ domains, onDomain, onNotice, notice, inventoryIsLive }: {
   );
 }
 
-function ProjectsView({ domains, onProject, onManageDomains }: { domains: Domain[]; onProject: (project: Project) => void; onManageDomains: () => void }) {
+function ProjectsView({ domains, projects, onProject, onManageDomains, onAddProject }: { domains: Domain[]; projects: Project[]; onProject: (project: Project) => void; onManageDomains: () => void; onAddProject: () => void }) {
   const operationalDomains = domains.filter((domain) => domain.connectionMode === 'managed_write' && domain.operationalReady).length;
   const lockedDomains = domains.filter((domain) => domain.softLocked).length;
+  const barryProjects = projects.filter((project) => project.developer === 'Barry').length;
+  const cliveProjects = projects.filter((project) => project.developer === 'Clive').length;
+  const templateProjects = projects.filter((project) => project.buildType === 'Template').length;
+  const customProjects = projects.filter((project) => project.buildType === 'Custom').length;
   return (
     <div className="view-stack">
       <section className="hosting-project-strip">
@@ -1030,58 +1245,62 @@ function ProjectsView({ domains, onProject, onManageDomains }: { domains: Domain
         <button className="outline-button" onClick={onManageDomains}>Open Domain Management</button>
       </section>
       <section className="project-overview-strip">
-        <div><span className="large-number">6</span><span><strong>Active projects</strong><small>4 template · 2 custom</small></span></div>
-        <div className="agent-load"><span><b>Barry</b><small>4 projects</small></span><div><i style={{ width: '80%' }} /></div></div>
-        <div className="agent-load purple-load"><span><b>Clive</b><small>2 projects</small></span><div><i style={{ width: '50%' }} /></div></div>
+        <div><span className="large-number">{projects.length}</span><span><strong>Tracked projects</strong><small>{templateProjects} template · {customProjects} custom</small></span></div>
+        <div className="agent-load"><span><b>Barry</b><small>{barryProjects} project{barryProjects === 1 ? '' : 's'}</small></span><div><i style={{ width: `${Math.min(barryProjects * 20, 100)}%` }} /></div></div>
+        <div className="agent-load purple-load"><span><b>Clive</b><small>{cliveProjects} project{cliveProjects === 1 ? '' : 's'}</small></span><div><i style={{ width: `${Math.min(cliveProjects * 20, 100)}%` }} /></div></div>
       </section>
       <section className="panel">
-        <div className="section-heading"><div><p className="eyebrow">Current work</p><h2>Project pipeline</h2></div><div className="board-tools"><button>All stages⌄</button><button>All developers⌄</button></div></div>
+        <div className="section-heading"><div><p className="eyebrow">Current work</p><h2>Manual project pipeline</h2></div><div className="board-heading-actions"><span className="manual-mode-pill">Manual mode</span><button className="primary-button" onClick={onAddProject}>＋ Add existing project</button></div></div>
         <div className="project-list">
           {projects.map((project) => (
             <button className="project-row" key={project.id} onClick={() => onProject(project)}>
               <span className={`project-avatar small ${project.developer.toLowerCase()}`}>{project.client.slice(0, 1)}</span>
               <span className="project-name"><strong>{project.client}</strong><small>{project.domain}</small></span>
               <span className="project-type"><b>{project.buildType}</b><small>{project.developer}</small></span>
-              <span className="project-stage"><strong>{project.stage}</strong><small>Next: {project.next}</small></span>
+              <span className="project-stage"><strong>{project.stage}</strong><small>{project.stageStatus.replaceAll('_', ' ')} · Next: {project.next}</small></span>
               <span className="project-progress"><b>{project.progress}%</b><span className="progress-track"><i style={{ width: `${project.progress}%` }} /></span></span>
               <span className="project-due"><small>Target</small><strong>{project.due}</strong></span>
               <span className="table-arrow">→</span>
             </button>
           ))}
+          {projects.length === 0 && <div className="empty-project-state"><span>◇</span><div><strong>No projects are being tracked yet</strong><p>Add each existing Barry or Clive project at its real current stage. Nothing will be changed in WordPress.</p></div><button className="primary-button" onClick={onAddProject}>Add first project</button></div>}
         </div>
       </section>
     </div>
   );
 }
 
-function AgentActivity({ auditEvents, filter, onFilter }: { auditEvents: AuditEvent[]; filter: 'All' | Developer; onFilter: (filter: 'All' | Developer) => void }) {
-  const visibleActivities = activities.filter((activity) => filter === 'All' || activity.agent === filter);
+function AgentActivity({ auditEvents, projects, projectEvents, filter, onFilter }: { auditEvents: AuditEvent[]; projects: Project[]; projectEvents: ProjectEvent[]; filter: 'All' | Developer; onFilter: (filter: 'All' | Developer) => void }) {
+  const visibleActivities = projectEvents.filter((activity) => filter === 'All' || activity.developer === filter);
+  const barryProjects = projects.filter((project) => project.developer === 'Barry');
+  const cliveProjects = projects.filter((project) => project.developer === 'Clive');
   return (
     <div className="agent-layout">
       <section className="agent-column">
         <div className="agent-card">
-          <div className="agent-card-top"><span className="avatar barry">B</span><span><strong>Barry</strong><small>Template website builder</small></span><b className="online-pill">Working</b></div>
-          <p>Building service pages for Northstar Exterior.</p>
-          <div className="agent-stats"><span><small>Assigned</small><strong>4</strong></span><span><small>In review</small><strong>1</strong></span><span><small>Capacity</small><strong>80%</strong></span></div>
+          <div className="agent-card-top"><span className="avatar barry">B</span><span><strong>Barry</strong><small>Template website builder</small></span><b className="online-pill">Manual</b></div>
+          <p>{barryProjects.length ? `${barryProjects.length} project${barryProjects.length === 1 ? '' : 's'} currently assigned.` : 'No manually tracked projects assigned.'}</p>
+          <div className="agent-stats"><span><small>Assigned</small><strong>{barryProjects.length}</strong></span><span><small>In review</small><strong>{barryProjects.filter((project) => project.stageStatus === 'awaiting_review').length}</strong></span><span><small>Blocked</small><strong>{barryProjects.filter((project) => project.stageStatus === 'blocked').length}</strong></span></div>
         </div>
         <div className="agent-card">
-          <div className="agent-card-top"><span className="avatar clive">C</span><span><strong>Clive</strong><small>Custom website builder</small></span><b className="online-pill purple">Review</b></div>
-          <p>Waiting for Clearwater home-page feedback.</p>
-          <div className="agent-stats"><span><small>Assigned</small><strong>2</strong></span><span><small>In review</small><strong>1</strong></span><span><small>Capacity</small><strong>50%</strong></span></div>
+          <div className="agent-card-top"><span className="avatar clive">C</span><span><strong>Clive</strong><small>Custom website builder</small></span><b className="online-pill purple">Manual</b></div>
+          <p>{cliveProjects.length ? `${cliveProjects.length} project${cliveProjects.length === 1 ? '' : 's'} currently assigned.` : 'No manually tracked projects assigned.'}</p>
+          <div className="agent-stats"><span><small>Assigned</small><strong>{cliveProjects.length}</strong></span><span><small>In review</small><strong>{cliveProjects.filter((project) => project.stageStatus === 'awaiting_review').length}</strong></span><span><small>Blocked</small><strong>{cliveProjects.filter((project) => project.stageStatus === 'blocked').length}</strong></span></div>
         </div>
-        <div className="connection-card"><span className="connection-symbol">⌁</span><div><strong>Codex reporting link</strong><p>Last dummy update received 2 minutes ago.</p></div><b>Connected</b></div>
+        <div className="connection-card"><span className="connection-symbol">⌁</span><div><strong>Codex reporting link</strong><p>Manual workflow is active. Barry and Clive communication comes next.</p></div><b>Not connected</b></div>
       </section>
       <section className="panel activity-panel">
         <div className="section-heading"><div><p className="eyebrow">Latest reports</p><h2>Activity timeline</h2></div><div className="filter-tabs">{(['All', 'Barry', 'Clive'] as const).map((item) => <button className={filter === item ? 'active' : ''} key={item} onClick={() => onFilter(item)}>{item}</button>)}</div></div>
         <div className="timeline">
-          {visibleActivities.map((activity, index) => (
-            <div className="timeline-item" key={`${activity.time}-${index}`}>
-              <span className={`timeline-dot ${activity.agent.toLowerCase()}`} />
-              <span className="timeline-time">{activity.time}</span>
-              <span className="timeline-copy"><strong>{activity.project}</strong><p><b>{activity.agent}</b> · {activity.action}</p></span>
-              <b className="activity-status">{activity.status}</b>
+          {visibleActivities.map((activity) => (
+            <div className="timeline-item" key={activity.id}>
+              <span className={`timeline-dot ${activity.developer.toLowerCase()}`} />
+              <span className="timeline-time">{new Date(activity.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+              <span className="timeline-copy"><strong>{activity.project}</strong><p><b>{activity.source}</b> · {activity.note || activity.eventType.replaceAll('.', ' ')}</p></span>
+              <b className="activity-status">{activity.stageStatus?.replaceAll('_', ' ') || 'Updated'}</b>
             </div>
           ))}
+          {visibleActivities.length === 0 && <p className="empty-activity">No manual project updates have been recorded for this filter.</p>}
         </div>
         <div className="hosting-audit-heading"><div><p className="eyebrow">Hosting operations</p><h3>Protected action history</h3></div><span>{auditEvents.length ? 'Live audit' : 'No actions yet'}</span></div>
         <div className="hosting-audit-list">
