@@ -97,14 +97,10 @@ export async function POST(request: Request, { params }: { params: Promise<{ dom
     }
 
     requireOperationalAccess(record);
-    const secrets = connection.encryptedOperationalSecret && connection.operationalSecretIv
-      ? JSON.parse(await decryptSecret(String(connection.encryptedOperationalSecret), String(connection.operationalSecretIv), identity.userId, `operational:${record.connectionId}`)) as OperationalCredential & { adminUsername?: string; adminPassword?: string; adminEmail?: string }
-      : {
-          username: String(connection.username),
-          token: await decryptHostingToken(String(connection.encryptedToken), String(connection.encryptionIv), identity.userId, record.connectionId),
-          authMode: 'cpanel_token' as const,
-          adminUsername: 'admin', adminPassword: 'admin', adminEmail: identity.email || `admin@${record.domain}`,
-        };
+    if (!connection.encryptedOperationalSecret || !connection.operationalSecretIv) {
+      throw new Error('Activate WordPress Management for this cPanel account in Settings first.');
+    }
+    const secrets = JSON.parse(await decryptSecret(String(connection.encryptedOperationalSecret), String(connection.operationalSecretIv), identity.userId, `operational:${record.connectionId}`)) as OperationalCredential & { adminUsername?: string; adminPassword?: string; adminEmail?: string };
     const baseUrl = String(connection.baseUrl);
     const replacementConfirmed = body.confirmReplacement === true;
 

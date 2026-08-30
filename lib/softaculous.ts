@@ -25,6 +25,29 @@ function authorization(credential: OperationalCredential) {
   return `Basic ${btoa(binary)}`;
 }
 
+async function createCpanelSession(baseUrl: string, credential: OperationalCredential) {
+  if (!credential.password) throw new Error('Enter the normal cPanel account password.');
+  const response = await fetch(`${baseUrl}/login/?login_only=1`, {
+    method: 'POST',
+    headers: { Accept: 'application/json', 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({ user: credential.username, pass: credential.password }).toString(),
+    redirect: 'manual',
+    signal: AbortSignal.timeout(30_000),
+  });
+  const text = await response.text();
+  let payload: Record<string, unknown> = {};
+  try { payload = JSON.parse(text) as Record<string, unknown>; } catch { /* cPanel may return HTML on a failed login. */ }
+  const securityToken = typeof payload.security_token === 'string' ? payload.security_token : '';
+  if (Number(payload.status) !== 1 || !/^\/cpsess\d+$/.test(securityToken)) {
+    throw new Error('cPanel rejected the account password. Use the same username and password that open this cPanel account in a private browser window.');
+  }
+  const rawCookie = response.headers.get('set-cookie') || '';
+  const cookies = [...rawCookie.matchAll(/(?:^|,)\s*([^=;,\s]+)=([^;,\s]+)/g)]
+    .map((match) => `${match[1]}=${match[2]}`)
+    .join('; ');
+  return { securityToken, cookies };
+}
+
 function clean(value: unknown, max = 2048) {
   if (typeof value !== 'string' && typeof value !== 'number') return null;
   return String(value).replace(/[\r\n\0]+/g, ' ').trim().slice(0, max) || null;
@@ -71,21 +94,30 @@ async function request(input: {
   query: Record<string, string>;
   form?: Record<string, string>;
 }) {
-  const url = new URL(`${input.baseUrl}/frontend/jupiter/softaculous/index.live.php`);
-  url.searchParams.set('api', 'json');
-  Object.entries(input.query).forEach(([key, value]) => url.searchParams.set(key, value));
-  const response = await fetch(url, {
-    method: input.form ? 'POST' : 'GET',
-    headers: {
-      Accept: 'application/json',
-      Authorization: authorization(input.credential),
-      ...(input.form ? { 'Content-Type': 'application/x-www-form-urlencoded' } : {}),
-    },
-    body: input.form ? new URLSearchParams(input.form).toString() : undefined,
-    redirect: 'manual',
-    signal: AbortSignal.timeout(55_000),
-  });
+  const perform = (securityToken = '', cookies = '', useAuthorization = true) => {
+    const url = new URL(`${input.baseUrl}${securityToken}/frontend/jupiter/softaculous/index.live.php`);
+    url.searchParams.set('api', 'json');
+    Object.entries(input.query).forEach(([key, value]) => url.searchParams.set(key, value));
+    return fetch(url, {
+      method: input.form ? 'POST' : 'GET',
+      headers: {
+        Accept: 'application/json',
+        ...(useAuthorization ? { Authorization: authorization(input.credential) } : {}),
+        ...(cookies ? { Cookie: cookies } : {}),
+        ...(input.form ? { 'Content-Type': 'application/x-www-form-urlencoded' } : {}),
+      },
+      body: input.form ? new URLSearchParams(input.form).toString() : undefined,
+      redirect: 'manual',
+      signal: AbortSignal.timeout(55_000),
+    });
+  };
+  let response = await perform();
   const tokenMode = input.credential.authMode === 'cpanel_token' || Boolean(input.credential.token);
+  const directRejected = response.status === 401 || response.status === 403 || (response.status >= 300 && response.status < 400);
+  if (!tokenMode && directRejected) {
+    const session = await createCpanelSession(input.baseUrl, input.credential);
+    response = await perform(session.securityToken, session.cookies, false);
+  }
   if (response.status >= 300 && response.status < 400) throw new Error(tokenMode
     ? 'This server redirected the Softaculous API request instead of accepting the connected cPanel token.'
     : 'Softaculous redirected the management request. Check the cPanel management username and password.');
@@ -93,7 +125,15 @@ async function request(input: {
     ? 'This cPanel server accepted the API token for cPanel, but does not allow that token to access Softaculous.'
     : 'Softaculous rejected the management username or password.');
   if (!response.ok) throw new Error(`Softaculous returned ${response.status}.`);
-  const text = await response.text();
+  let text = await response.text();
+  if (!tokenMode && /^\s*</.test(text)) {
+    const session = await createCpanelSession(input.baseUrl, input.credential);
+    response = await perform(session.securityToken, session.cookies, false);
+    if (!response.ok || (response.status >= 300 && response.status < 400)) {
+      throw new Error('Softaculous could not be opened through the authenticated cPanel session.');
+    }
+    text = await response.text();
+  }
   if (/^\s*</.test(text)) throw new Error(tokenMode
     ? 'Softaculous returned its sign-in page instead of accepting the connected cPanel token.'
     : 'Softaculous returned a sign-in page. Check the operational credential and try again.');

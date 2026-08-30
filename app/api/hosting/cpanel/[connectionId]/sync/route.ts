@@ -45,15 +45,13 @@ export async function POST(
       username: String(connection.username),
       token,
     });
-    if (connection.operationalCredentialStatus === 'verified') {
-      const credential = connection.encryptedOperationalSecret && connection.operationalSecretIv
-        ? JSON.parse(await decryptSecret(
+    if (connection.operationalCredentialStatus === 'verified' && connection.encryptedOperationalSecret && connection.operationalSecretIv) {
+      const credential = JSON.parse(await decryptSecret(
             String(connection.encryptedOperationalSecret),
             String(connection.operationalSecretIv),
             identity.userId,
             `operational:${connectionId}`,
-          )) as OperationalCredential
-        : { username: String(connection.username), token, authMode: 'cpanel_token' as const };
+          )) as OperationalCredential;
       try {
         const installations = await listSoftaculousInstallations(String(connection.baseUrl), credential);
         const byDomain = new Map(installations.map((installation) => [installation.domain, installation]));

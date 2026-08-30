@@ -273,6 +273,8 @@ export default function Home() {
   const [notice, setNotice] = useState('');
   const [activityFilter, setActivityFilter] = useState<'All' | Developer>('All');
   const [hostingProvider, setHostingProvider] = useState<HostingProvider | null>(null);
+  const [wordpressActivationConnection, setWordpressActivationConnection] = useState<HostingConnection | null>(null);
+  const [wordpressActivationBusy, setWordpressActivationBusy] = useState(false);
   const [hostingNotice, setHostingNotice] = useState('');
   const [hostingBusy, setHostingBusy] = useState(false);
   const [hostingConnections, setHostingConnections] = useState<HostingConnection[]>([]);
@@ -629,6 +631,39 @@ export default function Home() {
     }
   }
 
+  async function activateWordPressManagement(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!wordpressActivationConnection) return;
+    const form = event.currentTarget;
+    const formData = new FormData(form);
+    const connection = wordpressActivationConnection;
+    setWordpressActivationBusy(true);
+    showActionToast({ id: `wordpress-activate-${connection.id}`, status: 'progress', title: 'Activating WordPress Management', message: 'Verifying Softaculous with a harmless installation-list check. No website will be changed.' });
+    try {
+      const response = await fetch(`/api/hosting/cpanel/${connection.id}/operational`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          password: formData.get('password'),
+          defaultTemplateDomain: formData.get('defaultTemplateDomain'),
+        }),
+      });
+      const result = await response.json() as { error?: string; message?: string };
+      if (!response.ok) throw new Error(result.error || 'WordPress Management could not be activated.');
+      const passwordInput = form.elements.namedItem('password') as HTMLInputElement | null;
+      if (passwordInput) passwordInput.value = '';
+      await loadHostingInventory();
+      setWordpressActivationConnection(null);
+      setSettingsHostingNotice(result.message || 'WordPress Management is active.');
+      showActionToast({ id: `wordpress-activate-${connection.id}`, status: 'success', title: 'WordPress Management active', message: result.message || 'Softaculous controls are ready.' });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'WordPress Management could not be activated.';
+      showActionToast({ id: `wordpress-activate-${connection.id}`, status: 'error', title: 'Activation failed', message });
+    } finally {
+      setWordpressActivationBusy(false);
+    }
+  }
+
   async function syncHostingConnection(connectionId: string) {
     setHostingSyncingId(connectionId);
     setSettingsHostingNotice('Synchronising domains and WordPress installations…');
@@ -816,7 +851,7 @@ export default function Home() {
         {activeView === 'Domains' && <DomainsView domains={projectAwareDomains} onDomain={openDomain} onNotice={setNotice} notice={notice} inventoryIsLive={inventoryIsLive} />}
         {activeView === 'Projects' && <ProjectsView domains={projectAwareDomains} projects={projectRecords} onProject={setSelectedProject} onManageDomains={() => changeView('Domains')} onAddProject={() => setManualProjectOpen(true)} />}
         {activeView === 'Agent Activity' && <AgentActivity auditEvents={auditEvents} projects={projectRecords} projectEvents={projectEvents} filter={activityFilter} onFilter={setActivityFilter} />}
-        {activeView === 'Settings' && <SettingsView connections={hostingConnections} syncingId={hostingSyncingId} modeChangingId={hostingModeChangingId} notice={settingsHostingNotice} onSync={syncHostingConnection} onModeChange={changeHostingMode} onConnect={(provider) => { setHostingNotice(''); setHostingProvider(provider); }} />}
+        {activeView === 'Settings' && <SettingsView connections={hostingConnections} syncingId={hostingSyncingId} modeChangingId={hostingModeChangingId} notice={settingsHostingNotice} onSync={syncHostingConnection} onModeChange={changeHostingMode} onActivateWordPress={setWordpressActivationConnection} onConnect={(provider) => { setHostingNotice(''); setHostingProvider(provider); }} />}
       </section>
 
       {hostingProvider && !launchOpen && (
@@ -837,7 +872,7 @@ export default function Home() {
                     ['Open cPanel', 'Sign in to the cPanel account that owns your development subdomains.'],
                     ['Create an API token', 'Open Security → Manage API Tokens and create one named “SpyderWeb Local Connector”.'],
                     ['Copy the account details', 'Keep the secure cPanel URL, username and new token ready. Do not use your normal password.'],
-                    ['Start managing', 'A successful connection activates the available cPanel and WordPress management controls immediately.'],
+                    ['Start managing', 'A successful connection activates domain and PHP controls. WordPress Management is then activated once from the saved account in Settings.'],
                   ] : [
                     ['Open hPanel', 'Sign in to the Hostinger account that owns your development websites.'],
                     ['Create an API token', 'Open Account settings → API and create a token named “SpyderWeb Local Connector”.'],
@@ -856,9 +891,48 @@ export default function Home() {
                 {hostingProvider === 'cPanel' && <><label>Secure cPanel URL<input name="baseUrl" required type="url" placeholder="https://server.example.com:2083" /></label><label>cPanel username<input name="username" required autoComplete="username" placeholder="Account username" /></label></>}
                 <label>{hostingProvider === 'cPanel' ? 'cPanel API token' : 'Hostinger API token'}<input name="token" required type="password" autoComplete="new-password" placeholder="Paste the API token" /></label>
                 <label>Primary development domain<input name="primaryDomain" required placeholder="dev.example.co.za" /></label>
-                <div className="read-only-option"><span aria-hidden="true">✓</span><span><strong>Connection confirms access</strong><small>The encrypted token remains connected and activates supported domain, PHP and WordPress management controls immediately.</small></span></div>
+                <div className="read-only-option"><span aria-hidden="true">✓</span><span><strong>Connection confirms cPanel access</strong><small>The encrypted token stays connected for domain inventory and PHP controls. Softaculous WordPress access is activated separately from the saved account.</small></span></div>
                 {hostingNotice && <p className="notice">{hostingNotice}</p>}
                 <div className="hosting-form-actions"><button className="text-button" type="button" onClick={() => setHostingProvider(null)}>Close</button><button className="primary-button" type="submit" disabled={hostingBusy}>{hostingBusy ? 'Connecting…' : 'Save connection & scan'}</button></div>
+              </form>
+            </div>
+          </section>
+        </div>
+      )}
+
+      {wordpressActivationConnection && !launchOpen && (
+        <div className="project-modal-backdrop" onClick={() => !wordpressActivationBusy && setWordpressActivationConnection(null)}>
+          <section className="hosting-setup-modal" onClick={(event) => event.stopPropagation()}>
+            <button className="close-button" disabled={wordpressActivationBusy} onClick={() => setWordpressActivationConnection(null)}>×</button>
+            <header className="hosting-modal-header">
+              <span className="provider-logo cpanel">WP</span>
+              <div><p className="eyebrow">Saved cPanel account</p><h2>Activate WordPress Management</h2><p>{wordpressActivationConnection.name} is already connected. This adds Softaculous install, delete and template-clone access.</p></div>
+              <span className="setup-status connected">cPanel connected</span>
+            </header>
+            <div className="hosting-modal-body">
+              <section className="connection-guide">
+                <p className="eyebrow">Step-by-step guide</p>
+                <h3>One additional permission</h3>
+                <div className="guide-steps">
+                  {[
+                    ['Keep the existing connection', 'Your cPanel API token already manages domains and PHP. Do not create another API token.'],
+                    ['Use the cPanel account password', `Enter the normal cPanel password for “${wordpressActivationConnection.username}”. Softaculous does not accept this server’s API token.`],
+                    ['Verify without changing anything', 'SpyderWeb first asks Softaculous only to list its WordPress installations. No site is installed, deleted or overwritten.'],
+                    ['Save once and reuse', 'After verification, the password is encrypted and WordPress controls become available automatically on every connected domain.'],
+                  ].map(([title, description], index) => <div className="guide-step" key={title}><span>{index + 1}</span><div><strong>{title}</strong><p>{description}</p></div></div>)}
+                </div>
+                <div className="security-callout"><strong>No extra API or authenticator required</strong><p>For this hosting account, the existing cPanel API token plus the cPanel account password are sufficient. If the host later enables a separate Softaculous remote API, SpyderWeb can support that as another connection method.</p></div>
+              </section>
+              <form className="hosting-form" onSubmit={activateWordPressManagement}>
+                <div><p className="eyebrow">WordPress access</p><h3>Confirm Softaculous access</h3><p>The password is only stored after the read-only installation check succeeds.</p></div>
+                <label>cPanel username<input value={wordpressActivationConnection.username} readOnly aria-readonly="true" /></label>
+                <label>cPanel account password<input name="password" required type="password" autoComplete="current-password" placeholder="Enter the normal cPanel login password" /></label>
+                <label>Default template domain<select name="defaultTemplateDomain" required defaultValue={wordpressActivationConnection.defaultTemplateDomain || managedDomains.find((domain) => domain.connectionId === wordpressActivationConnection.id && /template/i.test(domain.domain))?.domain || ''}>
+                  <option value="" disabled>Choose the template source</option>
+                  {managedDomains.filter((domain) => domain.connectionId === wordpressActivationConnection.id).map((domain) => <option value={domain.domain} key={String(domain.id)}>{domain.domain}{/template/i.test(domain.domain) ? ' · detected template' : ''}</option>)}
+                </select></label>
+                <div className="read-only-option"><span aria-hidden="true">✓</span><span><strong>Verification is read-only</strong><small>Activation only checks the Softaculous installation list. WordPress actions still respect each domain’s soft lock and confirmation prompt.</small></span></div>
+                <div className="hosting-form-actions"><button className="text-button" type="button" disabled={wordpressActivationBusy} onClick={() => setWordpressActivationConnection(null)}>Close</button><button className="primary-button" type="submit" disabled={wordpressActivationBusy}>{wordpressActivationBusy ? 'Verifying Softaculous…' : 'Activate WordPress Management'}</button></div>
               </form>
             </div>
           </section>
@@ -944,10 +1018,10 @@ export default function Home() {
 
                 <section className="wordpress-actions-card">
                   <p className="eyebrow">Operational WordPress management</p>
-                  <h3>{selectedDomainOperational ? 'Live controls active' : selectedDomain.operationalReady ? 'Operations are paused' : 'Connection refresh needed'}</h3>
+                  <h3>{selectedDomainOperational ? 'Live controls active' : selectedDomain.operationalReady ? 'Operations are paused' : 'WordPress Management required'}</h3>
                   <div className="operation-readiness">
                     <span className="ready">cPanel connected</span>
-                    <span className={selectedDomainOperational ? 'ready' : ''}>{selectedDomainOperational ? 'Management active' : selectedDomain.operationalReady ? 'Operations paused' : 'Reconnect needed'}</span>
+                    <span className={selectedDomainOperational ? 'ready' : ''}>{selectedDomainOperational ? 'Management active' : selectedDomain.operationalReady ? 'Operations paused' : 'Activate in Settings'}</span>
                   </div>
                   {selectedDomain.operationalReady && selectedDomain.connectionMode !== 'managed_write' && <button className="primary-button operations-setup-button" onClick={() => {
                     const connection = hostingConnections.find((item) => item.id === selectedDomain.connectionId);
@@ -970,7 +1044,7 @@ export default function Home() {
                       {domainAvailabilityId === selectedDomain.id ? 'Updating…' : 'Mark available for a new build'}
                     </button>
                   )}
-                  <small>{!selectedDomain.operationalReady ? 'Refresh the saved cPanel connection. No second password or verification step is required.' : selectedDomain.softLocked ? 'The soft lock blocks every action that would delete or replace an existing WordPress website. Empty-domain installation, optional backup and PHP maintenance remain available.' : 'Clean installation and template loading always remove and verify any existing WordPress installation first. Replacement and deletion use one clear confirmation.'}</small>
+                  <small>{!selectedDomain.operationalReady ? 'Open Settings and activate WordPress Management for this saved cPanel account. Domain and PHP access remain connected.' : selectedDomain.softLocked ? 'The soft lock blocks every action that would delete or replace an existing WordPress website. Empty-domain installation, optional backup and PHP maintenance remain available.' : 'Clean installation and template loading always remove and verify any existing WordPress installation first. Replacement and deletion use one clear confirmation.'}</small>
                 </section>
                 {notice && <p className="notice">{notice}</p>}
               </aside>
@@ -1181,7 +1255,7 @@ function DomainCard({ domain, onClick }: { domain: Domain; onClick: () => void }
     <button className="domain-card" onClick={onClick}>
       <div className="domain-top"><span className="domain-icon">◎</span><span className="more">•••</span></div>
       <strong>{domain.domain}</strong><p>{domain.client}</p>
-      {domain.source === 'cpanel' && <div className="domain-control-badges"><span className={domain.softLocked ? '' : 'ready'}>{domain.softLocked ? 'Locked' : 'Unlocked'}</span><span className={domain.connectionMode === 'managed_write' && domain.operationalReady ? 'ready' : ''}>{domain.connectionMode === 'managed_write' && domain.operationalReady ? 'Operational' : domain.operationalReady ? 'Paused' : 'Reconnect needed'}</span></div>}
+      {domain.source === 'cpanel' && <div className="domain-control-badges"><span className={domain.softLocked ? '' : 'ready'}>{domain.softLocked ? 'Locked' : 'Unlocked'}</span><span className={domain.connectionMode === 'managed_write' && domain.operationalReady ? 'ready' : ''}>{domain.connectionMode === 'managed_write' && domain.operationalReady ? 'Operational' : domain.operationalReady ? 'Paused' : 'Activate in Settings'}</span></div>}
       {domain.stage && <span className="stage-label">{domain.stage}</span>}
       {domain.source === 'demo' && <div className="progress-track"><span style={{ width: `${Math.max(domain.progress, 6)}%` }} /></div>}
       <div className="domain-meta"><span>{domain.source === 'cpanel' ? domain.wordpress : `${domain.progress}%`}</span>{domain.developer ? <span className={`developer ${domain.developer.toLowerCase().replaceAll(' ', '-')}`}>{domain.developer.slice(0, 1)} · {domain.developer}</span> : <span>Unallocated</span>}</div>
@@ -1303,7 +1377,7 @@ function AgentActivity({ auditEvents, projects, projectEvents, filter, onFilter 
   );
 }
 
-function SettingsView({ connections, syncingId, modeChangingId, notice, onSync, onModeChange, onConnect }: { connections: HostingConnection[]; syncingId: string | null; modeChangingId: string | null; notice: string; onSync: (connectionId: string) => void; onModeChange: (connection: HostingConnection) => void; onConnect: (provider: HostingProvider) => void }) {
+function SettingsView({ connections, syncingId, modeChangingId, notice, onSync, onModeChange, onActivateWordPress, onConnect }: { connections: HostingConnection[]; syncingId: string | null; modeChangingId: string | null; notice: string; onSync: (connectionId: string) => void; onModeChange: (connection: HostingConnection) => void; onActivateWordPress: (connection: HostingConnection) => void; onConnect: (provider: HostingProvider) => void }) {
   const cpanelConnections = connections.filter((connection) => connection.provider === 'cpanel');
   const managedConnections = cpanelConnections.filter((connection) => connection.mode === 'managed_write' && connection.operationalCredentialStatus === 'verified');
   return (
@@ -1326,19 +1400,20 @@ function SettingsView({ connections, syncingId, modeChangingId, notice, onSync, 
           <article className="hosting-provider-card">
             <div className="provider-card-top"><span className="provider-logo cpanel">cP</span><span className={`not-connected ${cpanelConnections.length ? 'connected' : ''}`}>{cpanelConnections.length ? `${cpanelConnections.length} connected` : 'Not connected'}</span></div>
             <h3>cPanel</h3><p>Connect the shared hosting account that manages your main development domain and WordPress subdomains.</p>
-            <ul><li>Discover and save live domains</li><li>Activate management on connection</li><li>Pause or resume live operations at any time</li></ul>
+            <ul><li>Discover and save live domains</li><li>Manage domains and PHP with the API token</li><li>Activate Softaculous WordPress controls once</li></ul>
             {cpanelConnections.length > 0 && <div className="saved-connections">{cpanelConnections.map((connection) => (
               <article className="operational-connection" key={connection.id}>
                 <div className="connection-summary">
-                  <div className="connection-details"><span><strong>{connection.name}</strong><b className={`connection-health-pill ${connection.status === 'connected_scan_issue' ? 'warning' : ''}`}>{connection.status === 'connected_scan_issue' ? 'Connected · scan needed' : 'Connected'}</b><b className={`access-mode-pill ${connection.mode === 'managed_write' && connection.operationalCredentialStatus === 'verified' ? 'managed' : ''}`}>{connection.operationalCredentialStatus !== 'verified' ? 'Reconnect needed' : connection.mode === 'managed_write' ? 'Operations active' : 'Operations paused'}</b><b className={`operational-pill ${connection.operationalCredentialStatus === 'verified' ? 'verified' : ''}`}>{connection.operationalCredentialStatus === 'verified' ? 'cPanel API active' : 'Connection refresh needed'}</b></span><small>{connection.baseUrl}</small><small>{connection.status === 'connected_scan_issue' ? 'Authentication verified · live inventory not imported yet' : `Last scan: ${new Date(connection.lastSyncAt).toLocaleString()}`}</small></div>
+                  <div className="connection-details"><span><strong>{connection.name}</strong><b className={`connection-health-pill ${connection.status === 'connected_scan_issue' ? 'warning' : ''}`}>{connection.status === 'connected_scan_issue' ? 'Connected · scan needed' : 'cPanel connected'}</b><b className={`operational-pill ${connection.operationalCredentialStatus === 'verified' ? 'verified' : ''}`}>{connection.operationalCredentialStatus === 'verified' ? 'WordPress Management active' : 'WordPress Management not active'}</b>{connection.operationalCredentialStatus === 'verified' && <b className={`access-mode-pill ${connection.mode === 'managed_write' ? 'managed' : ''}`}>{connection.mode === 'managed_write' ? 'Operations active' : 'Operations paused'}</b>}</span><small>{connection.baseUrl}</small><small>{connection.status === 'connected_scan_issue' ? 'cPanel authentication verified · live inventory scan needs attention' : `Last scan: ${new Date(connection.lastSyncAt).toLocaleString()}`}</small></div>
                   <div className="connection-controls">
                     <button className="outline-button" disabled={syncingId === connection.id || modeChangingId === connection.id} onClick={() => onSync(connection.id)}>{syncingId === connection.id ? 'Scanning…' : connection.status === 'connected_scan_issue' ? 'Retry scan' : 'Scan domains & WordPress'}</button>
+                    {connection.operationalCredentialStatus !== 'verified' && <button className="primary-button" onClick={() => onActivateWordPress(connection)}>Activate WordPress Management</button>}
                     {connection.operationalCredentialStatus === 'verified' && <button className={`access-mode-button ${connection.mode === 'managed_write' ? 'read-only' : ''}`} disabled={syncingId === connection.id || modeChangingId === connection.id} onClick={() => onModeChange(connection)}>{modeChangingId === connection.id ? 'Changing…' : connection.mode === 'managed_write' ? 'Pause WordPress operations' : 'Resume WordPress operations'}</button>}
                   </div>
                 </div>
                 <div id={`operations-${connection.id}`} className="operational-form">
-                  <div className="operational-form-heading"><div><p className="eyebrow">WordPress operations</p><h4>{connection.mode === 'managed_write' ? 'Management rights active' : 'Management is paused'}</h4></div><span>{connection.defaultTemplateDomain || 'Template will be detected on scan'}</span></div>
-                  <p>SpyderWeb uses the encrypted cPanel API token already saved for this connection. There is no second username, password or verification step. Fresh installations use temporary admin / admin credentials because the template immediately replaces them.</p>
+                  <div className="operational-form-heading"><div><p className="eyebrow">WordPress operations</p><h4>{connection.operationalCredentialStatus !== 'verified' ? 'Activation required' : connection.mode === 'managed_write' ? 'WordPress Management active' : 'WordPress Management paused'}</h4></div><span>{connection.defaultTemplateDomain || 'Template will be selected during activation'}</span></div>
+                  <p>{connection.operationalCredentialStatus === 'verified' ? 'Softaculous access is encrypted and saved. Fresh installations use temporary admin / admin credentials because the template immediately replaces them.' : 'The cPanel connection is already working for domains and PHP. Activate WordPress Management once to add Softaculous install, delete and template-clone access.'}</p>
                 </div>
               </article>
             ))}</div>}
