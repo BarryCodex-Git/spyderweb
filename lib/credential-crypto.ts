@@ -26,14 +26,41 @@ async function credentialKey() {
   return crypto.subtle.importKey('raw', raw, { name: 'AES-GCM' }, false, ['encrypt', 'decrypt']);
 }
 
-function context(ownerUserId: string, connectionId: string) {
+function context(ownerUserId: string, scope: string) {
+  return new TextEncoder().encode(`spyderweb:secret:${ownerUserId}:${scope}:v1`);
+}
+
+function hostingContext(ownerUserId: string, connectionId: string) {
   return new TextEncoder().encode(`spyderweb:cpanel:${ownerUserId}:${connectionId}:v1`);
+}
+
+export async function encryptSecret(value: string, ownerUserId: string, scope: string) {
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const encrypted = await crypto.subtle.encrypt(
+    { name: 'AES-GCM', iv, additionalData: context(ownerUserId, scope) },
+    await credentialKey(),
+    new TextEncoder().encode(value),
+  );
+  return { encrypted: bytesToBase64Url(new Uint8Array(encrypted)), iv: bytesToBase64Url(iv) };
+}
+
+export async function decryptSecret(encrypted: string, iv: string, ownerUserId: string, scope: string) {
+  try {
+    const decrypted = await crypto.subtle.decrypt(
+      { name: 'AES-GCM', iv: base64UrlToBytes(iv), additionalData: context(ownerUserId, scope) },
+      await credentialKey(),
+      base64UrlToBytes(encrypted),
+    );
+    return new TextDecoder().decode(decrypted);
+  } catch {
+    throw new Error('The saved secure credential could not be unlocked. Save it again in Settings.');
+  }
 }
 
 export async function encryptHostingToken(token: string, ownerUserId: string, connectionId: string) {
   const iv = crypto.getRandomValues(new Uint8Array(12));
   const encrypted = await crypto.subtle.encrypt(
-    { name: 'AES-GCM', iv, additionalData: context(ownerUserId, connectionId) },
+    { name: 'AES-GCM', iv, additionalData: hostingContext(ownerUserId, connectionId) },
     await credentialKey(),
     new TextEncoder().encode(token),
   );
@@ -55,7 +82,7 @@ export async function decryptHostingToken(
       {
         name: 'AES-GCM',
         iv: base64UrlToBytes(encryptionIv),
-        additionalData: context(ownerUserId, connectionId),
+        additionalData: hostingContext(ownerUserId, connectionId),
       },
       await credentialKey(),
       base64UrlToBytes(encryptedToken),

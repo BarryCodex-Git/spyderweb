@@ -30,7 +30,7 @@ export async function POST(
 
     const db = await ensureHostingSchema(getDatabase());
     const connection = await db
-      .prepare(`SELECT id, name, mode FROM hosting_connections
+      .prepare(`SELECT id, name, mode, operational_credential_status AS operationalCredentialStatus FROM hosting_connections
         WHERE id = ? AND owner_user_id = ? LIMIT 1`)
       .bind(connectionId, identity.userId)
       .first();
@@ -39,14 +39,19 @@ export async function POST(
     const previousMode = String(connection.mode || 'read_only');
     const now = new Date().toISOString();
     const writeActionsEnabled = mode === 'managed_write' ? 1 : 0;
+    const security = await db.prepare(`SELECT totp_enabled AS enabled FROM owner_security WHERE owner_user_id = ?`)
+      .bind(identity.userId).first();
+    const destructiveActionsEnabled = mode === 'managed_write'
+      && connection.operationalCredentialStatus === 'verified'
+      && security?.enabled === 1 ? 1 : 0;
     const status = mode === 'managed_write' ? 'connected_managed' : 'connected_read_only';
 
     await db.batch([
       db
         .prepare(`UPDATE hosting_connections SET mode = ?, status = ?, write_actions_enabled = ?,
-          destructive_actions_enabled = 0, updated_at = ?
+          destructive_actions_enabled = ?, updated_at = ?
           WHERE id = ? AND owner_user_id = ?`)
-        .bind(mode, status, writeActionsEnabled, now, connectionId, identity.userId),
+        .bind(mode, status, writeActionsEnabled, destructiveActionsEnabled, now, connectionId, identity.userId),
       db
         .prepare(`INSERT INTO hosting_audit_events (
           id, owner_user_id, connection_id, action, target, outcome, details_json, created_at
@@ -56,7 +61,7 @@ export async function POST(
           identity.userId,
           connectionId,
           String(connection.name),
-          JSON.stringify({ previousMode, mode, destructiveActionsEnabled: false }),
+          JSON.stringify({ previousMode, mode, destructiveActionsEnabled: destructiveActionsEnabled === 1 }),
           now,
         ),
     ]);
@@ -65,10 +70,10 @@ export async function POST(
       mode,
       status,
       writeActionsEnabled,
-      destructiveActionsEnabled: 0,
+      destructiveActionsEnabled,
       message:
         mode === 'managed_write'
-          ? `${String(connection.name)} now has managed write access. Destructive actions remain protected and unavailable.`
+          ? `${String(connection.name)} now has managed write access. Every WordPress action remains protected by the domain lock, exact-name confirmation and owner code.`
           : `${String(connection.name)} has been returned to read-only mode.`,
     });
   } catch {

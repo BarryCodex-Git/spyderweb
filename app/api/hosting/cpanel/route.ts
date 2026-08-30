@@ -27,12 +27,14 @@ export async function GET(request: Request) {
 
   try {
     const db = await ensureHostingSchema();
-    const [connections, domains] = await Promise.all([
+    const [connections, domains, security, audit] = await Promise.all([
       db
         .prepare(`SELECT id, provider, name, base_url AS baseUrl, username, primary_domain AS primaryDomain,
           status, mode, credential_storage AS credentialStorage, capabilities_json AS capabilitiesJson,
           write_actions_enabled AS writeActionsEnabled,
           destructive_actions_enabled AS destructiveActionsEnabled,
+          operational_credential_status AS operationalCredentialStatus,
+          default_template_domain AS defaultTemplateDomain,
           confirmation_policy AS confirmationPolicy, last_sync_at AS lastSyncAt
           FROM hosting_connections WHERE owner_user_id = ? ORDER BY updated_at DESC`)
         .bind(identity.userId)
@@ -45,10 +47,16 @@ export async function GET(request: Request) {
           wordpress_installation_id AS wordpressInstallationId, wordpress_source AS wordpressSource,
           workflow_status_override AS workflowStatusOverride,
           assigned_developer AS assignedDeveloper, wordpress_soft_locked AS wordpressSoftLocked,
+          restore_point_at AS restorePointAt, php_profile_status AS phpProfileStatus,
           ssl_status AS sslStatus, last_seen_at AS lastSeenAt
           FROM hosting_domains WHERE owner_user_id = ? AND active = 1 ORDER BY domain`)
         .bind(identity.userId)
         .all(),
+      db.prepare(`SELECT totp_enabled AS enabled, pending_created_at AS pendingCreatedAt
+        FROM owner_security WHERE owner_user_id = ?`).bind(identity.userId).first(),
+      db.prepare(`SELECT id, action, target, outcome, details_json AS detailsJson, created_at AS createdAt
+        FROM hosting_audit_events WHERE owner_user_id = ? ORDER BY created_at DESC LIMIT 40`)
+        .bind(identity.userId).all(),
     ]);
 
     return json({
@@ -58,6 +66,12 @@ export async function GET(request: Request) {
         capabilitiesJson: undefined,
       })),
       domains: domains.results,
+      security: { totpEnabled: security?.enabled === 1, enrollmentPending: Boolean(security?.pendingCreatedAt) },
+      audit: audit.results.map((event) => ({
+        ...event,
+        details: JSON.parse(String(event.detailsJson || '{}')),
+        detailsJson: undefined,
+      })),
     });
   } catch {
     return json({ error: 'Hosting inventory is temporarily unavailable.' }, 500);

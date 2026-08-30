@@ -22,6 +22,11 @@ const schemaStatements = [
     encrypted_token TEXT NOT NULL,
     encryption_iv TEXT NOT NULL,
     credential_version INTEGER NOT NULL DEFAULT 1,
+    operational_auth_type TEXT,
+    encrypted_operational_secret TEXT,
+    operational_secret_iv TEXT,
+    operational_credential_status TEXT NOT NULL DEFAULT 'not_configured',
+    default_template_domain TEXT,
     capabilities_json TEXT NOT NULL DEFAULT '{}',
     write_actions_enabled INTEGER NOT NULL DEFAULT 0,
     destructive_actions_enabled INTEGER NOT NULL DEFAULT 0,
@@ -49,6 +54,8 @@ const schemaStatements = [
     workflow_status_override TEXT,
     assigned_developer TEXT,
     wordpress_soft_locked INTEGER NOT NULL DEFAULT 1,
+    restore_point_at TEXT,
+    php_profile_status TEXT NOT NULL DEFAULT 'not_checked',
     ssl_status TEXT NOT NULL DEFAULT 'not_checked',
     active INTEGER NOT NULL DEFAULT 1,
     last_seen_at TEXT NOT NULL
@@ -69,6 +76,15 @@ const schemaStatements = [
     ON hosting_domains (owner_user_id, active)`,
   `CREATE INDEX IF NOT EXISTS idx_hosting_audit_owner_created
     ON hosting_audit_events (owner_user_id, created_at)`,
+  `CREATE TABLE IF NOT EXISTS owner_security (
+    owner_user_id TEXT PRIMARY KEY NOT NULL,
+    encrypted_totp_secret TEXT,
+    totp_secret_iv TEXT,
+    totp_enabled INTEGER NOT NULL DEFAULT 0,
+    pending_created_at TEXT,
+    last_accepted_counter INTEGER,
+    updated_at TEXT NOT NULL
+  )`,
 ];
 
 const hostingDomainColumnMigrations = [
@@ -80,6 +96,16 @@ const hostingDomainColumnMigrations = [
   ['workflow_status_override', 'ALTER TABLE hosting_domains ADD COLUMN workflow_status_override TEXT'],
   ['assigned_developer', 'ALTER TABLE hosting_domains ADD COLUMN assigned_developer TEXT'],
   ['wordpress_soft_locked', 'ALTER TABLE hosting_domains ADD COLUMN wordpress_soft_locked INTEGER NOT NULL DEFAULT 1'],
+  ['restore_point_at', 'ALTER TABLE hosting_domains ADD COLUMN restore_point_at TEXT'],
+  ['php_profile_status', "ALTER TABLE hosting_domains ADD COLUMN php_profile_status TEXT NOT NULL DEFAULT 'not_checked'"],
+] as const;
+
+const hostingConnectionColumnMigrations = [
+  ['operational_auth_type', 'ALTER TABLE hosting_connections ADD COLUMN operational_auth_type TEXT'],
+  ['encrypted_operational_secret', 'ALTER TABLE hosting_connections ADD COLUMN encrypted_operational_secret TEXT'],
+  ['operational_secret_iv', 'ALTER TABLE hosting_connections ADD COLUMN operational_secret_iv TEXT'],
+  ['operational_credential_status', "ALTER TABLE hosting_connections ADD COLUMN operational_credential_status TEXT NOT NULL DEFAULT 'not_configured'"],
+  ['default_template_domain', 'ALTER TABLE hosting_connections ADD COLUMN default_template_domain TEXT'],
 ] as const;
 
 export async function ensureHostingSchema(db = getDatabase()) {
@@ -88,6 +114,11 @@ export async function ensureHostingSchema(db = getDatabase()) {
   const existing = new Set(columns.results.map((column) => column.name));
   for (const [name, statement] of hostingDomainColumnMigrations) {
     if (!existing.has(name)) await db.prepare(statement).run();
+  }
+  const connectionColumns = await db.prepare("PRAGMA table_info('hosting_connections')").all<{ name: string }>();
+  const existingConnectionColumns = new Set(connectionColumns.results.map((column) => column.name));
+  for (const [name, statement] of hostingConnectionColumnMigrations) {
+    if (!existingConnectionColumns.has(name)) await db.prepare(statement).run();
   }
   return db;
 }

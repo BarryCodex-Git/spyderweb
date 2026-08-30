@@ -112,7 +112,7 @@ function validateCredentialPart(value: string, label: string, maxLength: number)
   return normalized;
 }
 
-async function uapi(
+export async function cpanelUapi(
   baseUrl: string,
   username: string,
   token: string,
@@ -154,6 +154,26 @@ async function uapi(
     throw new CpanelFunctionError(detail || `cPanel could not run ${module}/${fn}.`);
   }
   return payload.result.data;
+}
+
+const uapi = cpanelUapi;
+
+export async function applyRecommendedPhpProfile(input: {
+  baseUrl: string;
+  username: string;
+  token: string;
+  domain: string;
+}) {
+  return cpanelUapi(input.baseUrl, input.username, input.token, 'LangPHP', 'php_ini_set_user_basic_directives', {
+    type: 'vhost',
+    vhost: input.domain,
+    'directive-1': 'memory_limit:512M',
+    'directive-2': 'post_max_size:512M',
+    'directive-3': 'upload_max_filesize:512M',
+    'directive-4': 'max_execution_time:300',
+    'directive-5': 'max_input_time:300',
+    'directive-6': 'max_input_vars:5000',
+  });
 }
 
 async function api2ListSubdomains(baseUrl: string, username: string, token: string) {

@@ -17,6 +17,11 @@ export const hostingConnections = sqliteTable(
     encryptedToken: text('encrypted_token').notNull(),
     encryptionIv: text('encryption_iv').notNull(),
     credentialVersion: integer('credential_version').notNull().default(1),
+    operationalAuthType: text('operational_auth_type'),
+    encryptedOperationalSecret: text('encrypted_operational_secret'),
+    operationalSecretIv: text('operational_secret_iv'),
+    operationalCredentialStatus: text('operational_credential_status').notNull().default('not_configured'),
+    defaultTemplateDomain: text('default_template_domain'),
     capabilitiesJson: text('capabilities_json').notNull().default('{}'),
     writeActionsEnabled: integer('write_actions_enabled').notNull().default(0),
     destructiveActionsEnabled: integer('destructive_actions_enabled').notNull().default(0),
@@ -58,6 +63,8 @@ export const hostingDomains = sqliteTable(
     workflowStatusOverride: text('workflow_status_override'),
     assignedDeveloper: text('assigned_developer'),
     wordpressSoftLocked: integer('wordpress_soft_locked').notNull().default(1),
+    restorePointAt: text('restore_point_at'),
+    phpProfileStatus: text('php_profile_status').notNull().default('not_checked'),
     sslStatus: text('ssl_status').notNull().default('not_checked'),
     active: integer('active').notNull().default(1),
     lastSeenAt: text('last_seen_at').notNull(),
@@ -70,6 +77,16 @@ export const hostingDomains = sqliteTable(
     index('idx_hosting_domains_owner_active').on(table.ownerUserId, table.active),
   ],
 );
+
+export const ownerSecurity = sqliteTable('owner_security', {
+  ownerUserId: text('owner_user_id').primaryKey(),
+  encryptedTotpSecret: text('encrypted_totp_secret'),
+  totpSecretIv: text('totp_secret_iv'),
+  totpEnabled: integer('totp_enabled').notNull().default(0),
+  pendingCreatedAt: text('pending_created_at'),
+  lastAcceptedCounter: integer('last_accepted_counter'),
+  updatedAt: text('updated_at').notNull(),
+});
 
 export const hostingAuditEvents = sqliteTable(
   'hosting_audit_events',
