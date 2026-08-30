@@ -12,7 +12,7 @@ The first clickable GUI is running and includes:
 - A three-step **Launch Build** flow.
 - Assignment to Barry for template builds or Clive for custom builds.
 - Development-domain selection, client notes, and an asset-upload placeholder.
-- Safe simulated WordPress and template actions; no live server changes are connected yet.
+- Live cPanel and Softaculous operations for WordPress installation, removal, backup, template cloning and recommended PHP limits, protected by per-domain soft locks and clear confirmations.
 
 The interface uses mid blue, dark blue, and dark purple accents with a custom SpyderWeb logo.
 

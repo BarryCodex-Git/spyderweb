@@ -30,7 +30,7 @@ const schemaStatements = [
     capabilities_json TEXT NOT NULL DEFAULT '{}',
     write_actions_enabled INTEGER NOT NULL DEFAULT 0,
     destructive_actions_enabled INTEGER NOT NULL DEFAULT 0,
-    confirmation_policy TEXT NOT NULL DEFAULT 'owner_code+exact_domain+backup',
+    confirmation_policy TEXT NOT NULL DEFAULT 'soft_lock+clear_confirmation',
     last_sync_at TEXT NOT NULL,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL

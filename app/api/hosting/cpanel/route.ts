@@ -82,10 +82,6 @@ export async function POST(request: Request) {
 
   try {
     const body = (await request.json()) as Record<string, unknown>;
-    if (body.readOnly !== true) {
-      return json({ error: 'The first cPanel connection must remain read-only.' }, 400);
-    }
-
     const name = cleanText(body.name, 'connection name', 100);
     const primaryDomain = cleanText(body.primaryDomain, 'primary development domain', 253).toLowerCase();
     const discovered = await discoverCpanel({
@@ -116,7 +112,7 @@ export async function POST(request: Request) {
           capabilities_json, write_actions_enabled,
           destructive_actions_enabled, confirmation_policy, last_sync_at, created_at, updated_at
         ) VALUES (?, ?, ?, 'cpanel', ?, ?, ?, ?, ?, 'read_only', 'encrypted_cloud', ?, ?, ?, ?, 0, 0,
-          'owner_code+exact_domain+backup', ?, ?, ?)
+          'soft_lock+clear_confirmation', ?, ?, ?)
         ON CONFLICT(owner_user_id, provider, base_url, username) DO UPDATE SET
           owner_email = excluded.owner_email, name = excluded.name,
           primary_domain = excluded.primary_domain,
@@ -198,7 +194,7 @@ export async function POST(request: Request) {
       db
         .prepare(`INSERT INTO hosting_audit_events (
           id, owner_user_id, connection_id, action, target, outcome, details_json, created_at
-        ) VALUES (?, ?, ?, 'cpanel.read_only_scan', ?, ?, ?, ?)`)
+        ) VALUES (?, ?, ?, 'cpanel.inventory_scan', ?, ?, ?, ?)`)
         .bind(
           crypto.randomUUID(),
           identity.userId,
@@ -231,7 +227,7 @@ export async function POST(request: Request) {
         capabilities: discovered.capabilities,
         writeActionsEnabled: 0,
         destructiveActionsEnabled: 0,
-        confirmationPolicy: 'owner_code+exact_domain+backup',
+        confirmationPolicy: 'soft_lock+clear_confirmation',
         lastSyncAt: now,
       },
       domains: discovered.domains.map((domain) => ({
@@ -246,8 +242,8 @@ export async function POST(request: Request) {
       wordpressScanStatus: discovered.wordpressScanStatus,
       message: discovered.scanStatus === 'complete'
         ? discovered.wordpressScanStatus === 'complete'
-          ? `${discovered.domains.length} domains discovered and ${discovered.wordpressInstallationCount} WordPress installations identified. This cPanel connection is now securely saved for future synchronisation.`
-          : `${discovered.domains.length} domains discovered and the cPanel connection is securely saved. WordPress inspection still needs attention and will retry automatically.`
+          ? `${discovered.domains.length} domains discovered and ${discovered.wordpressInstallationCount} WordPress installations identified. The connection is saved; activate WordPress management in Settings when you are ready to run live actions.`
+          : `${discovered.domains.length} domains discovered and the cPanel connection is securely saved. Activate WordPress management in Settings to enable Softaculous installation, cloning and removal.`
         : 'cPanel connected and the credentials are securely saved. The live domain scan needs another attempt; use Retry scan from Settings.',
     });
   } catch (error) {

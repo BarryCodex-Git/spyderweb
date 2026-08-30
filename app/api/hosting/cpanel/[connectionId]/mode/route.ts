@@ -35,6 +35,9 @@ export async function POST(
       .bind(connectionId, identity.userId)
       .first();
     if (!connection) return json({ error: 'This cPanel connection was not found.' }, 404);
+    if (mode === 'managed_write' && connection.operationalCredentialStatus !== 'verified') {
+      return json({ error: 'Activate WordPress management with the cPanel account login first.' }, 400);
+    }
 
     const previousMode = String(connection.mode || 'read_only');
     const now = new Date().toISOString();
@@ -70,8 +73,8 @@ export async function POST(
       destructiveActionsEnabled,
       message:
         mode === 'managed_write'
-          ? `${String(connection.name)} now has managed write access. Every WordPress action remains protected by the domain lock, exact-name confirmation and owner code.`
-          : `${String(connection.name)} has been returned to read-only mode.`,
+          ? `${String(connection.name)} WordPress operations are active. Per-domain soft locks and clear confirmations remain in place.`
+          : `${String(connection.name)} WordPress operations are paused. Domain scanning remains connected.`,
     });
   } catch {
     return json({ error: 'The hosting access mode could not be changed.' }, 500);

@@ -214,6 +214,8 @@ button.table-row { cursor: pointer; }.table-row:last-child { border-bottom: 0; }
 .domain-control-badges span, .operation-readiness span { padding: 4px 7px; border-radius: 7px; color: #6c778a; background: #edf0f5; font-size: 11px; font-weight: 800; }
 .domain-control-badges span.ready, .operation-readiness span.ready { color: #147354; background: #e2f6ed; }
 .operation-readiness { display: flex; flex-wrap: wrap; gap: 6px; margin: 12px 0; }
+.operations-setup-button { width: 100%; justify-content: center; margin-bottom: 10px; }
+.read-only-option > span:first-child { width: 18px; height: 18px; display: grid; place-items: center; border-radius: 6px; color: white; background: var(--mid-blue); font-size: 11px; font-weight: 900; }
 .domain-start-build { width: 100%; margin: 3px 0 10px; }
 .operation-confirm-backdrop { z-index: 90; }
 .operation-confirm-modal { position: relative; width: min(610px, 100%); max-height: calc(100vh - 44px); overflow-y: auto; padding: 30px; border-radius: 20px; background: white; box-shadow: 0 34px 100px rgba(5,17,46,.42); }

@@ -1,7 +1,8 @@
 import { discoverCpanel } from '@/lib/cpanel';
-import { decryptHostingToken } from '@/lib/credential-crypto';
+import { decryptHostingToken, decryptSecret } from '@/lib/credential-crypto';
 import { ensureHostingSchema, stableId } from '@/lib/hosting-db';
 import { getRequestIdentity, isSameOrigin } from '@/lib/request-auth';
+import { listSoftaculousInstallations, type OperationalCredential } from '@/lib/softaculous';
 
 export const dynamic = 'force-dynamic';
 
@@ -24,7 +25,9 @@ export async function POST(
     const db = await ensureHostingSchema();
     const connection = await db
       .prepare(`SELECT id, name, base_url AS baseUrl, username, mode, encrypted_token AS encryptedToken,
-        encryption_iv AS encryptionIv FROM hosting_connections
+        encryption_iv AS encryptionIv, encrypted_operational_secret AS encryptedOperationalSecret,
+        operational_secret_iv AS operationalSecretIv,
+        operational_credential_status AS operationalCredentialStatus FROM hosting_connections
         WHERE id = ? AND owner_user_id = ? AND provider = 'cpanel'`)
       .bind(connectionId, identity.userId)
       .first<Record<string, unknown>>();
@@ -42,6 +45,30 @@ export async function POST(
       username: String(connection.username),
       token,
     });
+    if (connection.operationalCredentialStatus === 'verified'
+      && connection.encryptedOperationalSecret && connection.operationalSecretIv) {
+      const credential = JSON.parse(await decryptSecret(
+        String(connection.encryptedOperationalSecret),
+        String(connection.operationalSecretIv),
+        identity.userId,
+        `operational:${connectionId}`,
+      )) as OperationalCredential;
+      const installations = await listSoftaculousInstallations(String(connection.baseUrl), credential);
+      const byDomain = new Map(installations.map((installation) => [installation.domain, installation]));
+      for (const domain of discovered.domains) {
+        const installation = byDomain.get(domain.domain);
+        domain.wordpressStatus = installation ? 'installed' : 'not_installed';
+        domain.wordpressInstallationId = installation?.id ?? null;
+        domain.wordpressSiteName = installation?.siteName ?? null;
+        domain.wordpressUrl = installation?.url ?? null;
+        domain.wordpressVersion = installation?.version ?? null;
+        domain.wordpressSource = installation ? 'Softaculous operational connection' : null;
+      }
+      discovered.wordpressInstallationCount = installations.length;
+      discovered.wordpressScanStatus = 'complete';
+      discovered.capabilities.wordpressInventory = true;
+      discovered.capabilities.wordpressManagement = true;
+    }
 
     const now = new Date().toISOString();
     const connectionStatus = discovered.scanStatus === 'complete'
@@ -108,7 +135,7 @@ export async function POST(
       db
         .prepare(`INSERT INTO hosting_audit_events (
           id, owner_user_id, connection_id, action, target, outcome, details_json, created_at
-        ) VALUES (?, ?, ?, 'cpanel.read_only_sync', ?, ?, ?, ?)`)
+        ) VALUES (?, ?, ?, 'cpanel.inventory_sync', ?, ?, ?, ?)`)
         .bind(
           crypto.randomUUID(),
           identity.userId,

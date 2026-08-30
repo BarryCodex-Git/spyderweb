@@ -27,7 +27,7 @@ export const hostingConnections = sqliteTable(
     destructiveActionsEnabled: integer('destructive_actions_enabled').notNull().default(0),
     confirmationPolicy: text('confirmation_policy')
       .notNull()
-      .default('owner_code+exact_domain+backup'),
+      .default('soft_lock+clear_confirmation'),
     lastSyncAt: text('last_sync_at').notNull(),
     createdAt: text('created_at').notNull(),
     updatedAt: text('updated_at').notNull(),

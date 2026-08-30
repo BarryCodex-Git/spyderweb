@@ -8,6 +8,7 @@ export type SoftaculousInstall = {
   id: string | null;
   siteName: string | null;
   url: string | null;
+  version: string | null;
 };
 
 function basicAuth(credential: OperationalCredential) {
@@ -20,6 +21,14 @@ function basicAuth(credential: OperationalCredential) {
 function clean(value: unknown, max = 2048) {
   if (typeof value !== 'string' && typeof value !== 'number') return null;
   return String(value).replace(/[\r\n\0]+/g, ' ').trim().slice(0, max) || null;
+}
+
+function errorText(value: unknown): string {
+  if (!value) return '';
+  if (typeof value === 'string' || typeof value === 'number') return String(value).trim();
+  if (Array.isArray(value)) return value.map(errorText).filter(Boolean).join(' ');
+  if (typeof value === 'object') return Object.values(value as Record<string, unknown>).map(errorText).filter(Boolean).join(' ');
+  return '';
 }
 
 function domainFrom(value: unknown) {
@@ -42,6 +51,7 @@ function collect(value: unknown, results = new Map<string, SoftaculousInstall>()
       id: clean(record.insid ?? record.installation_id ?? record.id ?? keyHint, 180),
       siteName: clean(record.site_name ?? record.blogname ?? record.site_title, 180),
       url,
+      version: clean(record.ver ?? record.version ?? record.softversion, 80),
     });
   }
   Object.entries(record).forEach(([key, item]) => collect(item, results, key));
@@ -76,10 +86,8 @@ async function request(input: {
   let payload: unknown;
   try { payload = JSON.parse(text); } catch { throw new Error('Softaculous returned an unreadable response.'); }
   const record = payload && typeof payload === 'object' ? payload as Record<string, unknown> : {};
-  const errors = record.error ?? record.errors;
-  if (errors && (Array.isArray(errors) ? errors.length : String(errors).trim())) {
-    throw new Error(Array.isArray(errors) ? errors.map(String).join(' ') : String(errors));
-  }
+  const errors = errorText(record.error ?? record.errors);
+  if (errors) throw new Error(errors);
   return payload;
 }
 
@@ -105,7 +113,7 @@ export async function softaculousAction(input: {
       baseUrl: input.baseUrl, credential: input.credential,
       query: { act: 'software', soft: '26' },
       form: {
-        softsubmit: '1', softdomain: input.domain, softdirectory: '', protocol: 'https://',
+        softsubmit: '1', softdomain: input.domain, softdirectory: '', softproto: '3',
         site_name: input.siteName || 'New Client Website',
         admin_username: input.adminUsername || '', admin_pass: input.adminPassword || '',
         admin_email: input.adminEmail || '',
@@ -118,19 +126,19 @@ export async function softaculousAction(input: {
     return request({
       baseUrl: input.baseUrl, credential: input.credential,
       query: { act: 'sclone', insid: input.sourceInstallationId || '' },
-      form: { softsubmit: '1', softdomain: input.domain, softdirectory: '', protocol: 'https://' },
+      form: { softsubmit: '1', softdomain: input.domain, softdirectory: '', softproto: '3' },
     });
   }
   if (input.action === 'backup') {
     return request({
       baseUrl: input.baseUrl, credential: input.credential,
       query: { act: 'backup', insid: input.installationId || '' },
-      form: { backupins: '1', backup_dir: '1', backup_db: '1', note: `SpyderWeb restore point for ${input.domain}` },
+      form: { backupins: '1', backup_dir: '1', backup_datadir: '1', backup_db: '1', noemail: '1' },
     });
   }
   return request({
     baseUrl: input.baseUrl, credential: input.credential,
     query: { act: 'remove', insid: input.installationId || '' },
-    form: { removeins: '1', remove_dir: '1', remove_db: '1', remove_datadir: '1' },
+    form: { removeins: '1', remove_dir: '1', remove_db: '1', remove_dbuser: '1', remove_datadir: '1', noemail: '1' },
   });
 }
