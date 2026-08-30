@@ -728,9 +728,12 @@ export default function Home() {
             <button className="close-button" onClick={() => setSelectedDomain(null)}>×</button>
             <header className="domain-modal-header">
               <span className="drawer-logo"><Image src="/spyderweb-logo.png" alt="" width={61} height={61} /></span>
-              <div><p className="eyebrow">WordPress domain control</p><h2>{selectedDomain.domain}</h2><p>{selectedDomain.client}</p></div>
+              <div className="domain-heading-copy">
+                <p className="eyebrow">WordPress domain control</p>
+                <div className="domain-title-row"><h2>{selectedDomain.domain}</h2><span className={`status-pill ${selectedDomain.status.toLowerCase().replaceAll(' ', '-')}`}>{selectedDomain.status}</span></div>
+                <p>{selectedDomain.client}</p>
+              </div>
               <div className="modal-header-tools">
-                <span className={`status-pill ${selectedDomain.status.toLowerCase().replaceAll(' ', '-')}`}>{selectedDomain.status}</span>
                 <SiteQuickLinks domainOrUrl={selectedDomain.wordpressUrl || selectedDomain.domain} label={selectedDomain.domain} />
               </div>
             </header>
