@@ -34,8 +34,6 @@ export async function POST(request: Request, { params }: { params: Promise<{ con
       username: field(body.username || connection.username, 'management username', 128),
       password: field(body.password, 'management password', 4096),
     };
-    const adminUsername = field(body.adminUsername, 'standard WordPress administrator username', 100);
-    const adminPassword = field(body.adminPassword, 'standard WordPress administrator password', 4096);
     const defaultTemplateDomain = field(body.defaultTemplateDomain, 'default template domain', 253).toLowerCase();
     const templateRecord = await db.prepare(`SELECT id FROM hosting_domains WHERE connection_id = ?
       AND owner_user_id = ? AND domain = ? AND active = 1 LIMIT 1`)
@@ -47,7 +45,12 @@ export async function POST(request: Request, { params }: { params: Promise<{ con
     if (!template?.id) {
       throw new Error(`Softaculous connected, but ${defaultTemplateDomain} is not registered there as a WordPress installation. Use Softaculous Scan first, then try again.`);
     }
-    const encrypted = await encryptSecret(JSON.stringify({ ...credential, adminUsername, adminPassword, adminEmail: identity.email || '' }), identity.userId, `operational:${connectionId}`);
+    const encrypted = await encryptSecret(JSON.stringify({
+      ...credential,
+      adminUsername: 'admin',
+      adminPassword: 'admin',
+      adminEmail: identity.email || '',
+    }), identity.userId, `operational:${connectionId}`);
     const now = new Date().toISOString();
     const statements = [
       db.prepare(`UPDATE hosting_connections SET operational_auth_type = 'cpanel_basic',
@@ -61,9 +64,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ con
         .bind(crypto.randomUUID(), identity.userId, connectionId, defaultTemplateDomain,
           JSON.stringify({ installationCount: installations.length, credentialType: 'cpanel_basic' }), now),
     ];
-    const security = await db.prepare(`SELECT totp_enabled AS enabled FROM owner_security WHERE owner_user_id = ?`)
-      .bind(identity.userId).first();
-    if (String(connection.mode) === 'managed_write' && security?.enabled === 1) {
+    if (String(connection.mode) === 'managed_write') {
       statements.push(db.prepare(`UPDATE hosting_connections SET destructive_actions_enabled = 1
         WHERE id = ? AND owner_user_id = ?`).bind(connectionId, identity.userId));
     }

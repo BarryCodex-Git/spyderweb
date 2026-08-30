@@ -27,7 +27,7 @@ export async function GET(request: Request) {
 
   try {
     const db = await ensureHostingSchema();
-    const [connections, domains, security, audit] = await Promise.all([
+    const [connections, domains, audit] = await Promise.all([
       db
         .prepare(`SELECT id, provider, name, base_url AS baseUrl, username, primary_domain AS primaryDomain,
           status, mode, credential_storage AS credentialStorage, capabilities_json AS capabilitiesJson,
@@ -52,8 +52,6 @@ export async function GET(request: Request) {
           FROM hosting_domains WHERE owner_user_id = ? AND active = 1 ORDER BY domain`)
         .bind(identity.userId)
         .all(),
-      db.prepare(`SELECT totp_enabled AS enabled, pending_created_at AS pendingCreatedAt
-        FROM owner_security WHERE owner_user_id = ?`).bind(identity.userId).first(),
       db.prepare(`SELECT id, action, target, outcome, details_json AS detailsJson, created_at AS createdAt
         FROM hosting_audit_events WHERE owner_user_id = ? ORDER BY created_at DESC LIMIT 40`)
         .bind(identity.userId).all(),
@@ -66,7 +64,6 @@ export async function GET(request: Request) {
         capabilitiesJson: undefined,
       })),
       domains: domains.results,
-      security: { totpEnabled: security?.enabled === 1, enrollmentPending: Boolean(security?.pendingCreatedAt) },
       audit: audit.results.map((event) => ({
         ...event,
         details: JSON.parse(String(event.detailsJson || '{}')),

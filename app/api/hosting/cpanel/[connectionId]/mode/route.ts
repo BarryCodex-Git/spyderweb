@@ -39,11 +39,8 @@ export async function POST(
     const previousMode = String(connection.mode || 'read_only');
     const now = new Date().toISOString();
     const writeActionsEnabled = mode === 'managed_write' ? 1 : 0;
-    const security = await db.prepare(`SELECT totp_enabled AS enabled FROM owner_security WHERE owner_user_id = ?`)
-      .bind(identity.userId).first();
     const destructiveActionsEnabled = mode === 'managed_write'
-      && connection.operationalCredentialStatus === 'verified'
-      && security?.enabled === 1 ? 1 : 0;
+      && connection.operationalCredentialStatus === 'verified' ? 1 : 0;
     const status = mode === 'managed_write' ? 'connected_managed' : 'connected_read_only';
 
     await db.batch([

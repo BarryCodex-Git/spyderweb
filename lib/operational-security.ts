@@ -1,6 +1,3 @@
-import { decryptSecret } from '@/lib/credential-crypto';
-import { verifyTotp } from '@/lib/totp';
-
 type DomainActionRecord = {
   id: string;
   domain: string;
@@ -45,33 +42,6 @@ export function requireOperationalAccess(record: DomainActionRecord) {
   }
 }
 
-export function requireExactDomain(record: DomainActionRecord, exactDomain: unknown) {
-  if (String(exactDomain || '').trim().toLowerCase() !== record.domain.toLowerCase()) {
-    throw new Error(`Enter ${record.domain} exactly to confirm this action.`);
-  }
-}
-
 export function requireUnlocked(record: DomainActionRecord) {
   if (record.softLocked) throw new Error('Unlock this domain before preparing a WordPress write action.');
-}
-
-export function requireRecentRestorePoint(record: DomainActionRecord) {
-  const created = record.restorePointAt ? Date.parse(record.restorePointAt) : Number.NaN;
-  if (!Number.isFinite(created) || Date.now() - created > 24 * 60 * 60 * 1000) {
-    throw new Error('Create a verified restore point within the last 24 hours before deleting this installation.');
-  }
-}
-
-export async function verifyOwnerCode(db: D1Database, ownerUserId: string, code: unknown) {
-  const security = await db.prepare(`SELECT encrypted_totp_secret AS encryptedSecret,
-    totp_secret_iv AS secretIv, totp_enabled AS enabled, last_accepted_counter AS lastAcceptedCounter
-    FROM owner_security WHERE owner_user_id = ?`).bind(ownerUserId).first<Record<string, unknown>>();
-  if (!security || security.enabled !== 1 || !security.encryptedSecret || !security.secretIv) {
-    throw new Error('Turn on authenticator protection in Settings before using protected WordPress actions.');
-  }
-  const secret = await decryptSecret(String(security.encryptedSecret), String(security.secretIv), ownerUserId, 'owner-totp');
-  const counter = await verifyTotp(secret, String(code || ''), Number(security.lastAcceptedCounter) || null);
-  if (counter === null) throw new Error('That owner code is invalid or has already been used. Wait for a new code and try again.');
-  await db.prepare(`UPDATE owner_security SET last_accepted_counter = ?, updated_at = ? WHERE owner_user_id = ?`)
-    .bind(counter, new Date().toISOString(), ownerUserId).run();
 }

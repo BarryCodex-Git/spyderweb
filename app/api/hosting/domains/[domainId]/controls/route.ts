@@ -54,13 +54,10 @@ export async function POST(
       if (assignedDeveloper !== null && !allowedDevelopers.has(assignedDeveloper)) {
         return json({ error: 'Choose a recognised SpyderWeb developer or user.' }, 400);
       }
-      const nextWorkflowStatus = assignedDeveloper
-        ? domain.workflowStatusOverride === 'Final Stages' ? 'Final Stages' : 'Busy Working'
-        : null;
       await db.batch([
-        db.prepare(`UPDATE hosting_domains SET assigned_developer = ?, workflow_status_override = ?
+        db.prepare(`UPDATE hosting_domains SET assigned_developer = ?
           WHERE id = ? AND owner_user_id = ?`)
-          .bind(assignedDeveloper, nextWorkflowStatus, domainId, identity.userId),
+          .bind(assignedDeveloper, domainId, identity.userId),
         db.prepare(`INSERT INTO hosting_audit_events (
           id, owner_user_id, connection_id, action, target, outcome, details_json, created_at
         ) VALUES (?, ?, ?, 'domain.developer_assignment', ?, 'success', ?, ?)`).bind(
@@ -71,6 +68,22 @@ export async function POST(
       return json({ message: assignedDeveloper
         ? `${String(domain.domain)} is now assigned to ${assignedDeveloper}.`
         : `${String(domain.domain)} is now unassigned.` });
+    }
+
+    if (body.action === 'set_build_started') {
+      if (domain.wordpressStatus !== 'installed') {
+        return json({ error: 'Load WordPress and the approved template before starting the home-page build.' }, 400);
+      }
+      await db.batch([
+        db.prepare(`UPDATE hosting_domains SET workflow_status_override = 'Busy Working'
+          WHERE id = ? AND owner_user_id = ?`).bind(domainId, identity.userId),
+        db.prepare(`INSERT INTO hosting_audit_events (
+          id, owner_user_id, connection_id, action, target, outcome, details_json, created_at
+        ) VALUES (?, ?, ?, 'domain.homepage_build_started', ?, 'success', '{}', ?)`).bind(
+          crypto.randomUUID(), identity.userId, String(domain.connectionId), String(domain.domain), now,
+        ),
+      ]);
+      return json({ message: `${String(domain.domain)} moved to Busy Working. The home-page build is now active.` });
     }
 
     return json({ error: 'Choose a valid domain control action.' }, 400);

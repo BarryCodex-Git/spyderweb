@@ -260,10 +260,7 @@ export default function Home() {
   const [selectedAssignee, setSelectedAssignee] = useState('');
   const [settingsHostingNotice, setSettingsHostingNotice] = useState('');
   const [actionToasts, setActionToasts] = useState<ActionToast[]>([]);
-  const [security, setSecurity] = useState({ totpEnabled: false, enrollmentPending: false });
   const [auditEvents, setAuditEvents] = useState<AuditEvent[]>([]);
-  const [totpEnrollment, setTotpEnrollment] = useState<{ secret: string; uri: string } | null>(null);
-  const [totpBusy, setTotpBusy] = useState(false);
   const [wordpressAction, setWordpressAction] = useState<{ domain: Domain; action: WordPressAction } | null>(null);
   const [wordpressActionBusy, setWordpressActionBusy] = useState(false);
   const toastTimers = useRef(new Map<string, number>());
@@ -312,12 +309,10 @@ export default function Home() {
       const data = (await response.json()) as {
         connections: HostingConnection[];
         domains: HostingDomain[];
-        security: { totpEnabled: boolean; enrollmentPending: boolean };
         audit: AuditEvent[];
       };
       if (requestId !== inventoryRequestCounter.current) return data;
       setHostingConnections((current) => JSON.stringify(current) === JSON.stringify(data.connections) ? current : data.connections);
-      setSecurity(data.security ?? { totpEnabled: false, enrollmentPending: false });
       setAuditEvents(data.audit ?? []);
       if (data.domains.length > 0) {
         const mappedDomains = mapHostingDomains(data.domains, data.connections);
@@ -537,18 +532,19 @@ export default function Home() {
 
   async function updateDomainControl(
     domain: Domain,
-    action: 'assign_developer' | 'set_soft_lock',
+    action: 'assign_developer' | 'set_soft_lock' | 'set_build_started',
     value: string | boolean | null,
   ) {
     if (typeof domain.id !== 'string' || domain.source !== 'cpanel') return;
     const actionId = `${action}-${domain.id}`;
     setDomainControlBusy(actionId);
     const isLockAction = action === 'set_soft_lock';
+    const isBuildAction = action === 'set_build_started';
     showActionToast({
       id: actionId,
       status: 'progress',
-      title: isLockAction ? 'Updating WordPress protection' : 'Updating developer assignment',
-      message: isLockAction ? `Updating the soft lock for ${domain.domain}.` : `Assigning ${domain.domain}.`,
+      title: isLockAction ? 'Updating WordPress protection' : isBuildAction ? 'Starting home-page build' : 'Updating developer assignment',
+      message: isLockAction ? `Updating the soft lock for ${domain.domain}.` : isBuildAction ? `Moving ${domain.domain} into active work.` : `Assigning ${domain.domain}.`,
     });
     try {
       const response = await fetch(`/api/hosting/domains/${domain.id}/controls`, {
@@ -556,52 +552,18 @@ export default function Home() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(isLockAction
           ? { action, locked: value }
-          : { action, assignedDeveloper: value || null }),
+          : isBuildAction ? { action } : { action, assignedDeveloper: value || null }),
       });
       const result = (await response.json()) as { error?: string; message?: string };
       if (!response.ok) throw new Error(result.error || 'The domain control could not be updated.');
       await loadHostingInventory();
-      showActionToast({ id: actionId, status: 'success', title: isLockAction ? 'Protection updated' : 'Assignment updated', message: result.message || 'The domain was updated.' });
+      showActionToast({ id: actionId, status: 'success', title: isLockAction ? 'Protection updated' : isBuildAction ? 'Build started' : 'Assignment updated', message: result.message || 'The domain was updated.' });
     } catch (error) {
       const message = error instanceof Error ? error.message : 'The domain control could not be updated.';
       showActionToast({ id: actionId, status: 'error', title: 'Update failed', message });
     } finally {
       setDomainControlBusy(null);
     }
-  }
-
-  async function beginTotpEnrollment() {
-    setTotpBusy(true);
-    try {
-      const response = await fetch('/api/security/totp', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'begin' }),
-      });
-      const result = await response.json() as { error?: string; secret?: string; uri?: string; message?: string };
-      if (!response.ok || !result.secret || !result.uri) throw new Error(result.error || 'Authenticator setup could not start.');
-      setTotpEnrollment({ secret: result.secret, uri: result.uri });
-      showActionToast({ id: 'totp-setup', status: 'success', title: 'Authenticator key ready', message: result.message || 'Add the key, then confirm a code.' });
-    } catch (error) {
-      showActionToast({ id: 'totp-setup', status: 'error', title: 'Setup failed', message: error instanceof Error ? error.message : 'Authenticator setup failed.' });
-    } finally { setTotpBusy(false); }
-  }
-
-  async function confirmTotp(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    const form = event.currentTarget;
-    const code = new FormData(form).get('code');
-    setTotpBusy(true);
-    try {
-      const response = await fetch('/api/security/totp', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'confirm', code }),
-      });
-      const result = await response.json() as { error?: string; message?: string };
-      if (!response.ok) throw new Error(result.error || 'The owner code could not be confirmed.');
-      setTotpEnrollment(null);
-      await loadHostingInventory();
-      showActionToast({ id: 'totp-setup', status: 'success', title: 'Two-factor protection active', message: result.message || 'Authenticator protection is active.' });
-    } catch (error) {
-      showActionToast({ id: 'totp-setup', status: 'error', title: 'Code not accepted', message: error instanceof Error ? error.message : 'The code was not accepted.' });
-    } finally { setTotpBusy(false); }
   }
 
   async function saveOperationalCredential(event: FormEvent<HTMLFormElement>, connectionId: string) {
@@ -615,7 +577,6 @@ export default function Home() {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           username: formData.get('username'), password: formData.get('password'),
-          adminUsername: formData.get('adminUsername'), adminPassword: formData.get('adminPassword'),
           defaultTemplateDomain: formData.get('defaultTemplateDomain'),
         }),
       });
@@ -629,19 +590,15 @@ export default function Home() {
     }
   }
 
-  async function runWordpressAction(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (!wordpressAction || typeof wordpressAction.domain.id !== 'string') return;
-    const form = event.currentTarget;
-    const formData = new FormData(form);
-    const { domain, action } = wordpressAction;
+  async function executeWordpressAction(domain: Domain, action: WordPressAction) {
+    if (typeof domain.id !== 'string') return;
     const toastId = `wordpress-${action}-${domain.id}`;
     setWordpressActionBusy(true);
     showActionToast({ id: toastId, status: 'progress', title: 'Authorising WordPress action', message: `Checking every safety gate for ${domain.domain}.` });
     try {
       const response = await fetch(`/api/hosting/domains/${domain.id}/wordpress`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action, exactDomain: formData.get('exactDomain'), code: formData.get('code') }),
+        body: JSON.stringify({ action }),
       });
       const result = await response.json() as { error?: string; message?: string };
       if (!response.ok) throw new Error(result.error || 'The WordPress action was blocked.');
@@ -651,6 +608,12 @@ export default function Home() {
     } catch (error) {
       showActionToast({ id: toastId, status: 'error', title: 'Action blocked', message: error instanceof Error ? error.message : 'The WordPress action was blocked.' });
     } finally { setWordpressActionBusy(false); }
+  }
+
+  async function runWordpressAction(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!wordpressAction) return;
+    await executeWordpressAction(wordpressAction.domain, wordpressAction.action);
   }
 
   return (
@@ -683,7 +646,7 @@ export default function Home() {
         {activeView === 'Domains' && <DomainsView domains={managedDomains} onDomain={openDomain} onNotice={setNotice} notice={notice} inventoryIsLive={inventoryIsLive} />}
         {activeView === 'Projects' && <ProjectsView domains={managedDomains} onProject={setSelectedProject} onManageDomains={() => changeView('Domains')} />}
         {activeView === 'Agent Activity' && <AgentActivity auditEvents={auditEvents} filter={activityFilter} onFilter={setActivityFilter} />}
-        {activeView === 'Settings' && <SettingsView connections={hostingConnections} domains={managedDomains} security={security} totpEnrollment={totpEnrollment} totpBusy={totpBusy} syncingId={hostingSyncingId} modeChangingId={hostingModeChangingId} notice={settingsHostingNotice} onSync={syncHostingConnection} onModeChange={changeHostingMode} onConnect={(provider) => { setHostingNotice(''); setHostingProvider(provider); }} onBeginTotp={beginTotpEnrollment} onConfirmTotp={confirmTotp} onSaveOperational={saveOperationalCredential} />}
+        {activeView === 'Settings' && <SettingsView connections={hostingConnections} domains={managedDomains} syncingId={hostingSyncingId} modeChangingId={hostingModeChangingId} notice={settingsHostingNotice} onSync={syncHostingConnection} onModeChange={changeHostingMode} onConnect={(provider) => { setHostingNotice(''); setHostingProvider(provider); }} onSaveOperational={saveOperationalCredential} />}
       </section>
 
       {hostingProvider && !launchOpen && (
@@ -807,23 +770,24 @@ export default function Home() {
                   <div className="operation-readiness">
                     <span className={selectedDomain.connectionMode === 'managed_write' ? 'ready' : ''}>{selectedDomain.connectionMode === 'managed_write' ? 'Managed' : 'Read only'}</span>
                     <span className={selectedDomain.operationalReady ? 'ready' : ''}>{selectedDomain.operationalReady ? 'Softaculous verified' : 'Credential needed'}</span>
-                    <span className={security.totpEnabled ? 'ready' : ''}>{security.totpEnabled ? '2FA active' : '2FA needed'}</span>
                   </div>
                   {!selectedDomain.wordpress.startsWith('Installed') && <>
-                    <button className="secondary-button" disabled={selectedDomain.softLocked || selectedDomain.connectionMode !== 'managed_write' || !selectedDomain.operationalReady || !security.totpEnabled} onClick={() => setWordpressAction({ domain: selectedDomain, action: 'install' })}>Install clean WordPress</button>
-                    <button className="secondary-button" disabled={selectedDomain.softLocked || selectedDomain.connectionMode !== 'managed_write' || !selectedDomain.operationalReady || !security.totpEnabled} onClick={() => setWordpressAction({ domain: selectedDomain, action: 'clone_template' })}>Load default template</button>
+                    <button className="secondary-button" disabled={wordpressActionBusy || selectedDomain.connectionMode !== 'managed_write' || !selectedDomain.operationalReady} onClick={() => void executeWordpressAction(selectedDomain, 'install')}>Install clean WordPress</button>
+                    <button className="secondary-button" disabled={wordpressActionBusy || selectedDomain.connectionMode !== 'managed_write' || !selectedDomain.operationalReady} onClick={() => void executeWordpressAction(selectedDomain, 'clone_template')}>Load default template</button>
                   </>}
                   {selectedDomain.wordpress.startsWith('Installed') && <>
-                    <button className="secondary-button" disabled={selectedDomain.connectionMode !== 'managed_write' || !selectedDomain.operationalReady || !security.totpEnabled} onClick={() => setWordpressAction({ domain: selectedDomain, action: 'create_restore_point' })}>{selectedDomain.restorePointAt ? 'Refresh restore point' : 'Create restore point'}</button>
-                    <button className="secondary-button" disabled={selectedDomain.softLocked || !selectedDomain.restorePointAt || selectedDomain.connectionMode !== 'managed_write' || !selectedDomain.operationalReady || !security.totpEnabled} onClick={() => setWordpressAction({ domain: selectedDomain, action: 'delete' })}>{!selectedDomain.restorePointAt ? 'Delete WordPress · restore point required' : 'Delete WordPress installation'}</button>
+                    <button className="secondary-button" disabled={wordpressActionBusy || selectedDomain.softLocked || selectedDomain.connectionMode !== 'managed_write' || !selectedDomain.operationalReady} onClick={() => setWordpressAction({ domain: selectedDomain, action: 'clone_template' })}>{selectedDomain.softLocked ? 'Load default template · unlock first' : 'Overwrite with default template'}</button>
+                    <button className="secondary-button" disabled={wordpressActionBusy || selectedDomain.connectionMode !== 'managed_write' || !selectedDomain.operationalReady} onClick={() => void executeWordpressAction(selectedDomain, 'create_restore_point')}>{selectedDomain.restorePointAt ? 'Refresh optional backup' : 'Create optional backup'}</button>
+                    <button className="secondary-button" disabled={wordpressActionBusy || selectedDomain.softLocked || selectedDomain.connectionMode !== 'managed_write' || !selectedDomain.operationalReady} onClick={() => setWordpressAction({ domain: selectedDomain, action: 'delete' })}>{selectedDomain.softLocked ? 'Delete WordPress · soft locked' : 'Delete WordPress installation'}</button>
                   </>}
-                  <button className="secondary-button" disabled={selectedDomain.connectionMode !== 'managed_write' || !selectedDomain.operationalReady || !security.totpEnabled} onClick={() => setWordpressAction({ domain: selectedDomain, action: 'apply_php_profile' })}>Apply recommended PHP limits</button>
+                  <button className="secondary-button" disabled={wordpressActionBusy || selectedDomain.connectionMode !== 'managed_write' || !selectedDomain.operationalReady} onClick={() => void executeWordpressAction(selectedDomain, 'apply_php_profile')}>Apply recommended PHP limits</button>
+                  {selectedDomain.status === 'Template Loaded' && <button className="primary-button domain-start-build" disabled={!selectedDomain.developer || domainControlBusy === `set_build_started-${selectedDomain.id}`} onClick={() => updateDomainControl(selectedDomain, 'set_build_started', null)}>{selectedDomain.developer ? 'Start home-page build' : 'Assign a developer before starting'}</button>}
                   {selectedDomain.source === 'cpanel' && selectedDomain.status !== 'Available' && (
                     <button className="secondary-button available-workflow-button" disabled={domainAvailabilityId === selectedDomain.id} onClick={() => markDomainAvailable(selectedDomain)}>
                       {domainAvailabilityId === selectedDomain.id ? 'Updating…' : 'Mark available for a new build'}
                     </button>
                   )}
-                  <small>{selectedDomain.softLocked ? 'The lock blocks installation, cloning and deletion. Restore points and PHP limit maintenance remain available.' : 'Every action still requires the exact domain and a fresh owner code. Existing WordPress cannot be overwritten in one step.'}</small>
+                  <small>{selectedDomain.softLocked ? 'The soft lock blocks WordPress deletion and template overwrite. Fresh installation, optional backup and PHP maintenance remain simple.' : 'Delete and template overwrite use one clear confirmation. Other routine actions run immediately.'}</small>
                 </section>
                 {notice && <p className="notice">{notice}</p>}
               </aside>
@@ -837,15 +801,13 @@ export default function Home() {
           <form className="operation-confirm-modal" onSubmit={runWordpressAction} onClick={(event) => event.stopPropagation()}>
             <button className="close-button" type="button" disabled={wordpressActionBusy} onClick={() => setWordpressAction(null)}>×</button>
             <span className={`operation-icon ${wordpressAction.action === 'delete' ? 'danger' : ''}`}>{wordpressAction.action === 'delete' ? '!' : '✓'}</span>
-            <p className="eyebrow">Protected live action</p>
+            <p className="eyebrow">Live WordPress action</p>
             <h2>{({ install: 'Install clean WordPress', clone_template: 'Load the default template', create_restore_point: 'Create a restore point', apply_php_profile: 'Apply the recommended PHP limits', delete: 'Delete this WordPress installation' } as Record<WordPressAction, string>)[wordpressAction.action]}</h2>
             <p>This will run against <strong>{wordpressAction.domain.domain}</strong> through the verified cPanel management connection.</p>
-            {wordpressAction.action === 'delete' && <div className="danger-callout"><strong>Deletion is intentionally two-step.</strong><span>A verified restore point from the last 24 hours must already exist. SpyderWeb will not overwrite an installed site with a clone or fresh installation.</span></div>}
-            {wordpressAction.action === 'clone_template' && <div className="info-callout">The verified default template in Settings will be cloned by Softaculous. The target must not already contain WordPress.</div>}
+            {wordpressAction.action === 'delete' && <div className="danger-callout"><strong>Are you sure?</strong><span>This will delete the WordPress installation on {wordpressAction.domain.domain}. This cannot run while the domain is soft locked.</span></div>}
+            {wordpressAction.action === 'clone_template' && <div className="danger-callout"><strong>This will overwrite the existing website.</strong><span>The current WordPress installation will be removed and replaced with the default template. This cannot run while the domain is soft locked.</span></div>}
             {wordpressAction.action === 'apply_php_profile' && <div className="info-callout">Applies 512 MB memory, 512 MB upload/post limits, 300-second timeouts and 5,000 input variables where your host permits them. PHP runtime versions are not changed blindly; version upgrades will require a compatibility check and rollback path.</div>}
-            <label>Type the full domain<input name="exactDomain" required autoComplete="off" placeholder={wordpressAction.domain.domain} /></label>
-            <label>Owner authenticator code<input name="code" required inputMode="numeric" pattern="[0-9]{6}" maxLength={6} autoComplete="one-time-code" placeholder="000000" /></label>
-            <div className="operation-confirm-actions"><button className="text-button" type="button" disabled={wordpressActionBusy} onClick={() => setWordpressAction(null)}>Cancel</button><button className={`primary-button ${wordpressAction.action === 'delete' ? 'danger-button' : ''}`} type="submit" disabled={wordpressActionBusy}>{wordpressActionBusy ? 'Authorising…' : 'Confirm live action'}</button></div>
+            <div className="operation-confirm-actions"><button className="text-button" type="button" disabled={wordpressActionBusy} onClick={() => setWordpressAction(null)}>Cancel</button><button className={`primary-button ${wordpressAction.action === 'delete' || wordpressAction.action === 'clone_template' ? 'danger-button' : ''}`} type="submit" disabled={wordpressActionBusy}>{wordpressActionBusy ? 'Working…' : wordpressAction.action === 'delete' ? 'Yes, delete WordPress' : 'Yes, overwrite website'}</button></div>
           </form>
         </div>
       )}
@@ -1097,7 +1059,7 @@ function AgentActivity({ auditEvents, filter, onFilter }: { auditEvents: AuditEv
   );
 }
 
-function SettingsView({ connections, domains, security, totpEnrollment, totpBusy, syncingId, modeChangingId, notice, onSync, onModeChange, onConnect, onBeginTotp, onConfirmTotp, onSaveOperational }: { connections: HostingConnection[]; domains: Domain[]; security: { totpEnabled: boolean; enrollmentPending: boolean }; totpEnrollment: { secret: string; uri: string } | null; totpBusy: boolean; syncingId: string | null; modeChangingId: string | null; notice: string; onSync: (connectionId: string) => void; onModeChange: (connection: HostingConnection) => void; onConnect: (provider: HostingProvider) => void; onBeginTotp: () => void; onConfirmTotp: (event: FormEvent<HTMLFormElement>) => void; onSaveOperational: (event: FormEvent<HTMLFormElement>, connectionId: string) => void }) {
+function SettingsView({ connections, domains, syncingId, modeChangingId, notice, onSync, onModeChange, onConnect, onSaveOperational }: { connections: HostingConnection[]; domains: Domain[]; syncingId: string | null; modeChangingId: string | null; notice: string; onSync: (connectionId: string) => void; onModeChange: (connection: HostingConnection) => void; onConnect: (provider: HostingProvider) => void; onSaveOperational: (event: FormEvent<HTMLFormElement>, connectionId: string) => void }) {
   const cpanelConnections = connections.filter((connection) => connection.provider === 'cpanel');
   const managedConnections = cpanelConnections.filter((connection) => connection.mode === 'managed_write');
   return (
@@ -1112,17 +1074,6 @@ function SettingsView({ connections, domains, security, totpEnrollment, totpBusy
           <div><p className="eyebrow">User access</p><h2>Team dashboards</h2><p>Additional users will receive their own dashboard and only the access you assign.</p></div>
           <button className="outline-button" disabled>＋ Add user · Later</button>
         </div>
-      </section>
-
-      <section className={`two-factor-panel ${security.totpEnabled ? 'enabled' : ''}`}>
-        <div><span className="safety-icon">{security.totpEnabled ? '✓' : '2'}</span><div><p className="eyebrow">Owner confirmation</p><h2>Authenticator protection</h2><p>ChatGPT sign-in identifies the owner. A separate six-digit authenticator code approves live hosting changes and prevents accidental or unattended actions.</p></div></div>
-        {security.totpEnabled ? <strong className="two-factor-status">Active · required for every live WordPress action</strong> : !totpEnrollment ? <button className="primary-button" disabled={totpBusy} onClick={onBeginTotp}>{totpBusy ? 'Preparing…' : 'Set up authenticator'}</button> : (
-          <form className="totp-enrollment" onSubmit={onConfirmTotp}>
-            <div><span>Manual setup key</span><code>{totpEnrollment.secret.match(/.{1,4}/g)?.join(' ')}</code><small>Add this key to Google Authenticator, Microsoft Authenticator, 1Password or a similar app. The key is only shown during setup.</small></div>
-            <label>Enter the current six-digit code<input name="code" required inputMode="numeric" pattern="[0-9]{6}" maxLength={6} autoComplete="one-time-code" placeholder="000000" /></label>
-            <button className="primary-button" disabled={totpBusy} type="submit">{totpBusy ? 'Checking…' : 'Confirm and activate'}</button>
-          </form>
-        )}
       </section>
 
       <section className="panel hosting-settings-panel">
@@ -1143,12 +1094,10 @@ function SettingsView({ connections, domains, security, totpEnrollment, totpBusy
                 </div>
                 <form className="operational-form" onSubmit={(event) => onSaveOperational(event, connection.id)}>
                   <div className="operational-form-heading"><div><p className="eyebrow">WordPress operations</p><h4>{connection.operationalCredentialStatus === 'verified' ? 'Update management credential' : 'Verify Softaculous access'}</h4></div><span>{connection.defaultTemplateDomain || 'Default template not set'}</span></div>
-                  <p>Softaculous on this host does not accept the read-only API token. Save the cPanel account management login here so SpyderWeb can install, clone, back up and remove WordPress. It is encrypted and never returned to the browser.</p>
+                  <p>Softaculous on this host does not accept the read-only API token. Save the cPanel account management login here so SpyderWeb can install, clone, back up and remove WordPress. Fresh installations use temporary admin / admin credentials because the template immediately replaces them.</p>
                   <div className="operational-fields">
                     <label>Management username<input name="username" defaultValue={connection.username} required autoComplete="username" /></label>
                     <label>Management password<input name="password" type="password" required autoComplete="new-password" /></label>
-                    <label>Standard WP admin username<input name="adminUsername" required autoComplete="off" /></label>
-                    <label>Standard WP admin password<input name="adminPassword" type="password" required autoComplete="new-password" /></label>
                     <label>Default template domain<select name="defaultTemplateDomain" required defaultValue={connection.defaultTemplateDomain || ''}><option value="" disabled>Select template domain</option>{domains.filter((domain) => domain.connectionId === connection.id && (domain.status === 'Template Loaded' || /template/i.test(domain.domain))).map((domain) => <option value={domain.domain} key={domain.id}>{domain.domain}</option>)}</select></label>
                   </div>
                   <button className="outline-button" type="submit">Verify and save WordPress management</button>
@@ -1170,9 +1119,9 @@ function SettingsView({ connections, domains, security, totpEnrollment, totpBusy
       <section className="safety-policy-panel">
         <div><span className="safety-icon">✓</span><div><p className="eyebrow">Hosting safety</p><h2>Reversible access with a destructive-action lock</h2><p>Ordinary write access can be enabled per connection and switched off instantly. Delete, overwrite and reinstall actions remain separately protected.</p></div></div>
         <div className="safety-rules">
-          <span><b>1</b><strong>Fresh restore point</strong><small>Deletion requires a verified Softaculous backup created in the last 24 hours.</small></span>
-          <span><b>2</b><strong>Exact domain confirmation</strong><small>The full domain must be entered before the action can continue.</small></span>
-          <span><b>3</b><strong>Owner one-time code</strong><small>{security.totpEnabled ? 'Authenticator protection is active for every live WordPress action.' : 'Set up the authenticator above before operational buttons become available.'}</small></span>
+          <span><b>1</b><strong>Soft lock</strong><small>A locked domain cannot have WordPress deleted or overwritten with a template.</small></span>
+          <span><b>2</b><strong>Clear confirmation</strong><small>Deletion asks “Are you sure?” before it runs.</small></span>
+          <span><b>3</b><strong>Overwrite warning</strong><small>Template loading clearly warns when it will replace an existing website.</small></span>
         </div>
         <strong className={`hard-lock ${managedConnections.length ? 'managed' : ''}`}>{managedConnections.length ? `${managedConnections.length} connection${managedConnections.length === 1 ? '' : 's'} in managed mode · per-domain locks remain active` : 'All connections currently read only'}</strong>
       </section>

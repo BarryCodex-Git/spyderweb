@@ -2,8 +2,8 @@ import { applyRecommendedPhpProfile } from '@/lib/cpanel';
 import { decryptHostingToken, decryptSecret } from '@/lib/credential-crypto';
 import { ensureHostingSchema } from '@/lib/hosting-db';
 import {
-  loadDomainActionRecord, requireExactDomain, requireOperationalAccess,
-  requireRecentRestorePoint, requireUnlocked, verifyOwnerCode,
+  loadDomainActionRecord, requireOperationalAccess,
+  requireUnlocked,
 } from '@/lib/operational-security';
 import { getRequestIdentity, isSameOrigin } from '@/lib/request-auth';
 import { softaculousAction, type OperationalCredential } from '@/lib/softaculous';
@@ -35,9 +35,6 @@ export async function POST(request: Request, { params }: { params: Promise<{ dom
     action = String(body.action || '');
     record = await loadDomainActionRecord(db, identity.userId, domainId);
     requireOperationalAccess(record);
-    requireExactDomain(record, body.exactDomain);
-    await verifyOwnerCode(db, identity.userId, body.code);
-
     const connection = await db.prepare(`SELECT base_url AS baseUrl, username, encrypted_token AS encryptedToken,
       encryption_iv AS encryptionIv, encrypted_operational_secret AS encryptedOperationalSecret,
       operational_secret_iv AS operationalSecretIv, default_template_domain AS defaultTemplateDomain
@@ -54,37 +51,46 @@ export async function POST(request: Request, { params }: { params: Promise<{ dom
       await db.prepare(`UPDATE hosting_domains SET restore_point_at = ? WHERE id = ? AND owner_user_id = ?`)
         .bind(now, record.id, identity.userId).run();
       await audit(db, { ownerUserId: identity.userId, connectionId: record.connectionId, action: 'wordpress.restore_point_created', target: record.domain, outcome: 'success' });
-      return json({ message: `A fresh Softaculous restore point was created for ${record.domain}. It can authorise deletion for 24 hours.` });
+      return json({ message: `An optional Softaculous backup was created for ${record.domain}.` });
     }
 
     if (action === 'delete') {
       requireUnlocked(record);
       if (record.wordpressStatus !== 'installed' || !record.wordpressInstallationId) throw new Error('No Softaculous-managed WordPress installation is available to delete.');
-      requireRecentRestorePoint(record);
       await softaculousAction({ baseUrl, credential: secrets, action: 'remove', domain: record.domain, installationId: record.wordpressInstallationId });
-      await db.prepare(`UPDATE hosting_domains SET wordpress_status = 'not_checked', wordpress_version = NULL,
+      await db.prepare(`UPDATE hosting_domains SET wordpress_status = 'not_installed', wordpress_version = NULL,
         wordpress_site_name = NULL, wordpress_url = NULL, wordpress_installation_id = NULL,
-        wordpress_source = 'Pending post-operation scan', restore_point_at = NULL,
-        workflow_status_override = 'Needs Inspection' WHERE id = ? AND owner_user_id = ?`)
+        wordpress_source = 'Softaculous removal pending verification', restore_point_at = NULL,
+        workflow_status_override = 'Available' WHERE id = ? AND owner_user_id = ?`)
         .bind(record.id, identity.userId).run();
     } else if (action === 'install') {
-      requireUnlocked(record);
-      if (record.wordpressStatus === 'installed') throw new Error('This domain already has WordPress. Create a restore point and delete it first; SpyderWeb will not overwrite it in one step.');
+      if (record.wordpressStatus === 'installed') throw new Error('This domain already has WordPress. Use Delete WordPress or Overwrite with default template instead.');
       await softaculousAction({ baseUrl, credential: secrets, action: 'install', domain: record.domain,
         adminUsername: secrets.adminUsername, adminPassword: secrets.adminPassword, adminEmail: secrets.adminEmail });
-      await db.prepare(`UPDATE hosting_domains SET wordpress_status = 'not_checked', wordpress_source = 'Pending post-operation scan',
-        workflow_status_override = 'Needs Inspection' WHERE id = ? AND owner_user_id = ?`).bind(record.id, identity.userId).run();
+      await db.prepare(`UPDATE hosting_domains SET wordpress_status = 'installed', wordpress_version = NULL,
+        wordpress_site_name = 'Fresh WordPress installation', wordpress_url = ?,
+        wordpress_installation_id = NULL,
+        wordpress_source = 'Softaculous installation pending verification',
+        workflow_status_override = 'Available' WHERE id = ? AND owner_user_id = ?`)
+        .bind(`https://${record.domain}`, record.id, identity.userId).run();
     } else if (action === 'clone_template') {
-      requireUnlocked(record);
-      if (record.wordpressStatus === 'installed') throw new Error('This domain already has WordPress. Create a restore point and delete it first; SpyderWeb will not overwrite it in one step.');
       const templateDomain = String(connection.defaultTemplateDomain || '');
+      if (record.domain === templateDomain) throw new Error('The default template source cannot be loaded onto itself. Choose a development domain.');
       const template = await db.prepare(`SELECT wordpress_installation_id AS installationId FROM hosting_domains
         WHERE connection_id = ? AND owner_user_id = ? AND domain = ? AND active = 1 LIMIT 1`)
         .bind(record.connectionId, identity.userId, templateDomain).first<Record<string, unknown>>();
       if (!template?.installationId) throw new Error('The default template is not identified in Softaculous. Re-verify WordPress management in Settings.');
+      if (record.wordpressStatus === 'installed') {
+        requireUnlocked(record);
+        if (!record.wordpressInstallationId) throw new Error('Softaculous must identify the existing WordPress installation before it can be overwritten. Scan the connection in Settings.');
+        await softaculousAction({ baseUrl, credential: secrets, action: 'remove', domain: record.domain, installationId: record.wordpressInstallationId });
+      }
       await softaculousAction({ baseUrl, credential: secrets, action: 'clone', domain: record.domain, sourceInstallationId: String(template.installationId) });
-      await db.prepare(`UPDATE hosting_domains SET wordpress_status = 'not_checked', wordpress_source = 'Pending template verification',
-        workflow_status_override = 'Needs Inspection' WHERE id = ? AND owner_user_id = ?`).bind(record.id, identity.userId).run();
+      await db.prepare(`UPDATE hosting_domains SET wordpress_status = 'installed', wordpress_version = NULL,
+        wordpress_site_name = 'Default template loaded', wordpress_url = ?, wordpress_installation_id = NULL,
+        wordpress_source = 'Softaculous template clone pending verification', restore_point_at = NULL,
+        workflow_status_override = 'Template Loaded' WHERE id = ? AND owner_user_id = ?`)
+        .bind(`https://${record.domain}`, record.id, identity.userId).run();
     } else if (action === 'apply_php_profile') {
       const cpanelToken = await decryptHostingToken(String(connection.encryptedToken), String(connection.encryptionIv), identity.userId, record.connectionId);
       await applyRecommendedPhpProfile({ baseUrl, username: String(connection.username), token: cpanelToken, domain: record.domain });
@@ -94,11 +100,11 @@ export async function POST(request: Request, { params }: { params: Promise<{ dom
       throw new Error('Choose a valid WordPress management action.');
     }
 
-    await audit(db, { ownerUserId: identity.userId, connectionId: record.connectionId, action: `wordpress.${action}`, target: record.domain, outcome: 'accepted', details: { verificationRequired: true } });
+    await audit(db, { ownerUserId: identity.userId, connectionId: record.connectionId, action: `wordpress.${action}`, target: record.domain, outcome: 'accepted' });
     const messages: Record<string, string> = {
       delete: `Softaculous accepted the WordPress removal for ${record.domain}. Run a scan when it finishes.`,
-      install: `Softaculous accepted the clean WordPress installation for ${record.domain}. No optional plugin bundle was selected.`,
-      clone_template: `Softaculous accepted the default-template clone to ${record.domain}. Run a scan when it finishes.`,
+      install: `Softaculous accepted a clean WordPress installation for ${record.domain}. It is now shown as Available with temporary admin/admin credentials.`,
+      clone_template: `Softaculous accepted the default-template clone to ${record.domain}. It is now shown under Template Loaded.`,
       apply_php_profile: `The recommended 512 MB PHP profile was applied to ${record.domain}.`,
     };
     return json({ message: messages[action] || 'The WordPress action was accepted.' });
