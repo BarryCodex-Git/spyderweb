@@ -36,7 +36,7 @@ export async function POST(
       .first();
     if (!connection) return json({ error: 'This cPanel connection was not found.' }, 404);
     if (mode === 'managed_write' && connection.operationalCredentialStatus !== 'verified') {
-      return json({ error: 'Activate WordPress management with the cPanel account login first.' }, 400);
+      return json({ error: 'Reconnect this cPanel account so management can use its saved API token.' }, 400);
     }
 
     const previousMode = String(connection.mode || 'read_only');

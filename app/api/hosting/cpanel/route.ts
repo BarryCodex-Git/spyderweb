@@ -27,6 +27,20 @@ export async function GET(request: Request) {
 
   try {
     const db = await ensureHostingSchema();
+    await db.prepare(`UPDATE hosting_connections SET
+      mode = 'managed_write',
+      status = CASE WHEN status = 'connected_scan_issue' THEN status ELSE 'connected_managed' END,
+      operational_auth_type = 'cpanel_token', operational_credential_status = 'verified',
+      write_actions_enabled = 1, destructive_actions_enabled = 1,
+      default_template_domain = COALESCE(default_template_domain, (
+        SELECT d.domain FROM hosting_domains d
+        WHERE d.connection_id = hosting_connections.id AND d.owner_user_id = hosting_connections.owner_user_id
+          AND d.active = 1 AND LOWER(d.domain) LIKE '%template%'
+        ORDER BY CASE WHEN d.wordpress_status = 'installed' THEN 0 ELSE 1 END, d.domain LIMIT 1
+      )), updated_at = ?
+      WHERE owner_user_id = ? AND provider = 'cpanel'
+        AND encrypted_token IS NOT NULL AND operational_credential_status <> 'verified'`)
+      .bind(new Date().toISOString(), identity.userId).run();
     const [connections, domains, audit] = await Promise.all([
       db
         .prepare(`SELECT id, provider, name, base_url AS baseUrl, username, primary_domain AS primaryDomain,
@@ -103,25 +117,32 @@ export async function POST(request: Request) {
       connectionId,
     );
     const db = await ensureHostingSchema(getDatabase());
-    const connectionStatus = discovered.scanStatus === 'complete' ? 'connected_read_only' : 'connected_scan_issue';
+    const connectionStatus = discovered.scanStatus === 'complete' ? 'connected_managed' : 'connected_scan_issue';
+    const defaultTemplateDomain = discovered.domains
+      .filter((domain) => /template/i.test(domain.domain))
+      .sort((a, b) => Number(b.wordpressStatus === 'installed') - Number(a.wordpressStatus === 'installed'))[0]?.domain ?? null;
     const statements = [
       db
         .prepare(`INSERT INTO hosting_connections (
           id, owner_user_id, owner_email, provider, name, base_url, username, primary_domain,
           status, mode, credential_storage, encrypted_token, encryption_iv, credential_version,
-          capabilities_json, write_actions_enabled,
-          destructive_actions_enabled, confirmation_policy, last_sync_at, created_at, updated_at
-        ) VALUES (?, ?, ?, 'cpanel', ?, ?, ?, ?, ?, 'read_only', 'encrypted_cloud', ?, ?, ?, ?, 0, 0,
-          'soft_lock+clear_confirmation', ?, ?, ?)
+          capabilities_json, write_actions_enabled, destructive_actions_enabled,
+          operational_auth_type, operational_credential_status, default_template_domain,
+          confirmation_policy, last_sync_at, created_at, updated_at
+        ) VALUES (?, ?, ?, 'cpanel', ?, ?, ?, ?, ?, 'managed_write', 'encrypted_cloud', ?, ?, ?, ?, 1, 1,
+          'cpanel_token', 'verified', ?, 'soft_lock+clear_confirmation', ?, ?, ?)
         ON CONFLICT(owner_user_id, provider, base_url, username) DO UPDATE SET
           owner_email = excluded.owner_email, name = excluded.name,
           primary_domain = excluded.primary_domain,
-          status = CASE WHEN excluded.status = 'connected_scan_issue' THEN 'connected_scan_issue'
-            WHEN hosting_connections.mode = 'managed_write' THEN 'connected_managed' ELSE 'connected_read_only' END,
+          status = excluded.status, mode = 'managed_write',
           credential_storage = excluded.credential_storage,
           encrypted_token = excluded.encrypted_token, encryption_iv = excluded.encryption_iv,
           credential_version = excluded.credential_version,
-          capabilities_json = excluded.capabilities_json, last_sync_at = excluded.last_sync_at,
+          capabilities_json = excluded.capabilities_json,
+          write_actions_enabled = 1, destructive_actions_enabled = 1,
+          operational_auth_type = 'cpanel_token', operational_credential_status = 'verified',
+          default_template_domain = COALESCE(excluded.default_template_domain, hosting_connections.default_template_domain),
+          last_sync_at = excluded.last_sync_at,
           updated_at = excluded.updated_at`)
         .bind(
           connectionId,
@@ -136,6 +157,7 @@ export async function POST(request: Request) {
           credential.encryptionIv,
           credential.credentialVersion,
           JSON.stringify(discovered.capabilities),
+          defaultTemplateDomain,
           now,
           now,
           now,
@@ -222,11 +244,13 @@ export async function POST(request: Request) {
         username: discovered.username,
         primaryDomain,
         status: connectionStatus,
-        mode: 'read_only',
+        mode: 'managed_write',
         credentialStorage: 'encrypted_cloud',
         capabilities: discovered.capabilities,
-        writeActionsEnabled: 0,
-        destructiveActionsEnabled: 0,
+        writeActionsEnabled: 1,
+        destructiveActionsEnabled: 1,
+        operationalCredentialStatus: 'verified',
+        defaultTemplateDomain,
         confirmationPolicy: 'soft_lock+clear_confirmation',
         lastSyncAt: now,
       },
@@ -242,9 +266,9 @@ export async function POST(request: Request) {
       wordpressScanStatus: discovered.wordpressScanStatus,
       message: discovered.scanStatus === 'complete'
         ? discovered.wordpressScanStatus === 'complete'
-          ? `${discovered.domains.length} domains discovered and ${discovered.wordpressInstallationCount} WordPress installations identified. The connection is saved; activate WordPress management in Settings when you are ready to run live actions.`
-          : `${discovered.domains.length} domains discovered and the cPanel connection is securely saved. Activate WordPress management in Settings to enable Softaculous installation, cloning and removal.`
-        : 'cPanel connected and the credentials are securely saved. The live domain scan needs another attempt; use Retry scan from Settings.',
+          ? `${discovered.domains.length} domains discovered and ${discovered.wordpressInstallationCount} WordPress installations identified. The connection is saved and WordPress management is active.`
+          : `${discovered.domains.length} domains discovered. The saved cPanel connection is operational; WordPress actions will validate the host capability when used.`
+        : 'cPanel connected with management rights active. The live domain scan needs another attempt; use Retry scan from Settings.',
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : 'The cPanel connection could not be completed.';

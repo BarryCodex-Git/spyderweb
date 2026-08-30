@@ -97,8 +97,14 @@ export async function POST(request: Request, { params }: { params: Promise<{ dom
     }
 
     requireOperationalAccess(record);
-    if (!connection?.encryptedOperationalSecret || !connection.operationalSecretIv) throw new Error('Save the WordPress management credential in Settings first.');
-    const secrets = JSON.parse(await decryptSecret(String(connection.encryptedOperationalSecret), String(connection.operationalSecretIv), identity.userId, `operational:${record.connectionId}`)) as OperationalCredential & { adminUsername: string; adminPassword: string; adminEmail: string };
+    const secrets = connection.encryptedOperationalSecret && connection.operationalSecretIv
+      ? JSON.parse(await decryptSecret(String(connection.encryptedOperationalSecret), String(connection.operationalSecretIv), identity.userId, `operational:${record.connectionId}`)) as OperationalCredential & { adminUsername?: string; adminPassword?: string; adminEmail?: string }
+      : {
+          username: String(connection.username),
+          token: await decryptHostingToken(String(connection.encryptedToken), String(connection.encryptionIv), identity.userId, record.connectionId),
+          authMode: 'cpanel_token' as const,
+          adminUsername: 'admin', adminPassword: 'admin', adminEmail: identity.email || `admin@${record.domain}`,
+        };
     const baseUrl = String(connection.baseUrl);
     const replacementConfirmed = body.confirmReplacement === true;
 
@@ -130,7 +136,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ dom
         if (!remaining.some((item) => item.domain === record?.domain)) {
           replacementRemoved = true;
           await audit(db, {
-            ownerUserId: identity.userId,
+            ownerUserId: identity!.userId,
             connectionId: record.connectionId,
             action: 'wordpress.clean_destination',
             target: record.domain,
@@ -168,14 +174,21 @@ export async function POST(request: Request, { params }: { params: Promise<{ dom
         domain: record.domain, baseUrl, credential: secrets, expected: 'installed' });
       if (!refreshed.verified) verificationWarning = 'Softaculous accepted the installation but has not reported the new installation yet. SpyderWeb marked it for inspection; scan again shortly.';
     } else if (action === 'clone_template') {
-      const templateDomain = String(connection.defaultTemplateDomain || '');
+      let templateDomain = String(connection.defaultTemplateDomain || '');
+      if (!templateDomain) {
+        const fallback = await db.prepare(`SELECT domain FROM hosting_domains
+          WHERE connection_id = ? AND owner_user_id = ? AND active = 1 AND LOWER(domain) LIKE '%template%'
+          ORDER BY CASE WHEN wordpress_status = 'installed' THEN 0 ELSE 1 END, domain LIMIT 1`)
+          .bind(record.connectionId, identity.userId).first<Record<string, unknown>>();
+        templateDomain = String(fallback?.domain || '');
+      }
+      if (!templateDomain) throw new Error('No template domain was detected on this cPanel account.');
       if (record.domain === templateDomain) throw new Error('The default template source cannot be loaded onto itself. Choose a development domain.');
-      const template = await db.prepare(`SELECT wordpress_installation_id AS installationId FROM hosting_domains
-        WHERE connection_id = ? AND owner_user_id = ? AND domain = ? AND active = 1 LIMIT 1`)
-        .bind(record.connectionId, identity.userId, templateDomain).first<Record<string, unknown>>();
-      if (!template?.installationId) throw new Error('The default template is not identified in Softaculous. Re-verify WordPress management in Settings.');
+      const liveInstallations = await listSoftaculousInstallations(baseUrl, secrets);
+      const template = liveInstallations.find((installation) => installation.domain === templateDomain);
+      if (!template?.id) throw new Error(`Softaculous did not identify the template installation on ${templateDomain}. Scan the hosting account again before loading it.`);
       await prepareCleanDestination('loading the default template');
-      await softaculousAction({ baseUrl, credential: secrets, action: 'clone', domain: record.domain, sourceInstallationId: String(template.installationId) });
+      await softaculousAction({ baseUrl, credential: secrets, action: 'clone', domain: record.domain, sourceInstallationId: template.id });
       const refreshed = await refreshDomainWordPress(db, { ownerUserId: identity.userId, domainId: record.id,
         domain: record.domain, baseUrl, credential: secrets, expected: 'template' });
       if (!refreshed.verified) verificationWarning = 'Softaculous accepted the clone but has not reported the destination yet. SpyderWeb marked it for inspection; scan again shortly.';

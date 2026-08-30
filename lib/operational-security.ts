@@ -38,7 +38,7 @@ export function requireOperationalAccess(record: DomainActionRecord) {
     throw new Error('Switch this cPanel connection to Managed access in Settings first.');
   }
   if (record.operationalCredentialStatus !== 'verified') {
-    throw new Error('Verify the WordPress management credential for this cPanel connection in Settings first.');
+    throw new Error('Reconnect this cPanel account so SpyderWeb can activate management rights from its saved API token.');
   }
 }
 

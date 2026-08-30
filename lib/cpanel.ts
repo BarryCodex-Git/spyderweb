@@ -657,11 +657,12 @@ export async function discoverCpanel(input: {
   const add = (items: string[], type: CpanelDomain['domainType']) =>
     items.forEach((domain) => domainTypes.set(domain.trim().toLowerCase(), type));
 
-  if (listData) {
-    if (typeof listData.main_domain === 'string') add([listData.main_domain], 'main');
-    add(stringList(listData.sub_domains), 'subdomain');
-    add(stringList(listData.addon_domains), 'addon');
-    add(stringList(listData.parked_domains), 'alias');
+  const resolvedListData = listData as Record<string, unknown> | null;
+  if (resolvedListData) {
+    if (typeof resolvedListData.main_domain === 'string') add([resolvedListData.main_domain], 'main');
+    add(stringList(resolvedListData.sub_domains), 'subdomain');
+    add(stringList(resolvedListData.addon_domains), 'addon');
+    add(stringList(resolvedListData.parked_domains), 'alias');
   }
 
   if (Array.isArray(legacySubdomainData)) {

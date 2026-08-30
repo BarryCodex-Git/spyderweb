@@ -45,29 +45,39 @@ export async function POST(
       username: String(connection.username),
       token,
     });
-    if (connection.operationalCredentialStatus === 'verified'
-      && connection.encryptedOperationalSecret && connection.operationalSecretIv) {
-      const credential = JSON.parse(await decryptSecret(
-        String(connection.encryptedOperationalSecret),
-        String(connection.operationalSecretIv),
-        identity.userId,
-        `operational:${connectionId}`,
-      )) as OperationalCredential;
-      const installations = await listSoftaculousInstallations(String(connection.baseUrl), credential);
-      const byDomain = new Map(installations.map((installation) => [installation.domain, installation]));
-      for (const domain of discovered.domains) {
-        const installation = byDomain.get(domain.domain);
-        domain.wordpressStatus = installation ? 'installed' : 'not_installed';
-        domain.wordpressInstallationId = installation?.id ?? null;
-        domain.wordpressSiteName = installation?.siteName ?? null;
-        domain.wordpressUrl = installation?.url ?? null;
-        domain.wordpressVersion = installation?.version ?? null;
-        domain.wordpressSource = installation ? 'Softaculous operational connection' : null;
+    if (connection.operationalCredentialStatus === 'verified') {
+      const credential = connection.encryptedOperationalSecret && connection.operationalSecretIv
+        ? JSON.parse(await decryptSecret(
+            String(connection.encryptedOperationalSecret),
+            String(connection.operationalSecretIv),
+            identity.userId,
+            `operational:${connectionId}`,
+          )) as OperationalCredential
+        : { username: String(connection.username), token, authMode: 'cpanel_token' as const };
+      try {
+        const installations = await listSoftaculousInstallations(String(connection.baseUrl), credential);
+        const byDomain = new Map(installations.map((installation) => [installation.domain, installation]));
+        for (const domain of discovered.domains) {
+          const installation = byDomain.get(domain.domain);
+          domain.wordpressStatus = installation ? 'installed' : 'not_installed';
+          domain.wordpressInstallationId = installation?.id ?? null;
+          domain.wordpressSiteName = installation?.siteName ?? null;
+          domain.wordpressUrl = installation?.url ?? null;
+          domain.wordpressVersion = installation?.version ?? null;
+          domain.wordpressSource = installation ? 'Softaculous connected API' : null;
+        }
+        discovered.wordpressInstallationCount = installations.length;
+        discovered.wordpressScanStatus = 'complete';
+        discovered.capabilities.wordpressInventory = true;
+        discovered.capabilities.wordpressManagement = true;
+      } catch (error) {
+        discovered.inventoryAttempts.push({
+          source: 'Softaculous management API',
+          status: 'unavailable',
+          domainCount: 0,
+          message: error instanceof Error ? error.message : 'The management API did not return an inventory.',
+        });
       }
-      discovered.wordpressInstallationCount = installations.length;
-      discovered.wordpressScanStatus = 'complete';
-      discovered.capabilities.wordpressInventory = true;
-      discovered.capabilities.wordpressManagement = true;
     }
 
     const now = new Date().toISOString();

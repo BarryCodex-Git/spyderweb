@@ -1,6 +1,8 @@
 export type OperationalCredential = {
   username: string;
-  password: string;
+  password?: string;
+  token?: string;
+  authMode?: 'cpanel_basic' | 'cpanel_token';
 };
 
 export type SoftaculousInstall = {
@@ -11,7 +13,12 @@ export type SoftaculousInstall = {
   version: string | null;
 };
 
-function basicAuth(credential: OperationalCredential) {
+function authorization(credential: OperationalCredential) {
+  if (credential.authMode === 'cpanel_token' || credential.token) {
+    if (!credential.token) throw new Error('The saved cPanel API token is unavailable. Reconnect this hosting account.');
+    return `cpanel ${credential.username}:${credential.token}`;
+  }
+  if (!credential.password) throw new Error('The saved cPanel management credential is unavailable.');
   const bytes = new TextEncoder().encode(`${credential.username}:${credential.password}`);
   let binary = '';
   bytes.forEach((byte) => { binary += String.fromCharCode(byte); });
@@ -71,18 +78,25 @@ async function request(input: {
     method: input.form ? 'POST' : 'GET',
     headers: {
       Accept: 'application/json',
-      Authorization: basicAuth(input.credential),
+      Authorization: authorization(input.credential),
       ...(input.form ? { 'Content-Type': 'application/x-www-form-urlencoded' } : {}),
     },
     body: input.form ? new URLSearchParams(input.form).toString() : undefined,
     redirect: 'manual',
     signal: AbortSignal.timeout(55_000),
   });
-  if (response.status >= 300 && response.status < 400) throw new Error('Softaculous redirected the management request. Check the cPanel management username and password.');
-  if (response.status === 401 || response.status === 403) throw new Error('Softaculous rejected the management username or password.');
+  const tokenMode = input.credential.authMode === 'cpanel_token' || Boolean(input.credential.token);
+  if (response.status >= 300 && response.status < 400) throw new Error(tokenMode
+    ? 'This server redirected the Softaculous API request instead of accepting the connected cPanel token.'
+    : 'Softaculous redirected the management request. Check the cPanel management username and password.');
+  if (response.status === 401 || response.status === 403) throw new Error(tokenMode
+    ? 'This cPanel server accepted the API token for cPanel, but does not allow that token to access Softaculous.'
+    : 'Softaculous rejected the management username or password.');
   if (!response.ok) throw new Error(`Softaculous returned ${response.status}.`);
   const text = await response.text();
-  if (/^\s*</.test(text)) throw new Error('Softaculous returned a sign-in page. Check the operational credential and try again.');
+  if (/^\s*</.test(text)) throw new Error(tokenMode
+    ? 'Softaculous returned its sign-in page instead of accepting the connected cPanel token.'
+    : 'Softaculous returned a sign-in page. Check the operational credential and try again.');
   let payload: unknown;
   try { payload = JSON.parse(text); } catch { throw new Error('Softaculous returned an unreadable response.'); }
   const record = payload && typeof payload === 'object' ? payload as Record<string, unknown> : {};
