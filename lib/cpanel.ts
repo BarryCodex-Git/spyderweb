@@ -246,25 +246,25 @@ function directiveMatches(name: RecommendedPhpDirective, current: string | null,
   return Number(clean) === Number(expected);
 }
 
-async function inspectRecommendedPhpProfile(input: {
-  baseUrl: string;
-  username: string;
-  token: string;
-  domain: string;
-}) {
+type CpanelUapiCaller = (module: string, fn: string, query?: Record<string, string>) => Promise<unknown>;
+
+async function inspectRecommendedPhpProfileWith(
+  call: CpanelUapiCaller,
+  domain: string,
+) {
   let data: unknown;
   let readMethod: 'basic_directives' | 'php_ini_content' | 'unavailable' = 'basic_directives';
   try {
-    data = await cpanelUapi(input.baseUrl, input.username, input.token, 'LangPHP', 'php_ini_get_user_basic_directives', {
+    data = await call('LangPHP', 'php_ini_get_user_basic_directives', {
       type: 'vhost',
-      vhost: input.domain,
+      vhost: domain,
     });
   } catch (error) {
     if (!(error instanceof CpanelFunctionError)) throw error;
     try {
-      data = await cpanelUapi(input.baseUrl, input.username, input.token, 'LangPHP', 'php_ini_get_user_content', {
+      data = await call('LangPHP', 'php_ini_get_user_content', {
         type: 'vhost',
-        vhost: input.domain,
+        vhost: domain,
       });
       readMethod = 'php_ini_content';
     } catch (fallbackError) {
@@ -281,6 +281,24 @@ async function inspectRecommendedPhpProfile(input: {
     .map(([name]) => name);
   const readable = readMethod !== 'unavailable' && Object.values(current).some((value) => value !== null);
   return { current, mismatches, readable, readMethod };
+}
+
+async function inspectRecommendedPhpProfile(input: {
+  baseUrl: string;
+  username: string;
+  token: string;
+  domain: string;
+  session?: CpanelSession | null;
+}) {
+  const tokenCall: CpanelUapiCaller = (module, fn, query = {}) => cpanelUapi(
+    input.baseUrl, input.username, input.token, module, fn, query,
+  );
+  const tokenResult = await inspectRecommendedPhpProfileWith(tokenCall, input.domain);
+  if (tokenResult.readable || !input.session) return tokenResult;
+  const sessionCall: CpanelUapiCaller = (module, fn, query = {}) => cpanelSessionUapi(
+    input.baseUrl, input.session!, module, fn, query,
+  );
+  return inspectRecommendedPhpProfileWith(sessionCall, input.domain);
 }
 
 export async function ensureRecommendedPhpProfile(input: {
@@ -301,6 +319,7 @@ export async function ensureRecommendedPhpProfile(input: {
     `directive-${index + 1}`,
     `${name}:${recommendedPhpDirectives[name]}`,
   ]));
+  let updateMethod: 'token' | 'session' = 'token';
   try {
     await cpanelUapi(input.baseUrl, input.username, input.token, 'LangPHP', 'php_ini_set_user_basic_directives', {
       type: 'vhost',
@@ -309,6 +328,32 @@ export async function ensureRecommendedPhpProfile(input: {
     });
   } catch (error) {
     if (!(error instanceof CpanelFunctionError)) throw error;
+    if (input.session) {
+      try {
+        await cpanelSessionUapi(input.baseUrl, input.session, 'LangPHP', 'php_ini_set_user_basic_directives', {
+          type: 'vhost',
+          vhost: input.domain,
+          ...directives,
+        });
+        updateMethod = 'session';
+      } catch (sessionError) {
+        if (!(sessionError instanceof CpanelFunctionError)) throw sessionError;
+        // Continue to the .user.ini compatibility route below.
+      }
+    }
+    if (updateMethod === 'session') {
+      const sessionCall: CpanelUapiCaller = (module, fn, query = {}) => cpanelSessionUapi(
+        input.baseUrl, input.session!, module, fn, query,
+      );
+      const afterSessionUpdate = await inspectRecommendedPhpProfileWith(sessionCall, input.domain);
+      if (!afterSessionUpdate.readable) {
+        throw new Error(`cPanel accepted the MultiPHP update for ${input.domain}, but did not expose the saved values for verification.`);
+      }
+      if (afterSessionUpdate.mismatches.length) {
+        throw new Error(`cPanel accepted the MultiPHP update, but these settings did not verify: ${afterSessionUpdate.mismatches.join(', ')}.`);
+      }
+      return { status: 'updated_via_cpanel_session' as const, changed: settingsToApply };
+    }
     const liveDocumentRoot = input.documentRoot ?? await resolveSubdomainDocumentRoot(
       input.baseUrl, input.username, input.token, input.domain,
     );
