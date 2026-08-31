@@ -1,4 +1,4 @@
-import { applyRecommendedPhpProfile, publicWordPressInfo } from '@/lib/cpanel';
+import { ensureRecommendedPhpProfile, publicWordPressInfo } from '@/lib/cpanel';
 import { decryptHostingToken, decryptSecret } from '@/lib/credential-crypto';
 import { ensureHostingSchema } from '@/lib/hosting-db';
 import {
@@ -6,7 +6,10 @@ import {
   requireUnlocked,
 } from '@/lib/operational-security';
 import { getRequestIdentity, isSameOrigin } from '@/lib/request-auth';
-import { listSoftaculousInstallations, softaculousAction, type OperationalCredential } from '@/lib/softaculous';
+import {
+  listSoftaculousBackups, listSoftaculousInstallations, softaculousAction,
+  type OperationalCredential, type SoftaculousBackup,
+} from '@/lib/softaculous';
 
 export const dynamic = 'force-dynamic';
 
@@ -19,6 +22,72 @@ async function audit(db: D1Database, input: { ownerUserId: string; connectionId:
     target, outcome, details_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
     .bind(crypto.randomUUID(), input.ownerUserId, input.connectionId, input.action, input.target,
       input.outcome, JSON.stringify(input.details || {}), new Date().toISOString()).run();
+}
+
+function installationBackups(backups: SoftaculousBackup[], installationId: string, domain: string) {
+  return backups.filter((backup) => backup.installationId === installationId || backup.domain === domain);
+}
+
+function newestBackup(backups: SoftaculousBackup[]) {
+  return [...backups].sort((left, right) => {
+    const leftTime = left.createdAt ? new Date(left.createdAt).getTime() : 0;
+    const rightTime = right.createdAt ? new Date(right.createdAt).getTime() : 0;
+    return rightTime - leftTime || right.fileName.localeCompare(left.fileName);
+  })[0] ?? null;
+}
+
+function oldestBackup(backups: SoftaculousBackup[]) {
+  return [...backups].sort((left, right) => {
+    const leftTime = left.createdAt ? new Date(left.createdAt).getTime() : Number.MAX_SAFE_INTEGER;
+    const rightTime = right.createdAt ? new Date(right.createdAt).getTime() : Number.MAX_SAFE_INTEGER;
+    return leftTime - rightTime || left.fileName.localeCompare(right.fileName);
+  })[0] ?? null;
+}
+
+function publicBackupSummary(backups: SoftaculousBackup[], fallbackLatest: string | null = null) {
+  const latest = newestBackup(backups);
+  const knownSizes = backups.map((backup) => backup.sizeBytes).filter((size): size is number => size !== null);
+  return {
+    count: backups.length,
+    latestCreatedAt: latest?.createdAt ?? fallbackLatest,
+    latestSizeBytes: latest?.sizeBytes ?? null,
+    totalSizeBytes: knownSizes.length ? knownSizes.reduce((total, size) => total + size, 0) : null,
+  };
+}
+
+export async function GET(request: Request, { params }: { params: Promise<{ domainId: string }> }) {
+  const identity = getRequestIdentity(request);
+  if (!identity) return json({ error: 'Sign in as the SpyderWeb owner.' }, 401);
+  const { domainId } = await params;
+  if (!/^[a-f0-9]{32}$/.test(domainId)) return json({ error: 'Invalid hosting domain.' }, 400);
+  try {
+    const db = await ensureHostingSchema();
+    const record = await loadDomainActionRecord(db, identity.userId, domainId);
+    if (record.wordpressStatus !== 'installed' || !record.wordpressInstallationId) {
+      return json(publicBackupSummary([], record.restorePointAt));
+    }
+    requireOperationalAccess(record);
+    const connection = await db.prepare(`SELECT base_url AS baseUrl,
+      encrypted_operational_secret AS encryptedOperationalSecret,
+      operational_secret_iv AS operationalSecretIv
+      FROM hosting_connections WHERE id = ? AND owner_user_id = ? LIMIT 1`)
+      .bind(record.connectionId, identity.userId).first<Record<string, unknown>>();
+    if (!connection?.encryptedOperationalSecret || !connection.operationalSecretIv) {
+      throw new Error('Activate WordPress Management for this cPanel account in Settings first.');
+    }
+    const credential = JSON.parse(await decryptSecret(
+      String(connection.encryptedOperationalSecret), String(connection.operationalSecretIv),
+      identity.userId, `operational:${record.connectionId}`,
+    )) as OperationalCredential;
+    const backups = installationBackups(
+      await listSoftaculousBackups(String(connection.baseUrl), credential),
+      record.wordpressInstallationId,
+      record.domain,
+    );
+    return json(publicBackupSummary(backups, record.restorePointAt));
+  } catch (error) {
+    return json({ error: error instanceof Error ? error.message : 'Backup information could not be loaded.' }, 400);
+  }
 }
 
 async function refreshDomainWordPress(
@@ -111,11 +180,16 @@ export async function POST(request: Request, { params }: { params: Promise<{ dom
     if (!connection) throw new Error('The hosting connection for this domain was not found.');
     if (action === 'apply_php_profile') {
       const cpanelToken = await decryptHostingToken(String(connection.encryptedToken), String(connection.encryptionIv), identity.userId, record.connectionId);
-      await applyRecommendedPhpProfile({ baseUrl: String(connection.baseUrl), username: String(connection.username), token: cpanelToken, domain: record.domain });
+      const result = await ensureRecommendedPhpProfile({ baseUrl: String(connection.baseUrl), username: String(connection.username), token: cpanelToken, domain: record.domain });
       await db.prepare(`UPDATE hosting_domains SET php_profile_status = 'recommended_applied' WHERE id = ? AND owner_user_id = ?`)
         .bind(record.id, identity.userId).run();
       await audit(db, { ownerUserId: identity.userId, connectionId: record.connectionId, action: 'wordpress.apply_php_profile', target: record.domain, outcome: 'success' });
-      return json({ message: `The recommended 512 MB PHP profile was applied to ${record.domain}.`, warning: false });
+      return json({
+        message: result.status === 'already_correct'
+          ? `The PHP settings on ${record.domain} were checked and are already correct.`
+          : `The PHP settings on ${record.domain} were checked, corrected and verified.`,
+        warning: false,
+      });
     }
 
     requireOperationalAccess(record);
@@ -176,21 +250,32 @@ export async function POST(request: Request, { params }: { params: Promise<{ dom
     if (action === 'create_restore_point') {
       if (record.wordpressStatus !== 'installed' || !record.wordpressInstallationId) throw new Error('Softaculous must identify this WordPress installation before it can create a restore point. Scan the connection in Settings.');
       await softaculousAction({ baseUrl, credential: secrets, action: 'backup', domain: record.domain, installationId: record.wordpressInstallationId });
-      const now = new Date().toISOString();
+      const liveBackups = installationBackups(await listSoftaculousBackups(baseUrl, secrets), record.wordpressInstallationId, record.domain);
+      const now = newestBackup(liveBackups)?.createdAt ?? new Date().toISOString();
       await db.prepare(`UPDATE hosting_domains SET restore_point_at = ? WHERE id = ? AND owner_user_id = ?`)
         .bind(now, record.id, identity.userId).run();
       await audit(db, { ownerUserId: identity.userId, connectionId: record.connectionId, action: 'wordpress.restore_point_created', target: record.domain, outcome: 'success' });
-      return json({ message: `An optional Softaculous backup was created for ${record.domain}.` });
+      return json({ message: `A new Softaculous restore point was created for ${record.domain}.`, backup: publicBackupSummary(liveBackups, now) });
     }
 
-    if (action === 'delete') {
-      requireUnlocked(record);
-      if (record.wordpressStatus !== 'installed' || !record.wordpressInstallationId) throw new Error('No Softaculous-managed WordPress installation is available to delete.');
-      await softaculousAction({ baseUrl, credential: secrets, action: 'remove', domain: record.domain, installationId: record.wordpressInstallationId });
-      const refreshed = await refreshDomainWordPress(db, { ownerUserId: identity.userId, domainId: record.id,
-        domain: record.domain, baseUrl, credential: secrets, expected: 'removed' });
-      if (!refreshed.verified) verificationWarning = 'Softaculous accepted the removal but still reports the installation. SpyderWeb kept the live status unchanged; scan again before retrying.';
-    } else if (action === 'install') {
+    if (action === 'delete_oldest_backup') {
+      if (record.wordpressStatus !== 'installed' || !record.wordpressInstallationId) throw new Error('No Softaculous-managed WordPress installation is available for backup management.');
+      const current = installationBackups(await listSoftaculousBackups(baseUrl, secrets), record.wordpressInstallationId, record.domain);
+      const oldest = oldestBackup(current);
+      if (!oldest) throw new Error(`No saved Softaculous backup was found for ${record.domain}.`);
+      await softaculousAction({ baseUrl, credential: secrets, action: 'delete_backup', domain: record.domain, backupFileName: oldest.fileName });
+      const remaining = installationBackups(await listSoftaculousBackups(baseUrl, secrets), record.wordpressInstallationId, record.domain);
+      if (remaining.some((backup) => backup.fileName === oldest.fileName)) {
+        throw new Error('Softaculous accepted the request, but the old backup still appears in its inventory.');
+      }
+      const latestAt = newestBackup(remaining)?.createdAt ?? null;
+      await db.prepare(`UPDATE hosting_domains SET restore_point_at = ? WHERE id = ? AND owner_user_id = ?`)
+        .bind(latestAt, record.id, identity.userId).run();
+      await audit(db, { ownerUserId: identity.userId, connectionId: record.connectionId, action: 'wordpress.backup_deleted', target: record.domain, outcome: 'success' });
+      return json({ message: `The oldest saved backup for ${record.domain} was deleted.`, backup: publicBackupSummary(remaining, latestAt) });
+    }
+
+    if (action === 'install') {
       await prepareCleanDestination('installing clean WordPress');
       await softaculousAction({ baseUrl, credential: secrets, action: 'install', domain: record.domain,
         databaseName: freshDatabaseName(), adminUsername: secrets.adminUsername,
@@ -224,7 +309,6 @@ export async function POST(request: Request, { params }: { params: Promise<{ dom
 
     await audit(db, { ownerUserId: identity.userId, connectionId: record.connectionId, action: `wordpress.${action}`, target: record.domain, outcome: 'accepted' });
     const messages: Record<string, string> = {
-      delete: `WordPress removal completed for ${record.domain}, and the Softaculous inventory was checked again.`,
       install: `A clean WordPress installation completed for ${record.domain} with temporary admin/admin credentials, and the live inventory was refreshed.`,
       clone_template: `The default template clone completed for ${record.domain}, and the live inventory was refreshed.`,
     };

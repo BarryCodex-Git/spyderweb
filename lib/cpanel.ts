@@ -158,22 +158,103 @@ export async function cpanelUapi(
 
 const uapi = cpanelUapi;
 
-export async function applyRecommendedPhpProfile(input: {
+const recommendedPhpDirectives = {
+  memory_limit: '768M',
+  post_max_size: '512M',
+  upload_max_filesize: '512M',
+  max_execution_time: '900',
+  max_input_time: '900',
+  max_input_vars: '5000',
+} as const;
+
+type RecommendedPhpDirective = keyof typeof recommendedPhpDirectives;
+
+function directiveValue(value: unknown, name: RecommendedPhpDirective): string | null {
+  if (typeof value === 'string') {
+    const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    return value.match(new RegExp(`(?:^|[\\s,;])${escaped}\\s*[:=]\\s*([^\\s,;]+)`, 'i'))?.[1] ?? null;
+  }
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const found = directiveValue(item, name);
+      if (found !== null) return found;
+    }
+    return null;
+  }
+  if (!value || typeof value !== 'object') return null;
+  const record = value as Record<string, unknown>;
+  const direct = record[name];
+  if (typeof direct === 'string' || typeof direct === 'number') return String(direct);
+  const key = String(record.key ?? record.name ?? record.directive ?? '').trim().toLowerCase();
+  if (key === name) {
+    const candidate = record.value ?? record.setting ?? record.current;
+    if (typeof candidate === 'string' || typeof candidate === 'number') return String(candidate);
+  }
+  for (const item of Object.values(record)) {
+    const found = directiveValue(item, name);
+    if (found !== null) return found;
+  }
+  return null;
+}
+
+function directiveMatches(name: RecommendedPhpDirective, current: string | null, expected: string) {
+  if (current === null) return false;
+  const clean = current.trim().toUpperCase();
+  if (name === 'memory_limit' || name === 'post_max_size' || name === 'upload_max_filesize') {
+    const parseBytes = (input: string) => {
+      const match = input.match(/^([0-9.]+)\s*([KMG]?)B?$/i);
+      if (!match) return Number.NaN;
+      const multiplier = match[2].toUpperCase() === 'G' ? 1024 ** 3 : match[2].toUpperCase() === 'M' ? 1024 ** 2 : match[2].toUpperCase() === 'K' ? 1024 : 1;
+      return Number(match[1]) * multiplier;
+    };
+    return parseBytes(clean) === parseBytes(expected);
+  }
+  return Number(clean) === Number(expected);
+}
+
+async function inspectRecommendedPhpProfile(input: {
   baseUrl: string;
   username: string;
   token: string;
   domain: string;
 }) {
-  return cpanelUapi(input.baseUrl, input.username, input.token, 'LangPHP', 'php_ini_set_user_basic_directives', {
+  const data = await cpanelUapi(input.baseUrl, input.username, input.token, 'LangPHP', 'php_ini_get_user_basic_directives', {
     type: 'vhost',
     vhost: input.domain,
-    'directive-1': 'memory_limit:512M',
-    'directive-2': 'post_max_size:512M',
-    'directive-3': 'upload_max_filesize:512M',
-    'directive-4': 'max_execution_time:300',
-    'directive-5': 'max_input_time:300',
-    'directive-6': 'max_input_vars:5000',
   });
+  const current = Object.fromEntries(
+    Object.keys(recommendedPhpDirectives).map((name) => [name, directiveValue(data, name as RecommendedPhpDirective)]),
+  ) as Record<RecommendedPhpDirective, string | null>;
+  const mismatches = (Object.entries(recommendedPhpDirectives) as [RecommendedPhpDirective, string][])
+    .filter(([name, expected]) => !directiveMatches(name, current[name], expected))
+    .map(([name]) => name);
+  return { current, mismatches };
+}
+
+export async function ensureRecommendedPhpProfile(input: {
+  baseUrl: string;
+  username: string;
+  token: string;
+  domain: string;
+}) {
+  const before = await inspectRecommendedPhpProfile(input);
+  if (!before.mismatches.length) return { status: 'already_correct' as const, changed: [] as RecommendedPhpDirective[] };
+
+  const directives = Object.fromEntries(before.mismatches.map((name, index) => [
+    `directive-${index + 1}`,
+    `${name}:${recommendedPhpDirectives[name]}`,
+  ]));
+  await cpanelUapi(input.baseUrl, input.username, input.token, 'LangPHP', 'php_ini_set_user_basic_directives', {
+    type: 'vhost',
+    vhost: input.domain,
+    ...directives,
+  });
+
+  const after = await inspectRecommendedPhpProfile(input);
+  if (after.mismatches.length) {
+    throw new Error(`cPanel accepted the PHP update, but these settings did not verify: ${after.mismatches.join(', ')}.`);
+  }
+  return { status: 'updated' as const, changed: before.mismatches };
 }
 
 async function api2ListSubdomains(baseUrl: string, username: string, token: string) {
