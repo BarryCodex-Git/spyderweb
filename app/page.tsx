@@ -136,9 +136,9 @@ type ProjectEvent = {
 
 const navItems: { label: View; icon: string }[] = [
   { label: 'Dashboard', icon: '⌂' },
-  { label: 'Domains', icon: '◇' },
   { label: 'Projects', icon: '▤' },
   { label: 'Agent Activity', icon: '◉' },
+  { label: 'Domains', icon: '◇' },
   { label: 'Settings', icon: '⚙' },
 ];
 
