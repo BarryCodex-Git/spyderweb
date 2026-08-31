@@ -218,17 +218,35 @@ async function inspectRecommendedPhpProfile(input: {
   token: string;
   domain: string;
 }) {
-  const data = await cpanelUapi(input.baseUrl, input.username, input.token, 'LangPHP', 'php_ini_get_user_basic_directives', {
-    type: 'vhost',
-    vhost: input.domain,
-  });
+  let data: unknown;
+  let readMethod: 'basic_directives' | 'php_ini_content' | 'unavailable' = 'basic_directives';
+  try {
+    data = await cpanelUapi(input.baseUrl, input.username, input.token, 'LangPHP', 'php_ini_get_user_basic_directives', {
+      type: 'vhost',
+      vhost: input.domain,
+    });
+  } catch (error) {
+    if (!(error instanceof CpanelFunctionError)) throw error;
+    try {
+      data = await cpanelUapi(input.baseUrl, input.username, input.token, 'LangPHP', 'php_ini_get_user_content', {
+        type: 'vhost',
+        vhost: input.domain,
+      });
+      readMethod = 'php_ini_content';
+    } catch (fallbackError) {
+      if (!(fallbackError instanceof CpanelFunctionError)) throw fallbackError;
+      data = null;
+      readMethod = 'unavailable';
+    }
+  }
   const current = Object.fromEntries(
     Object.keys(recommendedPhpDirectives).map((name) => [name, directiveValue(data, name as RecommendedPhpDirective)]),
   ) as Record<RecommendedPhpDirective, string | null>;
   const mismatches = (Object.entries(recommendedPhpDirectives) as [RecommendedPhpDirective, string][])
     .filter(([name, expected]) => !directiveMatches(name, current[name], expected))
     .map(([name]) => name);
-  return { current, mismatches };
+  const readable = readMethod !== 'unavailable' && Object.values(current).some((value) => value !== null);
+  return { current, mismatches, readable, readMethod };
 }
 
 export async function ensureRecommendedPhpProfile(input: {
@@ -238,9 +256,12 @@ export async function ensureRecommendedPhpProfile(input: {
   domain: string;
 }) {
   const before = await inspectRecommendedPhpProfile(input);
-  if (!before.mismatches.length) return { status: 'already_correct' as const, changed: [] as RecommendedPhpDirective[] };
+  if (before.readable && !before.mismatches.length) return { status: 'already_correct' as const, changed: [] as RecommendedPhpDirective[] };
 
-  const directives = Object.fromEntries(before.mismatches.map((name, index) => [
+  const settingsToApply = before.readable
+    ? before.mismatches
+    : Object.keys(recommendedPhpDirectives) as RecommendedPhpDirective[];
+  const directives = Object.fromEntries(settingsToApply.map((name, index) => [
     `directive-${index + 1}`,
     `${name}:${recommendedPhpDirectives[name]}`,
   ]));
@@ -251,10 +272,13 @@ export async function ensureRecommendedPhpProfile(input: {
   });
 
   const after = await inspectRecommendedPhpProfile(input);
-  if (after.mismatches.length) {
+  if (after.readable && after.mismatches.length) {
     throw new Error(`cPanel accepted the PHP update, but these settings did not verify: ${after.mismatches.join(', ')}.`);
   }
-  return { status: 'updated' as const, changed: before.mismatches };
+  return {
+    status: after.readable ? 'updated' as const : 'updated_without_readback' as const,
+    changed: settingsToApply,
+  };
 }
 
 async function api2ListSubdomains(baseUrl: string, username: string, token: string) {

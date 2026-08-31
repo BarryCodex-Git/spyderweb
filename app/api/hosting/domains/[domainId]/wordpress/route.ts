@@ -187,8 +187,10 @@ export async function POST(request: Request, { params }: { params: Promise<{ dom
       return json({
         message: result.status === 'already_correct'
           ? `The PHP settings on ${record.domain} were checked and are already correct.`
+          : result.status === 'updated_without_readback'
+            ? `cPanel accepted all six recommended PHP settings for ${record.domain}. This hosting server does not expose PHP read-back, so SpyderWeb applied the complete profile instead of stopping.`
           : `The PHP settings on ${record.domain} were checked, corrected and verified.`,
-        warning: false,
+        warning: result.status === 'updated_without_readback',
       });
     }
 

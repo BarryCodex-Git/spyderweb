@@ -871,7 +871,12 @@ export default function Home() {
       else if (action === 'install' || action === 'clone_template') setBackupStatus(null);
       showActionToast({ id: toastId, status: result.warning ? 'warning' : 'success', title: result.warning ? 'Action needs verification' : 'Action completed', message: result.message || 'The action completed.' });
     } catch (error) {
-      showActionToast({ id: toastId, status: 'error', title: 'WordPress action failed', message: error instanceof Error ? error.message : 'The WordPress action could not be completed.' });
+      showActionToast({
+        id: toastId,
+        status: 'error',
+        title: action === 'apply_php_profile' ? 'PHP settings update failed' : 'WordPress action failed',
+        message: error instanceof Error ? error.message : 'The hosting action could not be completed.',
+      });
     } finally { setWordpressActionBusy(false); }
   }
 
