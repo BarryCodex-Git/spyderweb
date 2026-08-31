@@ -869,7 +869,12 @@ export default function Home() {
       await loadHostingInventory();
       if (result.backup) setBackupStatus({ domainId: domain.id, ...result.backup });
       else if (action === 'install' || action === 'clone_template') setBackupStatus(null);
-      showActionToast({ id: toastId, status: result.warning ? 'warning' : 'success', title: result.warning ? 'Action needs verification' : 'Action completed', message: result.message || 'The action completed.' });
+      showActionToast({
+        id: toastId,
+        status: result.warning ? 'warning' : 'success',
+        title: action === 'apply_php_profile' ? 'PHP settings updated' : result.warning ? 'Action needs verification' : 'Action completed',
+        message: result.message || 'The action completed.',
+      });
     } catch (error) {
       showActionToast({
         id: toastId,

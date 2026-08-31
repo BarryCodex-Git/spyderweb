@@ -190,7 +190,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ dom
           : result.status === 'updated_without_readback'
             ? `cPanel accepted all six recommended PHP settings for ${record.domain}. This hosting server does not expose PHP read-back, so SpyderWeb applied the complete profile instead of stopping.`
           : `The PHP settings on ${record.domain} were checked, corrected and verified.`,
-        warning: result.status === 'updated_without_readback',
+        warning: false,
       });
     }
 
