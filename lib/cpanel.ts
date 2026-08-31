@@ -169,6 +169,40 @@ const recommendedPhpDirectives = {
 
 type RecommendedPhpDirective = keyof typeof recommendedPhpDirectives;
 
+export type CpanelSession = {
+  securityToken: string;
+  cookies: string;
+};
+
+async function cpanelSessionUapi(
+  baseUrl: string,
+  session: CpanelSession,
+  module: string,
+  fn: string,
+  query: Record<string, string> = {},
+) {
+  const url = new URL(`${baseUrl}${session.securityToken}/execute/${module}/${fn}`);
+  Object.entries(query).forEach(([key, value]) => url.searchParams.set(key, value));
+  const response = await fetch(url, {
+    method: 'GET',
+    headers: { Accept: 'application/json', Cookie: session.cookies },
+    redirect: 'manual',
+    signal: AbortSignal.timeout(20_000),
+  });
+  if (!response.ok || (response.status >= 300 && response.status < 400)) {
+    throw new CpanelFunctionError(`The authenticated cPanel session could not run ${module}/${fn}.`);
+  }
+  const payload = (await response.json()) as UapiEnvelope;
+  if (payload.result?.status !== 1) {
+    const errors = payload.result?.errors;
+    const messages = payload.result?.messages;
+    const detail = (Array.isArray(errors) ? errors[0] : errors)
+      || (Array.isArray(messages) ? messages[0] : messages);
+    throw new CpanelFunctionError(detail || `cPanel could not run ${module}/${fn}.`);
+  }
+  return payload.result.data;
+}
+
 function directiveValue(value: unknown, name: RecommendedPhpDirective): string | null {
   if (typeof value === 'string') {
     const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -254,6 +288,8 @@ export async function ensureRecommendedPhpProfile(input: {
   username: string;
   token: string;
   domain: string;
+  documentRoot: string | null;
+  session?: CpanelSession | null;
 }) {
   const before = await inspectRecommendedPhpProfile(input);
   if (before.readable && !before.mismatches.length) return { status: 'already_correct' as const, changed: [] as RecommendedPhpDirective[] };
@@ -265,11 +301,78 @@ export async function ensureRecommendedPhpProfile(input: {
     `directive-${index + 1}`,
     `${name}:${recommendedPhpDirectives[name]}`,
   ]));
-  await cpanelUapi(input.baseUrl, input.username, input.token, 'LangPHP', 'php_ini_set_user_basic_directives', {
-    type: 'vhost',
-    vhost: input.domain,
-    ...directives,
-  });
+  try {
+    await cpanelUapi(input.baseUrl, input.username, input.token, 'LangPHP', 'php_ini_set_user_basic_directives', {
+      type: 'vhost',
+      vhost: input.domain,
+      ...directives,
+    });
+  } catch (error) {
+    if (!(error instanceof CpanelFunctionError)) throw error;
+    if (!input.documentRoot) {
+      throw new Error(`cPanel does not expose PHP editing for ${input.domain}, and its document root is unavailable for the safe .user.ini fallback.`);
+    }
+    const roots = filemanRootCandidates(input.documentRoot, input.username);
+    const callers = [
+      ...(input.session ? [(module: string, fn: string, query: Record<string, string>) => cpanelSessionUapi(input.baseUrl, input.session!, module, fn, query)] : []),
+      (module: string, fn: string, query: Record<string, string>) => cpanelUapi(input.baseUrl, input.username, input.token, module, fn, query),
+    ];
+    let lastError: unknown = error;
+    for (const root of roots) {
+      for (const call of callers) {
+        let existing = '';
+        try {
+          const files = await call('Fileman', 'list_files', {
+            dir: root,
+            types: 'file',
+            show_hidden: '1',
+          });
+          if (containsNamedFile(files, '.user.ini')) {
+            const data = await call('Fileman', 'get_file_content', {
+              dir: root,
+              file: '.user.ini',
+              to_charset: 'UTF-8',
+              update_html_document_encoding: '0',
+            });
+            existing = fileContent(data) ?? '';
+          }
+        } catch (readError) {
+          lastError = readError;
+          continue;
+        }
+
+        const managed = mergeRecommendedPhpDirectives(existing);
+        try {
+          await call('Fileman', 'save_file_content', {
+            dir: root,
+            file: '.user.ini',
+            content: managed,
+            from_charset: 'UTF-8',
+            to_charset: 'UTF-8',
+            fallback: '0',
+          });
+          const saved = await call('Fileman', 'get_file_content', {
+            dir: root,
+            file: '.user.ini',
+            to_charset: 'UTF-8',
+            update_html_document_encoding: '0',
+          });
+          const savedContent = fileContent(saved) ?? '';
+          const unverified = (Object.entries(recommendedPhpDirectives) as [RecommendedPhpDirective, string][])
+            .filter(([name, expected]) => !directiveMatches(name, directiveValue(savedContent, name), expected))
+            .map(([name]) => name);
+          if (unverified.length) {
+            throw new Error(`cPanel saved .user.ini, but these values did not read back correctly: ${unverified.join(', ')}.`);
+          }
+          return { status: 'updated_via_user_ini' as const, changed: settingsToApply };
+        } catch (writeError) {
+          lastError = writeError;
+        }
+      }
+    }
+    const detail = lastError instanceof Error ? lastError.message : 'The cPanel file manager did not accept the update.';
+    throw new Error(`The host blocks its PHP editor, and SpyderWeb could not safely update .user.ini through File Manager. ${detail}`);
+  }
 
   const after = await inspectRecommendedPhpProfile(input);
   if (after.readable && after.mismatches.length) {
@@ -279,6 +382,26 @@ export async function ensureRecommendedPhpProfile(input: {
     status: after.readable ? 'updated' as const : 'updated_without_readback' as const,
     changed: settingsToApply,
   };
+}
+
+function mergeRecommendedPhpDirectives(content: string) {
+  const seen = new Set<RecommendedPhpDirective>();
+  const names = Object.keys(recommendedPhpDirectives) as RecommendedPhpDirective[];
+  const lines = content.replace(/\r\n/g, '\n').split('\n').map((line) => {
+    const match = line.match(/^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=/);
+    const name = match?.[1] as RecommendedPhpDirective | undefined;
+    if (!name || !names.includes(name)) return line;
+    if (seen.has(name)) return `; SpyderWeb replaced duplicate: ${line}`;
+    seen.add(name);
+    return `${name} = ${recommendedPhpDirectives[name]}`;
+  });
+  const missing = names.filter((name) => !seen.has(name));
+  if (missing.length) {
+    if (lines.length && lines[lines.length - 1].trim()) lines.push('');
+    lines.push('; Managed by SpyderWeb');
+    missing.forEach((name) => lines.push(`${name} = ${recommendedPhpDirectives[name]}`));
+  }
+  return `${lines.join('\n').replace(/\n+$/, '')}\n`;
 }
 
 async function api2ListSubdomains(baseUrl: string, username: string, token: string) {

@@ -33,7 +33,7 @@ function authorization(credential: OperationalCredential) {
   return `Basic ${btoa(binary)}`;
 }
 
-async function createCpanelSession(baseUrl: string, credential: OperationalCredential) {
+export async function createCpanelSession(baseUrl: string, credential: OperationalCredential) {
   if (!credential.password) throw new Error('Enter the normal cPanel account password.');
   const response = await fetch(`${baseUrl}/login/?login_only=1`, {
     method: 'POST',
