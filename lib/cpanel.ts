@@ -309,10 +309,13 @@ export async function ensureRecommendedPhpProfile(input: {
     });
   } catch (error) {
     if (!(error instanceof CpanelFunctionError)) throw error;
-    if (!input.documentRoot) {
+    const liveDocumentRoot = input.documentRoot ?? await resolveSubdomainDocumentRoot(
+      input.baseUrl, input.username, input.token, input.domain,
+    );
+    if (!liveDocumentRoot) {
       throw new Error(`cPanel does not expose PHP editing for ${input.domain}, and its document root is unavailable for the safe .user.ini fallback.`);
     }
-    const roots = filemanRootCandidates(input.documentRoot, input.username);
+    const roots = filemanRootCandidates(liveDocumentRoot, input.username);
     const callers = [
       ...(input.session ? [(module: string, fn: string, query: Record<string, string>) => cpanelSessionUapi(input.baseUrl, input.session!, module, fn, query)] : []),
       (module: string, fn: string, query: Record<string, string>) => cpanelUapi(input.baseUrl, input.username, input.token, module, fn, query),
@@ -382,6 +385,21 @@ export async function ensureRecommendedPhpProfile(input: {
     status: after.readable ? 'updated' as const : 'updated_without_readback' as const,
     changed: settingsToApply,
   };
+}
+
+async function resolveSubdomainDocumentRoot(baseUrl: string, username: string, token: string, domain: string) {
+  try {
+    const data = await api2ListSubdomains(baseUrl, username, token);
+    const records = Array.isArray(data) ? data : [];
+    const match = records.find((item) => {
+      if (!item || typeof item !== 'object') return false;
+      return String((item as Record<string, unknown>).domain || '').trim().toLowerCase() === domain.toLowerCase();
+    }) as Record<string, unknown> | undefined;
+    const root = match?.dir ?? match?.documentroot ?? match?.document_root;
+    return typeof root === 'string' && root.trim() ? root.trim() : null;
+  } catch {
+    return null;
+  }
 }
 
 function mergeRecommendedPhpDirectives(content: string) {
