@@ -208,6 +208,8 @@ export async function POST(request: Request, { params }: { params: Promise<{ dom
             ? `The six recommended PHP settings were updated through cPanel MultiPHP and read back successfully.`
           : result.status === 'updated_via_cpanel_password'
             ? `The six recommended PHP settings were updated through cPanel MultiPHP and read back successfully.`
+          : result.status === 'updated_via_compatibility_gateway'
+            ? `The six recommended PHP settings were updated through cPanel MultiPHP and read back successfully.`
           : result.status === 'updated_without_readback'
             ? `cPanel accepted all six recommended PHP settings for ${record.domain}. This hosting server does not expose PHP read-back, so SpyderWeb applied the complete profile instead of stopping.`
           : `The PHP settings on ${record.domain} were checked, corrected and verified.`,

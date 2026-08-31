@@ -239,6 +239,52 @@ async function cpanelPasswordUapi(
   return payload.result.data;
 }
 
+async function cpanelJsonUapi(
+  baseUrl: string,
+  username: string,
+  token: string,
+  module: string,
+  fn: string,
+  query: Record<string, string> = {},
+) {
+  const url = new URL(`${baseUrl}/json-api/cpanel`);
+  url.searchParams.set('cpanel_jsonapi_user', username);
+  url.searchParams.set('cpanel_jsonapi_apiversion', '3');
+  url.searchParams.set('cpanel_jsonapi_module', module);
+  url.searchParams.set('cpanel_jsonapi_func', fn);
+  Object.entries(query).forEach(([key, value]) => url.searchParams.set(key, value));
+  const response = await fetch(url, {
+    method: 'GET',
+    headers: { Accept: 'application/json', Authorization: `cpanel ${username}:${token}` },
+    redirect: 'manual',
+    signal: AbortSignal.timeout(20_000),
+  });
+  if (response.status === 401 || response.status === 403) {
+    throw new CpanelAuthenticationError('cPanel rejected the username or API token.');
+  }
+  if (!response.ok || (response.status >= 300 && response.status < 400)) {
+    throw new CpanelFunctionError(`The cPanel compatibility gateway could not run ${module}/${fn}.`);
+  }
+  const payload = await response.json() as UapiEnvelope & Api2Envelope;
+  if (payload.result) {
+    if (payload.result.status !== 1) {
+      const errors = payload.result.errors;
+      const messages = payload.result.messages;
+      const detail = (Array.isArray(errors) ? errors[0] : errors)
+        || (Array.isArray(messages) ? messages[0] : messages);
+      throw new CpanelFunctionError(detail || `cPanel could not run ${module}/${fn}.`);
+    }
+    return payload.result.data;
+  }
+  const compatibilityResult = payload.cpanelresult;
+  if (!compatibilityResult || compatibilityResult.event?.result !== 1) {
+    throw new CpanelFunctionError(
+      compatibilityResult?.reason || compatibilityResult?.error || `cPanel could not run ${module}/${fn}.`,
+    );
+  }
+  return compatibilityResult.data;
+}
+
 function directiveValue(value: unknown, name: RecommendedPhpDirective): string | null {
   if (typeof value === 'string') {
     const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -337,6 +383,15 @@ async function inspectRecommendedPhpProfile(input: {
   } catch (error) {
     if (!input.password && !input.session) throw error;
   }
+  const compatibilityCall: CpanelUapiCaller = (module, fn, query = {}) => cpanelJsonUapi(
+    input.baseUrl, input.username, input.token, module, fn, query,
+  );
+  try {
+    const compatibilityResult = await inspectRecommendedPhpProfileWith(compatibilityCall, input.domain);
+    if (compatibilityResult.readable || (!input.password && !input.session)) return compatibilityResult;
+  } catch (error) {
+    if (!input.password && !input.session) throw error;
+  }
   if (input.password) {
     const passwordCall: CpanelUapiCaller = (module, fn, query = {}) => cpanelPasswordUapi(
       input.baseUrl, input.username, input.password!, module, fn, query,
@@ -382,6 +437,26 @@ export async function ensureRecommendedPhpProfile(input: {
     });
   } catch (error) {
     if (!(error instanceof CpanelFunctionError) && !input.password && !input.session) throw error;
+    const compatibilityCall: CpanelUapiCaller = (module, fn, query = {}) => cpanelJsonUapi(
+      input.baseUrl, input.username, input.token, module, fn, query,
+    );
+    try {
+      await compatibilityCall('LangPHP', 'php_ini_set_user_basic_directives', {
+        type: 'vhost',
+        vhost: input.domain,
+        ...directives,
+      });
+      const afterCompatibilityUpdate = await inspectRecommendedPhpProfileWith(compatibilityCall, input.domain);
+      if (!afterCompatibilityUpdate.readable) {
+        throw new Error(`cPanel accepted the MultiPHP update for ${input.domain}, but did not expose the saved values for verification.`);
+      }
+      if (afterCompatibilityUpdate.mismatches.length) {
+        throw new Error(`cPanel accepted the MultiPHP update, but these settings did not verify: ${afterCompatibilityUpdate.mismatches.join(', ')}.`);
+      }
+      return { status: 'updated_via_compatibility_gateway' as const, changed: settingsToApply };
+    } catch (compatibilityError) {
+      if (!(compatibilityError instanceof CpanelFunctionError)) throw compatibilityError;
+    }
     if (input.password) {
       const passwordCall: CpanelUapiCaller = (module, fn, query = {}) => cpanelPasswordUapi(
         input.baseUrl, input.username, input.password!, module, fn, query,
@@ -438,6 +513,7 @@ export async function ensureRecommendedPhpProfile(input: {
     }
     const roots = filemanRootCandidates(liveDocumentRoot, input.username);
     const callers = [
+      (module: string, fn: string, query: Record<string, string>) => cpanelJsonUapi(input.baseUrl, input.username, input.token, module, fn, query),
       ...(input.session ? [(module: string, fn: string, query: Record<string, string>) => cpanelSessionUapi(input.baseUrl, input.session!, module, fn, query)] : []),
       (module: string, fn: string, query: Record<string, string>) => cpanelUapi(input.baseUrl, input.username, input.token, module, fn, query),
     ];
@@ -514,7 +590,11 @@ async function resolveSubdomainDocumentRoot(baseUrl: string, username: string, t
     const records = Array.isArray(data) ? data : [];
     const match = records.find((item) => {
       if (!item || typeof item !== 'object') return false;
-      return String((item as Record<string, unknown>).domain || '').trim().toLowerCase() === domain.toLowerCase();
+      const record = item as Record<string, unknown>;
+      const fullDomain = String(record.domain || '').trim().toLowerCase();
+      const combinedDomain = `${String(record.subdomain || '').trim()}.${String(record.rootdomain || '').trim()}`
+        .replace(/^\.|\.$/g, '').toLowerCase();
+      return fullDomain === domain.toLowerCase() || combinedDomain === domain.toLowerCase();
     }) as Record<string, unknown> | undefined;
     const root = match?.dir ?? match?.documentroot ?? match?.document_root;
     return typeof root === 'string' && root.trim() ? root.trim() : null;
