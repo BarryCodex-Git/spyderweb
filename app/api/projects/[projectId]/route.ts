@@ -102,11 +102,10 @@ export async function PATCH(
           JSON.stringify({ progress, developer, nextAction, due }), now),
     ];
     if (current.domainId) {
-      statements.push(workflow
-        ? db.prepare(`UPDATE hosting_domains SET assigned_developer = ?, workflow_status_override = ?
-          WHERE id = ? AND owner_user_id = ?`).bind(developer, workflow, current.domainId, identity.userId)
-        : db.prepare(`UPDATE hosting_domains SET assigned_developer = ?
-          WHERE id = ? AND owner_user_id = ?`).bind(developer, current.domainId, identity.userId));
+      statements.push(db.prepare(`UPDATE hosting_domains
+        SET assigned_developer = ?, workflow_status_override = ?
+        WHERE id = ? AND owner_user_id = ?`)
+        .bind(developer, workflow, current.domainId, identity.userId));
     }
     await db.batch(statements);
     return json({ message: `${String(current.client)} was updated to ${stage} · ${stageStatus.replaceAll('_', ' ')}.` });

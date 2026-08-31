@@ -1,8 +1,8 @@
 'use client';
 
 import Image from 'next/image';
-import { type FormEvent, useCallback, useEffect, useRef, useState } from 'react';
-import { PROJECT_STAGES } from '@/lib/project-workflow';
+import { type DragEvent, type FormEvent, useCallback, useEffect, useRef, useState } from 'react';
+import { PROJECT_STAGES, domainWorkflowForStage, suggestedProgress, type ProjectStage } from '@/lib/project-workflow';
 
 type View = 'Dashboard' | 'Domains' | 'Projects' | 'Agent Activity' | 'Settings';
 type Developer = 'Barry' | 'Clive' | 'Owner Account';
@@ -339,8 +339,10 @@ export default function Home() {
     : [];
   const projectAwareDomains = managedDomains.map((domain) => {
     const project = projectRecords.find((item) => item.domain === domain.domain);
+    const projectWorkflow = project ? domainWorkflowForStage(project.stage as ProjectStage) : null;
     return project
-      ? { ...domain, client: project.client, developer: project.developer, stage: project.stage, progress: project.progress }
+      ? { ...domain, client: project.client, developer: project.developer, stage: project.stage,
+          progress: project.progress, status: projectWorkflow ?? domain.status }
       : domain;
   });
   const selectedDomainProject = selectedDomain
@@ -613,6 +615,36 @@ export default function Home() {
     }
   }
 
+  async function selectProjectStage(project: Project, stage: ProjectStage) {
+    const isCurrent = project.stage === stage;
+    const stageStatus: ProjectStageStatus = isCurrent && project.stageStatus !== 'completed'
+      ? 'completed'
+      : 'in_progress';
+    await updateProject(project, {
+      action: 'save',
+      stage,
+      stageStatus,
+      progress: suggestedProgress(stage, stageStatus),
+      note: stageStatus === 'completed'
+        ? `${stage} marked finished manually.`
+        : `${stage} marked busy manually.`,
+    }, stageStatus === 'completed' ? 'Marking stage finished' : 'Changing active stage');
+  }
+
+  async function moveProjectToFinalStages(domain: Domain) {
+    const project = projectRecords.find((item) => item.domain === domain.domain);
+    if (!project) {
+      showActionToast({ id: `project-drop-${domain.id}`, status: 'warning', title: 'Project record is still loading', message: 'Please try the move again in a moment.' });
+      return;
+    }
+    const stage: ProjectStage = 'Review Full Build';
+    await updateProject(project, {
+      action: 'save', stage, stageStatus: 'in_progress',
+      progress: suggestedProgress(stage, 'in_progress'),
+      note: 'Moved manually from Busy Working to Final Stages on the dashboard.',
+    }, 'Moving project to Final Stages');
+  }
+
   async function saveProjectUpdate(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!selectedProject) return;
@@ -659,6 +691,7 @@ export default function Home() {
       const tokenInput = form.elements.namedItem('token') as HTMLInputElement | null;
       if (tokenInput) tokenInput.value = '';
       await loadHostingInventory();
+      await loadProjectData();
       const successMessage = result.message || 'cPanel connected with management rights active.';
       setHostingNotice(successMessage);
       showActionToast({
@@ -727,6 +760,7 @@ export default function Home() {
       const result = (await response.json()) as { error?: string; message?: string; scanStatus?: 'complete' | 'needs_attention'; wordpressScanStatus?: 'complete' | 'needs_attention' };
       if (!response.ok) throw new Error(result.error || 'The cPanel synchronisation failed.');
       await loadHostingInventory();
+      await loadProjectData();
       const successMessage = result.message || 'The cPanel inventory is current.';
       setSettingsHostingNotice(successMessage);
       showActionToast({
@@ -917,9 +951,9 @@ export default function Home() {
           </div>
         </header>
 
-        {activeView === 'Dashboard' && <Dashboard domains={projectAwareDomains} onDomain={openDomain} onLaunch={openLaunch} inventoryIsLive={inventoryIsLive} inventoryRefreshing={inventoryRefreshing} inventoryLastRefreshedAt={inventoryLastRefreshedAt} />}
+        {activeView === 'Dashboard' && <Dashboard domains={projectAwareDomains} onDomain={openDomain} onLaunch={openLaunch} onMoveToFinalStages={moveProjectToFinalStages} inventoryIsLive={inventoryIsLive} inventoryRefreshing={inventoryRefreshing} inventoryLastRefreshedAt={inventoryLastRefreshedAt} />}
         {activeView === 'Domains' && <DomainsView domains={projectAwareDomains} onDomain={openDomain} onNotice={setNotice} notice={notice} inventoryIsLive={inventoryIsLive} />}
-        {activeView === 'Projects' && <ProjectsView domains={projectAwareDomains} projects={projectRecords} onProject={setSelectedProject} onManageDomains={() => changeView('Domains')} onAddProject={() => setManualProjectOpen(true)} />}
+        {activeView === 'Projects' && <ProjectsView domains={projectAwareDomains} projects={projectRecords} onProject={setSelectedProject} onManageDomains={() => changeView('Domains')} />}
         {activeView === 'Agent Activity' && <AgentActivity auditEvents={auditEvents} projects={projectRecords} projectEvents={projectEvents} filter={activityFilter} onFilter={setActivityFilter} />}
         {activeView === 'Settings' && <SettingsView connections={hostingConnections} syncingId={hostingSyncingId} modeChangingId={hostingModeChangingId} notice={settingsHostingNotice} onSync={syncHostingConnection} onModeChange={changeHostingMode} onActivateWordPress={setWordpressActivationConnection} onConnect={(provider) => { setHostingNotice(''); setHostingProvider(provider); }} />}
       </section>
@@ -1184,16 +1218,21 @@ export default function Home() {
                   <div className="modal-section-heading"><div><p className="eyebrow">Build stages</p><h3>Project pipeline</h3></div><span>{selectedStageIndex + 1} of {buildStages.length}</span></div>
                   <div className="build-stage-list">
                     {buildStages.map((stage, index) => {
-                      const state = index < selectedStageIndex ? 'complete' : index === selectedStageIndex ? 'current' : 'upcoming';
+                      const state = index < selectedStageIndex || (index === selectedStageIndex && selectedProject.stageStatus === 'completed')
+                        ? 'complete'
+                        : index === selectedStageIndex && selectedProject.stageStatus !== 'not_started' && selectedProject.stageStatus !== 'blocked'
+                          ? 'current'
+                          : 'upcoming';
                       return (
-                        <div className={`build-stage-item ${state}`} key={stage}>
+                        <button className={`build-stage-item ${state}`} key={stage} type="button" disabled={projectBusy} onClick={() => selectProjectStage(selectedProject, stage)}>
                           <span>{state === 'complete' ? '✓' : index + 1}</span>
-                          <div><strong>{stage}</strong><small>{state === 'complete' ? 'Completed' : state === 'current' ? 'Currently in progress' : 'Waiting'}</small></div>
-                          {state === 'current' && <b>Current</b>}
-                        </div>
+                          <div><strong>{stage}</strong><small>{state === 'complete' ? 'Finished' : state === 'current' ? (selectedProject.stageStatus === 'completed' ? 'Finished' : selectedProject.stageStatus === 'not_started' || selectedProject.stageStatus === 'blocked' ? 'Not done' : 'Busy') : 'Not done'}</small></div>
+                          {state === 'current' && <b>{selectedProject.stageStatus === 'completed' ? 'Finished' : selectedProject.stageStatus === 'not_started' || selectedProject.stageStatus === 'blocked' ? 'Not done' : 'Busy'}</b>}
+                        </button>
                       );
                     })}
                   </div>
+                  <div className="stage-colour-key"><span className="finished">Green · finished</span><span className="busy">Orange · busy</span><span className="not-done">Red · not done</span><small>Click a stage to make it busy. Click the active stage again to finish it.</small></div>
                 </section>
 
                 <section className="project-history-panel">
@@ -1300,7 +1339,8 @@ export default function Home() {
   );
 }
 
-function Dashboard({ domains, onDomain, onLaunch, inventoryIsLive, inventoryRefreshing, inventoryLastRefreshedAt }: { domains: Domain[]; onDomain: (domain: Domain) => void; onLaunch: () => void; inventoryIsLive: boolean; inventoryRefreshing: boolean; inventoryLastRefreshedAt: string | null }) {
+function Dashboard({ domains, onDomain, onLaunch, onMoveToFinalStages, inventoryIsLive, inventoryRefreshing, inventoryLastRefreshedAt }: { domains: Domain[]; onDomain: (domain: Domain) => void; onLaunch: () => void; onMoveToFinalStages: (domain: Domain) => void; inventoryIsLive: boolean; inventoryRefreshing: boolean; inventoryLastRefreshedAt: string | null }) {
+  const [draggingDomainId, setDraggingDomainId] = useState<string | number | null>(null);
   const availableCount = domains.filter((domain) => domain.status === 'Available').length;
   const activeCount = domains.filter((domain) => domain.status === 'Busy Working' || domain.status === 'Final Stages').length;
   const finalCount = domains.filter((domain) => domain.status === 'Final Stages').length;
@@ -1321,10 +1361,19 @@ function Dashboard({ domains, onDomain, onLaunch, inventoryIsLive, inventoryRefr
           {columns.map((column) => {
             const items = domains.filter((domain) => domain.status === column);
             return (
-              <div className="kanban-column" key={column}>
+              <div className={`kanban-column ${column === 'Final Stages' && draggingDomainId !== null ? 'drop-ready' : ''}`} key={column}
+                onDragOver={(event) => { if (column === 'Final Stages' && draggingDomainId !== null) event.preventDefault(); }}
+                onDrop={(event) => {
+                  if (column !== 'Final Stages' || draggingDomainId === null) return;
+                  event.preventDefault();
+                  const domain = domains.find((item) => String(item.id) === String(draggingDomainId));
+                  setDraggingDomainId(null);
+                  if (domain) void onMoveToFinalStages(domain);
+                }}>
                 <div className="column-heading"><span className={`status-dot ${column.toLowerCase().replaceAll(' ', '-')}`} /><h3>{column}</h3><span>{items.length}</span></div>
                 <div className="column-stack">
-                  {items.map((domain) => <DomainCard domain={domain} key={domain.id} onClick={() => onDomain(domain)} />)}
+                  {items.map((domain) => <DomainCard domain={domain} key={domain.id} onClick={() => onDomain(domain)} draggable={column === 'Busy Working'} onDragStart={(event) => { event.dataTransfer.effectAllowed = 'move'; event.dataTransfer.setData('text/plain', String(domain.id)); setDraggingDomainId(domain.id); }} onDragEnd={() => setDraggingDomainId(null)} />)}
+                  {column === 'Final Stages' && draggingDomainId !== null && <div className="final-stage-drop-hint">Drop here to move into Final Stages</div>}
                   {column === 'Available' && <button className="empty-action" onClick={onLaunch}>＋ Start with an available domain</button>}
                 </div>
               </div>
@@ -1336,9 +1385,9 @@ function Dashboard({ domains, onDomain, onLaunch, inventoryIsLive, inventoryRefr
   );
 }
 
-function DomainCard({ domain, onClick }: { domain: Domain; onClick: () => void }) {
+function DomainCard({ domain, onClick, draggable = false, onDragStart, onDragEnd }: { domain: Domain; onClick: () => void; draggable?: boolean; onDragStart?: (event: DragEvent<HTMLButtonElement>) => void; onDragEnd?: () => void }) {
   return (
-    <button className="domain-card" onClick={onClick}>
+    <button className={`domain-card ${draggable ? 'draggable' : ''}`} onClick={onClick} draggable={draggable} onDragStart={onDragStart} onDragEnd={onDragEnd}>
       <div className="domain-top"><span className="domain-icon">◎</span><span className="more">•••</span></div>
       <strong>{domain.domain}</strong><p>{domain.client}</p>
       {domain.source === 'cpanel' && <div className="domain-control-badges"><span className={domain.softLocked ? '' : 'ready'}>{domain.softLocked ? 'Locked' : 'Unlocked'}</span><span className={domain.connectionMode === 'managed_write' && domain.operationalReady ? 'ready' : ''}>{domain.connectionMode === 'managed_write' && domain.operationalReady ? 'Operational' : domain.operationalReady ? 'Paused' : 'Activate in Settings'}</span></div>}
@@ -1379,7 +1428,7 @@ function DomainsView({ domains, onDomain, onNotice, notice, inventoryIsLive }: {
   );
 }
 
-function ProjectsView({ domains, projects, onProject, onManageDomains, onAddProject }: { domains: Domain[]; projects: Project[]; onProject: (project: Project) => void; onManageDomains: () => void; onAddProject: () => void }) {
+function ProjectsView({ domains, projects, onProject, onManageDomains }: { domains: Domain[]; projects: Project[]; onProject: (project: Project) => void; onManageDomains: () => void }) {
   const operationalDomains = domains.filter((domain) => domain.connectionMode === 'managed_write' && domain.operationalReady).length;
   const lockedDomains = domains.filter((domain) => domain.softLocked).length;
   const barryProjects = projects.filter((project) => project.developer === 'Barry').length;
@@ -1399,7 +1448,7 @@ function ProjectsView({ domains, projects, onProject, onManageDomains, onAddProj
         <div className="agent-load purple-load"><span><b>Clive</b><small>{cliveProjects} project{cliveProjects === 1 ? '' : 's'}</small></span><div><i style={{ width: `${Math.min(cliveProjects * 20, 100)}%` }} /></div></div>
       </section>
       <section className="panel">
-        <div className="section-heading"><div><p className="eyebrow">Current work</p><h2>Manual project pipeline</h2></div><div className="board-heading-actions"><span className="manual-mode-pill">Manual mode</span><button className="primary-button" onClick={onAddProject}>＋ Add existing project</button></div></div>
+        <div className="section-heading"><div><p className="eyebrow">Current work</p><h2>Manual project pipeline</h2></div><div className="board-heading-actions"><span className="manual-mode-pill">Manual mode</span><span className="auto-project-pill">Domains added automatically</span></div></div>
         <div className="project-list">
           {projects.map((project) => (
             <button className="project-row" key={project.id} onClick={() => onProject(project)}>
@@ -1412,7 +1461,7 @@ function ProjectsView({ domains, projects, onProject, onManageDomains, onAddProj
               <span className="table-arrow">→</span>
             </button>
           ))}
-          {projects.length === 0 && <div className="empty-project-state"><span>◇</span><div><strong>No projects are being tracked yet</strong><p>Add each existing Barry or Clive project at its real current stage. Nothing will be changed in WordPress.</p></div><button className="primary-button" onClick={onAddProject}>Add first project</button></div>}
+          {projects.length === 0 && <div className="empty-project-state"><span>◇</span><div><strong>Connecting project records…</strong><p>Every connected domain is added here automatically. Project stages remain manual and do not change WordPress.</p></div></div>}
         </div>
       </section>
     </div>

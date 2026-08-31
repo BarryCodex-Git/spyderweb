@@ -1,4 +1,4 @@
-import { ensureHostingSchema } from '@/lib/hosting-db';
+import { ensureHostingSchema, stableId } from '@/lib/hosting-db';
 import {
   PROJECT_BUILD_TYPES,
   PROJECT_DEVELOPERS,
@@ -82,12 +82,87 @@ function mapEvent(row: Record<string, unknown>) {
   };
 }
 
+function uuidFromHex(hex: string) {
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`;
+}
+
+function importedProjectDefaults(domain: Record<string, unknown>) {
+  const domainName = String(domain.domain);
+  const siteName = domain.wordpressSiteName ? String(domain.wordpressSiteName) : '';
+  const workflow = domain.workflowStatusOverride ? String(domain.workflowStatusOverride) : '';
+  const wordpressStatus = String(domain.wordpressStatus || 'not_checked');
+  const isTemplate = /(\btemplate\b|\bnew\s+(?:client\s+)?build\b)/i.test(`${domainName} ${siteName}`);
+  const developer = PROJECT_DEVELOPERS.includes(String(domain.assignedDeveloper) as ProjectDeveloper)
+    ? String(domain.assignedDeveloper) as ProjectDeveloper
+    : 'Owner Account';
+
+  if (workflow === 'Final Stages') {
+    return { client: siteName || domainName, buildType: 'Template', developer,
+      stage: 'Review Full Build', stageStatus: 'in_progress', progress: 71,
+      nextAction: 'Confirm the final review and launch preparation stage' } as const;
+  }
+  if (workflow === 'Busy Working' || (wordpressStatus === 'installed' && !isTemplate)) {
+    return { client: siteName || domainName, buildType: 'Template', developer,
+      stage: 'Build Home Page', stageStatus: 'in_progress', progress: 12,
+      nextAction: 'Confirm the current build stage' } as const;
+  }
+  if (isTemplate) {
+    return { client: siteName || 'Default template', buildType: 'Template', developer,
+      stage: 'Setup', stageStatus: 'in_progress', progress: 4,
+      nextAction: 'Assign the template build and begin the home page' } as const;
+  }
+  return { client: siteName || domainName, buildType: 'Template', developer,
+    stage: 'Setup', stageStatus: 'not_started', progress: 0,
+    nextAction: 'Assign this domain and set its current project stage' } as const;
+}
+
+async function ensureDomainProjects(db: Awaited<ReturnType<typeof ensureHostingSchema>>, ownerUserId: string) {
+  const missing = await db.prepare(`SELECT d.id, d.domain, d.wordpress_status AS wordpressStatus,
+    d.wordpress_site_name AS wordpressSiteName, d.workflow_status_override AS workflowStatusOverride,
+    d.assigned_developer AS assignedDeveloper
+    FROM hosting_domains d
+    WHERE d.owner_user_id = ? AND d.active = 1
+      AND NOT EXISTS (
+        SELECT 1 FROM projects p
+        WHERE p.owner_user_id = d.owner_user_id AND p.domain = d.domain
+          AND p.lifecycle_status != 'archived'
+      )
+    ORDER BY d.domain`).bind(ownerUserId).all<Record<string, unknown>>();
+  if (!missing.results.length) return;
+
+  const now = new Date().toISOString();
+  const statements = [];
+  for (const domain of missing.results) {
+    const defaults = importedProjectDefaults(domain);
+    const projectId = uuidFromHex(await stableId('project', ownerUserId, String(domain.id)));
+    statements.push(
+      db.prepare(`INSERT OR IGNORE INTO projects (
+        id, owner_user_id, domain_id, domain, client_name, build_type, assigned_developer,
+        current_stage, stage_status, progress, target_date, next_action, intake_notes,
+        lifecycle_status, last_reported_by, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, NULL, 'active', 'Owner Account', ?, ?)`)
+        .bind(projectId, ownerUserId, String(domain.id), String(domain.domain), defaults.client,
+          defaults.buildType, defaults.developer, defaults.stage, defaults.stageStatus,
+          defaults.progress, defaults.nextAction, now, now),
+      db.prepare(`INSERT OR IGNORE INTO project_events (
+        id, project_id, owner_user_id, event_type, source, stage, stage_status, note, details_json, created_at
+      ) VALUES (?, ?, ?, 'project.imported_from_domain', 'System', ?, ?, ?, ?, ?)`)
+        .bind(uuidFromHex(await stableId('project-event', ownerUserId, String(domain.id))), projectId,
+          ownerUserId, defaults.stage, defaults.stageStatus,
+          'Connected domain added to the manual project pipeline.',
+          JSON.stringify({ progress: defaults.progress, developer: defaults.developer, automaticRecord: true }), now),
+    );
+  }
+  await db.batch(statements);
+}
+
 export async function GET(request: Request) {
   const identity = getRequestIdentity(request);
   if (!identity) return json({ error: 'Sign in to view projects.' }, 401);
 
   try {
     const db = await ensureHostingSchema();
+    await ensureDomainProjects(db, identity.userId);
     const [projectRows, eventRows] = await Promise.all([
       db.prepare(`SELECT id, domain_id AS domainId, domain, client_name AS client,
         build_type AS buildType, assigned_developer AS developer, current_stage AS stage,
@@ -135,33 +210,38 @@ export async function POST(request: Request) {
       .first<{ id: string; domain: string }>();
     if (!domain) throw new Error('Choose a connected development domain.');
     const existing = await db.prepare(`SELECT id FROM projects WHERE owner_user_id = ? AND domain = ?
-      AND lifecycle_status != 'archived' LIMIT 1`).bind(identity.userId, domain.domain).first();
-    if (existing) return json({ error: `${domain.domain} already has an active project. Open it from Projects.` }, 409);
+      AND lifecycle_status != 'archived' LIMIT 1`).bind(identity.userId, domain.domain).first<{ id: string }>();
 
-    const projectId = crypto.randomUUID();
+    const projectId = existing?.id || crypto.randomUUID();
     const now = new Date().toISOString();
     const workflow = domainWorkflowForStage(stage);
-    const statements = [
-      db.prepare(`INSERT INTO projects (
+    const projectWrite = existing
+      ? db.prepare(`UPDATE projects SET client_name = ?, build_type = ?, assigned_developer = ?,
+          current_stage = ?, stage_status = ?, progress = ?, target_date = ?, next_action = ?,
+          intake_notes = ?, lifecycle_status = 'active', last_reported_by = 'Owner Account', updated_at = ?
+          WHERE id = ? AND owner_user_id = ?`)
+        .bind(client, buildType, developer, stage, stageStatus, progress, due, nextAction,
+          intakeNotes, now, projectId, identity.userId)
+      : db.prepare(`INSERT INTO projects (
         id, owner_user_id, domain_id, domain, client_name, build_type, assigned_developer,
         current_stage, stage_status, progress, target_date, next_action, intake_notes,
         lifecycle_status, last_reported_by, created_at, updated_at
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', 'Owner Account', ?, ?)`)
         .bind(projectId, identity.userId, domainId, domain.domain, client, buildType, developer,
-          stage, stageStatus, progress, due, nextAction, intakeNotes, now, now),
+          stage, stageStatus, progress, due, nextAction, intakeNotes, now, now);
+    const statements = [
+      projectWrite,
       db.prepare(`INSERT INTO project_events (
         id, project_id, owner_user_id, event_type, source, stage, stage_status, note, details_json, created_at
-      ) VALUES (?, ?, ?, 'project.created', 'Owner Account', ?, ?, ?, ?, ?)`)
-        .bind(crypto.randomUUID(), projectId, identity.userId, stage, stageStatus, note,
+      ) VALUES (?, ?, ?, ?, 'Owner Account', ?, ?, ?, ?, ?)`)
+        .bind(crypto.randomUUID(), projectId, identity.userId,
+          existing ? 'project.configured' : 'project.created', stage, stageStatus, note,
           JSON.stringify({ progress, developer, buildType }), now),
-      workflow
-        ? db.prepare(`UPDATE hosting_domains SET assigned_developer = ?, workflow_status_override = ?
-          WHERE id = ? AND owner_user_id = ?`).bind(developer, workflow, domainId, identity.userId)
-        : db.prepare(`UPDATE hosting_domains SET assigned_developer = ?
-          WHERE id = ? AND owner_user_id = ?`).bind(developer, domainId, identity.userId),
+      db.prepare(`UPDATE hosting_domains SET assigned_developer = ?, workflow_status_override = ?
+        WHERE id = ? AND owner_user_id = ?`).bind(developer, workflow, domainId, identity.userId),
     ];
     await db.batch(statements);
-    return json({ projectId, message: `${client} is now tracked manually from ${stage}.` }, 201);
+    return json({ projectId, message: `${client} is now tracked manually from ${stage}.` }, existing ? 200 : 201);
   } catch (error) {
     return json({ error: error instanceof Error ? error.message : 'The project could not be created.' }, 400);
   }
