@@ -293,8 +293,13 @@ async function inspectRecommendedPhpProfile(input: {
   const tokenCall: CpanelUapiCaller = (module, fn, query = {}) => cpanelUapi(
     input.baseUrl, input.username, input.token, module, fn, query,
   );
-  const tokenResult = await inspectRecommendedPhpProfileWith(tokenCall, input.domain);
-  if (tokenResult.readable || !input.session) return tokenResult;
+  let tokenResult: Awaited<ReturnType<typeof inspectRecommendedPhpProfileWith>> | null = null;
+  try {
+    tokenResult = await inspectRecommendedPhpProfileWith(tokenCall, input.domain);
+    if (tokenResult.readable || !input.session) return tokenResult;
+  } catch (error) {
+    if (!input.session) throw error;
+  }
   const sessionCall: CpanelUapiCaller = (module, fn, query = {}) => cpanelSessionUapi(
     input.baseUrl, input.session!, module, fn, query,
   );
@@ -327,7 +332,7 @@ export async function ensureRecommendedPhpProfile(input: {
       ...directives,
     });
   } catch (error) {
-    if (!(error instanceof CpanelFunctionError)) throw error;
+    if (!(error instanceof CpanelFunctionError) && !input.session) throw error;
     if (input.session) {
       try {
         await cpanelSessionUapi(input.baseUrl, input.session, 'LangPHP', 'php_ini_set_user_basic_directives', {
