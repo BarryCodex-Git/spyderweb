@@ -203,6 +203,42 @@ async function cpanelSessionUapi(
   return payload.result.data;
 }
 
+async function cpanelPasswordUapi(
+  baseUrl: string,
+  username: string,
+  password: string,
+  module: string,
+  fn: string,
+  query: Record<string, string> = {},
+) {
+  const url = new URL(`${baseUrl}/execute/${module}/${fn}`);
+  Object.entries(query).forEach(([key, value]) => url.searchParams.set(key, value));
+  const bytes = new TextEncoder().encode(`${username}:${password}`);
+  let binary = '';
+  bytes.forEach((byte) => { binary += String.fromCharCode(byte); });
+  const response = await fetch(url, {
+    method: 'GET',
+    headers: { Accept: 'application/json', Authorization: `Basic ${btoa(binary)}` },
+    redirect: 'manual',
+    signal: AbortSignal.timeout(20_000),
+  });
+  if (response.status === 401 || response.status === 403) {
+    throw new CpanelAuthenticationError('cPanel rejected the saved management username or password.');
+  }
+  if (!response.ok || (response.status >= 300 && response.status < 400)) {
+    throw new CpanelFunctionError(`The cPanel password-authenticated request could not run ${module}/${fn}.`);
+  }
+  const payload = (await response.json()) as UapiEnvelope;
+  if (payload.result?.status !== 1) {
+    const errors = payload.result?.errors;
+    const messages = payload.result?.messages;
+    const detail = (Array.isArray(errors) ? errors[0] : errors)
+      || (Array.isArray(messages) ? messages[0] : messages);
+    throw new CpanelFunctionError(detail || `cPanel could not run ${module}/${fn}.`);
+  }
+  return payload.result.data;
+}
+
 function directiveValue(value: unknown, name: RecommendedPhpDirective): string | null {
   if (typeof value === 'string') {
     const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -288,6 +324,7 @@ async function inspectRecommendedPhpProfile(input: {
   username: string;
   token: string;
   domain: string;
+  password?: string | null;
   session?: CpanelSession | null;
 }) {
   const tokenCall: CpanelUapiCaller = (module, fn, query = {}) => cpanelUapi(
@@ -298,7 +335,18 @@ async function inspectRecommendedPhpProfile(input: {
     tokenResult = await inspectRecommendedPhpProfileWith(tokenCall, input.domain);
     if (tokenResult.readable || !input.session) return tokenResult;
   } catch (error) {
-    if (!input.session) throw error;
+    if (!input.password && !input.session) throw error;
+  }
+  if (input.password) {
+    const passwordCall: CpanelUapiCaller = (module, fn, query = {}) => cpanelPasswordUapi(
+      input.baseUrl, input.username, input.password!, module, fn, query,
+    );
+    try {
+      const passwordResult = await inspectRecommendedPhpProfileWith(passwordCall, input.domain);
+      if (passwordResult.readable || !input.session) return passwordResult;
+    } catch (error) {
+      if (!input.session) throw error;
+    }
   }
   const sessionCall: CpanelUapiCaller = (module, fn, query = {}) => cpanelSessionUapi(
     input.baseUrl, input.session!, module, fn, query,
@@ -312,6 +360,7 @@ export async function ensureRecommendedPhpProfile(input: {
   token: string;
   domain: string;
   documentRoot: string | null;
+  password?: string | null;
   session?: CpanelSession | null;
 }) {
   const before = await inspectRecommendedPhpProfile(input);
@@ -332,7 +381,29 @@ export async function ensureRecommendedPhpProfile(input: {
       ...directives,
     });
   } catch (error) {
-    if (!(error instanceof CpanelFunctionError) && !input.session) throw error;
+    if (!(error instanceof CpanelFunctionError) && !input.password && !input.session) throw error;
+    if (input.password) {
+      const passwordCall: CpanelUapiCaller = (module, fn, query = {}) => cpanelPasswordUapi(
+        input.baseUrl, input.username, input.password!, module, fn, query,
+      );
+      try {
+        await passwordCall('LangPHP', 'php_ini_set_user_basic_directives', {
+          type: 'vhost',
+          vhost: input.domain,
+          ...directives,
+        });
+        const afterPasswordUpdate = await inspectRecommendedPhpProfileWith(passwordCall, input.domain);
+        if (!afterPasswordUpdate.readable) {
+          throw new Error(`cPanel accepted the MultiPHP update for ${input.domain}, but did not expose the saved values for verification.`);
+        }
+        if (afterPasswordUpdate.mismatches.length) {
+          throw new Error(`cPanel accepted the MultiPHP update, but these settings did not verify: ${afterPasswordUpdate.mismatches.join(', ')}.`);
+        }
+        return { status: 'updated_via_cpanel_password' as const, changed: settingsToApply };
+      } catch (passwordError) {
+        if (!(passwordError instanceof CpanelFunctionError)) throw passwordError;
+      }
+    }
     if (input.session) {
       try {
         await cpanelSessionUapi(input.baseUrl, input.session, 'LangPHP', 'php_ini_set_user_basic_directives', {

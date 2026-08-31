@@ -181,16 +181,20 @@ export async function POST(request: Request, { params }: { params: Promise<{ dom
     if (action === 'apply_php_profile') {
       const cpanelToken = await decryptHostingToken(String(connection.encryptedToken), String(connection.encryptionIv), identity.userId, record.connectionId);
       let session = null;
+      let managementPassword: string | null = null;
       if (connection.encryptedOperationalSecret && connection.operationalSecretIv) {
         const credential = JSON.parse(await decryptSecret(
           String(connection.encryptedOperationalSecret), String(connection.operationalSecretIv),
           identity.userId, `operational:${record.connectionId}`,
         )) as OperationalCredential;
-        if (credential.password) session = await createCpanelSession(String(connection.baseUrl), credential);
+        if (credential.password) {
+          managementPassword = credential.password;
+          session = await createCpanelSession(String(connection.baseUrl), credential);
+        }
       }
       const result = await ensureRecommendedPhpProfile({
         baseUrl: String(connection.baseUrl), username: String(connection.username), token: cpanelToken,
-        domain: record.domain, documentRoot: record.documentRoot, session,
+        domain: record.domain, documentRoot: record.documentRoot, password: managementPassword, session,
       });
       await db.prepare(`UPDATE hosting_domains SET php_profile_status = 'recommended_applied' WHERE id = ? AND owner_user_id = ?`)
         .bind(record.id, identity.userId).run();
@@ -201,6 +205,8 @@ export async function POST(request: Request, { params }: { params: Promise<{ dom
           : result.status === 'updated_via_user_ini'
             ? `The six recommended PHP settings were saved to ${record.domain} and read back successfully.`
           : result.status === 'updated_via_cpanel_session'
+            ? `The six recommended PHP settings were updated through cPanel MultiPHP and read back successfully.`
+          : result.status === 'updated_via_cpanel_password'
             ? `The six recommended PHP settings were updated through cPanel MultiPHP and read back successfully.`
           : result.status === 'updated_without_readback'
             ? `cPanel accepted all six recommended PHP settings for ${record.domain}. This hosting server does not expose PHP read-back, so SpyderWeb applied the complete profile instead of stopping.`
