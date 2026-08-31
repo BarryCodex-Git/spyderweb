@@ -7,7 +7,7 @@ import {
 } from '@/lib/operational-security';
 import { getRequestIdentity, isSameOrigin } from '@/lib/request-auth';
 import {
-  createCpanelSession, listSoftaculousBackups, listSoftaculousInstallations, softaculousAction,
+  listSoftaculousBackups, listSoftaculousInstallations, softaculousAction,
   type OperationalCredential, type SoftaculousBackup,
 } from '@/lib/softaculous';
 
@@ -180,21 +180,17 @@ export async function POST(request: Request, { params }: { params: Promise<{ dom
     if (!connection) throw new Error('The hosting connection for this domain was not found.');
     if (action === 'apply_php_profile') {
       const cpanelToken = await decryptHostingToken(String(connection.encryptedToken), String(connection.encryptionIv), identity.userId, record.connectionId);
-      let session = null;
       let managementPassword: string | null = null;
       if (connection.encryptedOperationalSecret && connection.operationalSecretIv) {
         const credential = JSON.parse(await decryptSecret(
           String(connection.encryptedOperationalSecret), String(connection.operationalSecretIv),
           identity.userId, `operational:${record.connectionId}`,
         )) as OperationalCredential;
-        if (credential.password) {
-          managementPassword = credential.password;
-          session = await createCpanelSession(String(connection.baseUrl), credential);
-        }
+        if (credential.password) managementPassword = credential.password;
       }
       const result = await ensureRecommendedPhpProfile({
         baseUrl: String(connection.baseUrl), username: String(connection.username), token: cpanelToken,
-        domain: record.domain, documentRoot: record.documentRoot, password: managementPassword, session,
+        domain: record.domain, documentRoot: record.documentRoot, password: managementPassword,
       });
       await db.prepare(`UPDATE hosting_domains SET php_profile_status = 'recommended_applied' WHERE id = ? AND owner_user_id = ?`)
         .bind(record.id, identity.userId).run();

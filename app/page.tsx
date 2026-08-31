@@ -1030,7 +1030,7 @@ export default function Home() {
                 <section className="domain-facts-grid">
                   <div><span>WordPress</span><strong>{selectedDomain.wordpress}</strong></div>
                   <div><span>Template</span><strong>{selectedDomain.template}</strong></div>
-                  <div><span>PHP</span><strong>{selectedDomain.phpVersion ?? 'Not reported'}</strong></div>
+                  <div><span>PHP</span><strong>{selectedDomain.phpProfileStatus === 'recommended_applied' ? '768 MB · Optimized' : selectedDomain.phpVersion ?? 'Not reported'}</strong></div>
                   <div><span>Hosting</span><strong>{selectedDomain.host}</strong></div>
                 </section>
 
