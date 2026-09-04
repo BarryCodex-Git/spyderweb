@@ -48,6 +48,7 @@ graphify-out/cache/
 /outputs/
 /work/
 /coverage/
+*.tsbuildinfo
 next-env.d.ts
 .vercel
 

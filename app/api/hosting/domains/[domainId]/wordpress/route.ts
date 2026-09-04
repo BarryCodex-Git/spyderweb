@@ -1,4 +1,4 @@
-import { ensureRecommendedPhpProfile, publicWordPressInfo } from '@/lib/cpanel';
+import { ensureRecommendedPhpProfile, ensureWordPressMemoryProfile, publicWordPressInfo } from '@/lib/cpanel';
 import { decryptHostingToken, decryptSecret } from '@/lib/credential-crypto';
 import { ensureHostingSchema } from '@/lib/hosting-db';
 import {
@@ -179,6 +179,10 @@ export async function POST(request: Request, { params }: { params: Promise<{ dom
       .bind(record.connectionId, identity.userId).first<Record<string, unknown>>();
     if (!connection) throw new Error('The hosting connection for this domain was not found.');
     if (action === 'apply_php_profile') {
+      const normalizedRoot = record.documentRoot?.replace(/\\/g, '/').replace(/\/+$/, '') ?? '';
+      if (record.domainType === 'main' || /(^|\/)public_html$/i.test(normalizedRoot)) {
+        throw new Error('The primary public_html installation is intentionally excluded. Select a WordPress subdomain instead.');
+      }
       const cpanelToken = await decryptHostingToken(String(connection.encryptedToken), String(connection.encryptionIv), identity.userId, record.connectionId);
       let managementPassword: string | null = null;
       if (connection.encryptedOperationalSecret && connection.operationalSecretIv) {
@@ -188,27 +192,35 @@ export async function POST(request: Request, { params }: { params: Promise<{ dom
         )) as OperationalCredential;
         if (credential.password) managementPassword = credential.password;
       }
-      const result = await ensureRecommendedPhpProfile({
+      const phpResult = await ensureRecommendedPhpProfile({
         baseUrl: String(connection.baseUrl), username: String(connection.username), token: cpanelToken,
         domain: record.domain, documentRoot: record.documentRoot, password: managementPassword,
       });
-      await db.prepare(`UPDATE hosting_domains SET php_profile_status = 'recommended_applied' WHERE id = ? AND owner_user_id = ?`)
-        .bind(record.id, identity.userId).run();
-      await audit(db, { ownerUserId: identity.userId, connectionId: record.connectionId, action: 'wordpress.apply_php_profile', target: record.domain, outcome: 'success' });
+      let wordpressResult: Awaited<ReturnType<typeof ensureWordPressMemoryProfile>> | null = null;
+      if (record.wordpressStatus === 'installed') {
+        if (!record.documentRoot) throw new Error(`The document root for ${record.domain} is unavailable. Scan the cPanel account again before changing wp-config.php.`);
+        wordpressResult = await ensureWordPressMemoryProfile({
+          baseUrl: String(connection.baseUrl), username: String(connection.username), token: cpanelToken,
+          domain: record.domain, documentRoot: record.documentRoot, password: managementPassword,
+        });
+      }
+      await db.prepare(`UPDATE hosting_domains SET php_profile_status = ? WHERE id = ? AND owner_user_id = ?`)
+        .bind(wordpressResult ? 'wordpress_memory_verified' : 'recommended_applied', record.id, identity.userId).run();
+      await audit(db, { ownerUserId: identity.userId, connectionId: record.connectionId, action: 'wordpress.apply_php_profile', target: record.domain, outcome: 'success', details: {
+        phpStatus: phpResult.status,
+        wordpressStatus: wordpressResult?.status ?? 'not_installed',
+        wordpressMemoryLimit: wordpressResult?.values.WP_MEMORY_LIMIT ?? null,
+        wordpressMaxMemoryLimit: wordpressResult?.values.WP_MAX_MEMORY_LIMIT ?? null,
+        rollbackCopy: wordpressResult?.backupFile ?? null,
+      } });
+      const phpSummary = phpResult.status === 'already_correct' ? 'The cPanel PHP limits were already correct.' : 'The cPanel PHP limits were updated and verified.';
+      const wordpressSummary = wordpressResult
+        ? wordpressResult.status === 'already_correct'
+          ? `WordPress was already requesting ${wordpressResult.values.WP_MEMORY_LIMIT} normally and ${wordpressResult.values.WP_MAX_MEMORY_LIMIT} for administration.`
+          : `wp-config.php now requests ${wordpressResult.values.WP_MEMORY_LIMIT} normally and ${wordpressResult.values.WP_MAX_MEMORY_LIMIT} for administration; ${wordpressResult.backupFile} is the rollback copy.`
+        : 'No WordPress installation is present, so there was no wp-config.php to change.';
       return json({
-        message: result.status === 'already_correct'
-          ? `The PHP settings on ${record.domain} were checked and are already correct.`
-          : result.status === 'updated_via_user_ini'
-            ? `The six recommended PHP settings were saved to ${record.domain} and read back successfully.`
-          : result.status === 'updated_via_cpanel_session'
-            ? `The six recommended PHP settings were updated through cPanel MultiPHP and read back successfully.`
-          : result.status === 'updated_via_cpanel_password'
-            ? `The six recommended PHP settings were updated through cPanel MultiPHP and read back successfully.`
-          : result.status === 'updated_via_compatibility_gateway'
-            ? `The six recommended PHP settings were updated through cPanel MultiPHP and read back successfully.`
-          : result.status === 'updated_without_readback'
-            ? `cPanel accepted all six recommended PHP settings for ${record.domain}. This hosting server does not expose PHP read-back, so SpyderWeb applied the complete profile instead of stopping.`
-          : `The PHP settings on ${record.domain} were checked, corrected and verified.`,
+        message: `${phpSummary} ${wordpressSummary}`,
         warning: false,
       });
     }

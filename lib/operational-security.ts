@@ -1,6 +1,7 @@
 type DomainActionRecord = {
   id: string;
   domain: string;
+  domainType: string;
   documentRoot: string | null;
   connectionId: string;
   wordpressStatus: string;
@@ -13,7 +14,7 @@ type DomainActionRecord = {
 };
 
 export async function loadDomainActionRecord(db: D1Database, ownerUserId: string, domainId: string) {
-  const record = await db.prepare(`SELECT d.id, d.domain, d.document_root AS documentRoot,
+  const record = await db.prepare(`SELECT d.id, d.domain, d.domain_type AS domainType, d.document_root AS documentRoot,
     d.connection_id AS connectionId,
     d.wordpress_status AS wordpressStatus, d.wordpress_installation_id AS wordpressInstallationId,
     d.wordpress_soft_locked AS wordpressSoftLocked, d.restore_point_at AS restorePointAt,
@@ -24,7 +25,7 @@ export async function loadDomainActionRecord(db: D1Database, ownerUserId: string
     .bind(domainId, ownerUserId).first<Record<string, unknown>>();
   if (!record) throw new Error('This development domain was not found.');
   return {
-    id: String(record.id), domain: String(record.domain),
+    id: String(record.id), domain: String(record.domain), domainType: String(record.domainType),
     documentRoot: record.documentRoot ? String(record.documentRoot) : null,
     connectionId: String(record.connectionId),
     wordpressStatus: String(record.wordpressStatus),

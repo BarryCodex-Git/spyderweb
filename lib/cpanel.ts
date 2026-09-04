@@ -1,3 +1,5 @@
+import { ensureWordPressMemoryConstants, inspectWordPressMemory } from './wordpress-memory';
+
 export type CpanelDomain = {
   domain: string;
   domainType: 'main' | 'subdomain' | 'addon' | 'alias' | 'unknown';
@@ -575,13 +577,97 @@ export async function ensureRecommendedPhpProfile(input: {
   }
 
   const after = await inspectRecommendedPhpProfile(input);
+  if (!after.readable) {
+    throw new Error(`cPanel accepted the PHP update for ${input.domain}, but did not expose the saved values for verification. SpyderWeb has not marked this profile as complete.`);
+  }
   if (after.readable && after.mismatches.length) {
     throw new Error(`cPanel accepted the PHP update, but these settings did not verify: ${after.mismatches.join(', ')}.`);
   }
   return {
-    status: after.readable ? 'updated' as const : 'updated_without_readback' as const,
+    status: 'updated' as const,
     changed: settingsToApply,
   };
+}
+
+export async function ensureWordPressMemoryProfile(input: {
+  baseUrl: string;
+  username: string;
+  token: string;
+  domain: string;
+  documentRoot: string;
+  password?: string | null;
+  session?: CpanelSession | null;
+}) {
+  const normalizedRoot = input.documentRoot.replace(/\\/g, '/').replace(/\/+$/, '');
+  if (/(^|\/)public_html$/i.test(normalizedRoot)) {
+    throw new Error('The primary public_html installation is intentionally excluded from this action.');
+  }
+
+  const callers: CpanelUapiCaller[] = [
+    (module, fn, query = {}) => cpanelJsonUapi(input.baseUrl, input.username, input.token, module, fn, query),
+    (module, fn, query = {}) => cpanelUapi(input.baseUrl, input.username, input.token, module, fn, query),
+    ...(input.password ? [(module: string, fn: string, query: Record<string, string> = {}) =>
+      cpanelPasswordUapi(input.baseUrl, input.username, input.password!, module, fn, query)] : []),
+    ...(input.session ? [(module: string, fn: string, query: Record<string, string> = {}) =>
+      cpanelSessionUapi(input.baseUrl, input.session!, module, fn, query)] : []),
+  ];
+  let lastError: unknown = null;
+  for (const root of filemanRootCandidates(input.documentRoot, input.username)) {
+    for (const call of callers) {
+      let original: string;
+      try {
+        const data = await call('Fileman', 'get_file_content', {
+          dir: root, file: 'wp-config.php', from_charset: '_DETECT_', to_charset: 'UTF-8',
+          update_html_document_encoding: '0',
+        });
+        original = fileContent(data) ?? '';
+      } catch (error) {
+        lastError = error;
+        continue;
+      }
+      if (!original) {
+        lastError = new Error(`wp-config.php could not be read for ${input.domain}.`);
+        continue;
+      }
+
+      const prepared = ensureWordPressMemoryConstants(original);
+      if (!prepared.changed.length) {
+        return { status: 'already_correct' as const, changed: prepared.changed, values: prepared.values, backupFile: null };
+      }
+
+      const timestamp = new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d{3}Z$/, 'Z');
+      const backupFile = `wp-config.php.spyderweb-backup-${timestamp}`;
+      const save = (file: string, content: string) => call('Fileman', 'save_file_content', {
+        dir: root, file, content, from_charset: 'UTF-8', to_charset: 'UTF-8', fallback: '0',
+      });
+      const read = async (file: string) => fileContent(await call('Fileman', 'get_file_content', {
+        dir: root, file, from_charset: '_DETECT_', to_charset: 'UTF-8', update_html_document_encoding: '0',
+      })) ?? '';
+
+      await save(backupFile, original);
+      const savedBackup = await read(backupFile);
+      if (savedBackup !== original) throw new Error(`The rollback copy ${backupFile} did not verify, so wp-config.php was not changed.`);
+      try {
+        await save('wp-config.php', prepared.content);
+        const savedContent = await read('wp-config.php');
+        const verified = inspectWordPressMemory(savedContent);
+        const unverified = (Object.keys(verified.sufficient) as Array<keyof typeof verified.sufficient>)
+          .filter((name) => !verified.sufficient[name]);
+        if (unverified.length) throw new Error(`WordPress memory settings did not read back correctly: ${unverified.join(', ')}.`);
+        return { status: 'updated' as const, changed: prepared.changed, values: verified.values, backupFile };
+      } catch (error) {
+        try {
+          await save('wp-config.php', original);
+          if (await read('wp-config.php') !== original) throw new Error('rollback verification failed');
+        } catch {
+          throw new Error(`WordPress memory verification failed and SpyderWeb could not verify the automatic rollback. Restore ${backupFile} before editing this site.`);
+        }
+        throw error;
+      }
+    }
+  }
+  const detail = lastError instanceof Error ? lastError.message : 'cPanel File Manager did not expose the installation.';
+  throw new Error(`SpyderWeb could not safely read wp-config.php for ${input.domain}. ${detail}`);
 }
 
 async function resolveSubdomainDocumentRoot(baseUrl: string, username: string, token: string, domain: string) {

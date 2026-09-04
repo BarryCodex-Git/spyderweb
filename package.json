@@ -9,7 +9,8 @@
     "dev": "vinext dev",
     "build": "vinext build",
     "start": "vinext start",
-    "lint": "eslint . --ignore-pattern dist --ignore-pattern .next"
+    "lint": "eslint . --ignore-pattern dist --ignore-pattern .next",
+    "test:wordpress-memory": "node --experimental-strip-types tests/wordpress-memory.test.mjs"
   },
   "dependencies": {
     "drizzle-orm": "^0.45.2",
