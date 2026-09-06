@@ -1,0 +1,1 @@
+ALTER TABLE `projects` ADD `intake_json` text DEFAULT '{}' NOT NULL;

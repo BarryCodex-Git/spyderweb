@@ -91,6 +91,7 @@ const schemaStatements = [
     target_date TEXT,
     next_action TEXT NOT NULL DEFAULT 'Complete setup and pre-flight check',
     intake_notes TEXT,
+    intake_json TEXT NOT NULL DEFAULT '{}',
     lifecycle_status TEXT NOT NULL DEFAULT 'active',
     last_reported_by TEXT NOT NULL DEFAULT 'Owner Account',
     created_at TEXT NOT NULL,
@@ -155,6 +156,7 @@ const hostingDomainColumnMigrations = [
 
 const projectColumnMigrations = [
   ['sort_order', 'ALTER TABLE projects ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0'],
+  ['intake_json', "ALTER TABLE projects ADD COLUMN intake_json TEXT NOT NULL DEFAULT '{}'"],
 ] as const;
 
 const hostingConnectionColumnMigrations = [

@@ -43,6 +43,13 @@
       "when": 1788707108086,
       "tag": "0005_closed_scarlet_witch",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "6",
+      "when": 1788709117617,
+      "tag": "0006_cuddly_magneto",
+      "breakpoints": true
     }
   ]
 }

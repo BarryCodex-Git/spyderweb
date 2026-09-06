@@ -120,6 +120,7 @@ export const projects = sqliteTable(
     targetDate: text('target_date'),
     nextAction: text('next_action').notNull().default('Complete setup and pre-flight check'),
     intakeNotes: text('intake_notes'),
+    intakeJson: text('intake_json').notNull().default('{}'),
     lifecycleStatus: text('lifecycle_status').notNull().default('active'),
     lastReportedBy: text('last_reported_by').notNull().default('Owner Account'),
     createdAt: text('created_at').notNull(),

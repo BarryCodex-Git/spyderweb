@@ -4,8 +4,9 @@ import Image from 'next/image';
 import { type DragEvent, type FormEvent, useCallback, useEffect, useRef, useState } from 'react';
 import { PROJECT_STAGES, domainWorkflowForStage, suggestedProgress, type ProjectStage } from '@/lib/project-workflow';
 import { suggestedSubdomainLabel } from '@/lib/launch-project';
+import { emptyClientIntake, type ClientIntake } from '@/lib/client-intake';
 
-type View = 'Dashboard' | 'Launch New Project' | 'Domains' | 'Projects' | 'Agent Activity' | 'Settings';
+type View = 'Dashboard' | 'New Project' | 'Domains' | 'Projects' | 'Agent Activity' | 'Settings';
 type Developer = 'Barry' | 'Clive' | 'Owner Account';
 type DomainStatus = 'Available' | 'Template Loaded' | 'Busy Working' | 'Final Stages' | 'Needs Inspection';
 type HostingProvider = 'cPanel' | 'Hostinger';
@@ -148,7 +149,7 @@ type ProjectEvent = {
 
 const navItems: { label: View; icon: string }[] = [
   { label: 'Dashboard', icon: '⌂' },
-  { label: 'Launch New Project', icon: '＋' },
+  { label: 'New Project', icon: '＋' },
   { label: 'Projects', icon: '▤' },
   { label: 'Agent Activity', icon: '◉' },
   { label: 'Domains', icon: '◇' },
@@ -161,7 +162,7 @@ const viewCopy: Record<View, { eyebrow: string; title: string; subtitle: string 
     title: 'Good morning',
     subtitle: 'See what is available, active, and ready for review.',
   },
-  'Launch New Project': {
+  'New Project': {
     eyebrow: 'Fast website deployment',
     title: 'Launch New Project',
     subtitle: 'Create a subdomain and load the right WordPress template in one guided action.',
@@ -536,7 +537,7 @@ export default function Home() {
     setLaunchNotes('');
     setNotice('');
     setLaunchOpen(false);
-    setActiveView('Launch New Project');
+    setActiveView('New Project');
   }
 
   async function saveTemplateSlot(slotNumber: number, name: string, sourceDomainId: string | null) {
@@ -1034,7 +1035,7 @@ export default function Home() {
         </header>
 
         {activeView === 'Dashboard' && <Dashboard domains={projectAwareDomains} onDomain={openDomain} onLaunch={openLaunch} onMoveToFinalStages={moveProjectToFinalStages} inventoryIsLive={inventoryIsLive} inventoryRefreshing={inventoryRefreshing} inventoryLastRefreshedAt={inventoryLastRefreshedAt} />}
-        {activeView === 'Launch New Project' && <LaunchProjectView connections={hostingConnections} domains={projectAwareDomains} templates={templateSlots} busy={launchBusy} onSaveTemplate={saveTemplateSlot} onLaunch={launchNewProject} />}
+        {activeView === 'New Project' && <LaunchProjectView connections={hostingConnections} domains={projectAwareDomains} templates={templateSlots} busy={launchBusy} onSaveTemplate={saveTemplateSlot} onLaunch={launchNewProject} />}
         {activeView === 'Domains' && <DomainsView domains={projectAwareDomains} onDomain={openDomain} onNotice={setNotice} notice={notice} inventoryIsLive={inventoryIsLive} />}
         {activeView === 'Projects' && <ProjectsView domains={projectAwareDomains} projects={projectRecords} onProject={setSelectedProject} onManageDomains={() => changeView('Domains')} onReorder={reorderProjects} />}
         {activeView === 'Agent Activity' && <AgentActivity auditEvents={auditEvents} projects={projectRecords} projectEvents={projectEvents} filter={activityFilter} onFilter={setActivityFilter} />}
@@ -1286,6 +1287,7 @@ export default function Home() {
               </div>
               <div className="modal-header-tools">
                 <SiteQuickLinks domainOrUrl={selectedProject.domain} label={selectedProject.client} />
+                <a className="project-details-download" href={`/api/projects/${selectedProject.id}/intake?download=1`}>↓ Project Details</a>
               </div>
             </header>
 
@@ -1511,6 +1513,44 @@ function DomainsView({ domains, onDomain, onNotice, notice, inventoryIsLive }: {
   );
 }
 
+const intakeChoiceFields: Array<{ key: keyof ClientIntake; label: string }> = [
+  { key: 'clientFolderCreated', label: 'Client folder created' },
+  { key: 'logoReady', label: 'Logo resized and ready' },
+  { key: 'imageAssetExamples', label: 'Image generation examples available' },
+  { key: 'clientImagesAvailable', label: 'Client images available' },
+  { key: 'aiImagesPermitted', label: 'AI images permitted' },
+  { key: 'stockImagesPermitted', label: 'Free stock images permitted' },
+];
+
+function RepeatableIntakeField({ label, values, onChange }: { label: string; values: string[]; onChange: (values: string[]) => void }) {
+  return <fieldset className="repeatable-intake-field"><legend>{label}</legend>{values.map((value, index) => <div key={`${label}-${index}`}><input value={value} onChange={(event) => onChange(values.map((item, itemIndex) => itemIndex === index ? event.target.value : item))} /><button type="button" aria-label={`Remove ${label} item`} disabled={values.length === 1} onClick={() => onChange(values.filter((_, itemIndex) => itemIndex !== index))}>×</button></div>)}<button type="button" className="add-intake-field" onClick={() => onChange([...values, ''])}>＋ Add another</button></fieldset>;
+}
+
+function ClientIntakeForm({ projectName }: { projectName: string }) {
+  const [intake, setIntake] = useState<ClientIntake>(emptyClientIntake);
+  const update = (key: keyof ClientIntake, value: string | string[]) => setIntake((current) => ({ ...current, [key]: value }));
+  const textFields: Array<{ key: keyof ClientIntake; label: string; type?: string }> = [
+    { key: 'industry', label: 'Industry' }, { key: 'primaryRegion', label: 'Primary location or region' },
+    { key: 'phone', label: 'Phone', type: 'tel' }, { key: 'email', label: 'Email', type: 'email' },
+    { key: 'whatsapp', label: 'WhatsApp', type: 'tel' }, { key: 'contactFormEmail', label: 'Contact form recipient email', type: 'email' },
+    { key: 'businessAddress', label: 'Business address' }, { key: 'existingWebsite', label: 'Existing website for context only', type: 'url' },
+    { key: 'homePageH1', label: 'H1 for the Home Page' }, { key: 'focusKeyphrase', label: 'Focus key phrase for the Home Page' },
+    { key: 'colorsToAvoid', label: 'Colours or styles to avoid' },
+  ];
+  const finalIntake = { ...intake, clientName: projectName };
+  return <details className="client-intake-details">
+    <summary><span><b>Submit Project Details</b><small>Client information for the website build and AI handover</small></span><i>⌄</i></summary>
+    <div className="client-intake-body">
+      <input type="hidden" name="intakeJson" value={JSON.stringify(finalIntake)} />
+      <section><h3>Client and contact details</h3><div className="intake-fields-grid">{textFields.slice(0, 8).map((field) => <label key={field.key}>{field.label}<input type={field.type || 'text'} value={String(intake[field.key])} onChange={(event) => update(field.key, event.target.value)} /></label>)}</div><p className="intake-reference-note">The existing website is used only for context and content reference. Its images and other assets must not be reused.</p></section>
+      <section><h3>Reference links</h3><div className="intake-repeat-grid"><RepeatableIntakeField label="Google Business Profile links" values={intake.googleBusinessProfiles} onChange={(values) => update('googleBusinessProfiles', values)} /><RepeatableIntakeField label="Facebook and social accounts" values={intake.socialAccounts} onChange={(values) => update('socialAccounts', values)} /></div></section>
+      <section><h3>Asset readiness and permissions</h3><div className="intake-choice-grid">{intakeChoiceFields.map((field) => <label key={field.key}>{field.label}<select value={String(intake[field.key])} onChange={(event) => update(field.key, event.target.value)}><option value="">Choose</option><option>Yes</option><option>No</option><option>Not applicable</option></select></label>)}</div></section>
+      <section><h3>Home page and services</h3><div className="intake-fields-grid">{textFields.slice(8, 10).map((field) => <label key={field.key}>{field.label}<input value={String(intake[field.key])} onChange={(event) => update(field.key, event.target.value)} /></label>)}</div><div className="intake-repeat-grid"><RepeatableIntakeField label="Primary services for the Home Page" values={intake.primaryServices} onChange={(values) => update('primaryServices', values)} /><RepeatableIntakeField label="Additional services for the Services Page" values={intake.additionalServices} onChange={(values) => update('additionalServices', values)} /><RepeatableIntakeField label="Additional locations" values={intake.additionalLocations} onChange={(values) => update('additionalLocations', values)} /><RepeatableIntakeField label="Trust facts" values={intake.trustFacts} onChange={(values) => update('trustFacts', values)} /></div></section>
+      <section><h3>Content and brand direction</h3><div className="intake-textarea-grid"><label>Additional information<textarea rows={4} value={intake.additionalInformation} onChange={(event) => update('additionalInformation', event.target.value)} /></label><label>Brand guidelines<textarea rows={4} value={intake.brandGuidelines} onChange={(event) => update('brandGuidelines', event.target.value)} /></label><label>Content style<textarea rows={4} value={intake.contentStyle} onChange={(event) => update('contentStyle', event.target.value)} /></label><label>Colours or styles to avoid<textarea rows={4} value={intake.colorsToAvoid} onChange={(event) => update('colorsToAvoid', event.target.value)} /></label></div></section>
+    </div>
+  </details>;
+}
+
 function TemplatePreviewCard({ slot, domains, onSave }: { slot: TemplateSlot; domains: Domain[]; onSave: (slotNumber: number, name: string, sourceDomainId: string | null) => Promise<void> }) {
   const [name, setName] = useState(slot.name);
   const [sourceDomainId, setSourceDomainId] = useState(slot.sourceDomainId ?? '');
@@ -1541,10 +1581,6 @@ function LaunchProjectView({ connections, domains, templates, busy, onSaveTempla
   const parents = domains.filter((domain) => domain.connectionId === effectiveConnectionId && (domain.domainType === 'main' || domain.domainType === 'addon'));
   const compatibleTemplates = templates.filter((template) => template.connectionId === effectiveConnectionId && template.sourceDomainId);
   return <div className="view-stack launch-project-view">
-    <section className="panel template-library-panel">
-      <div className="section-heading"><div><p className="eyebrow">Template library</p><h2>Choose from four launch-ready templates</h2><p>Edit the display name and connect each window to its live template domain.</p></div><span className="manual-mode-pill">4 template spaces</span></div>
-      <div className="template-preview-grid">{templates.map((slot) => <TemplatePreviewCard key={`${slot.id}:${slot.updatedAt ?? slot.name}:${slot.sourceDomainId ?? ''}`} slot={slot} domains={domains} onSave={onSaveTemplate} />)}</div>
-    </section>
     <section className="panel new-project-panel">
       <div className="section-heading"><div><p className="eyebrow">Create and deploy</p><h2>New custom subdomain project</h2><p>SpyderWeb creates the subdomain and clones the selected template directly to its root.</p></div><span className="root-install-pill">Root install · no /wp folder</span></div>
       <form className="new-project-form" onSubmit={(event) => void onLaunch(event)}>
@@ -1555,10 +1591,15 @@ function LaunchProjectView({ connections, domains, templates, busy, onSaveTempla
         <label>Template<select name="templateSlotNumber" required defaultValue=""><option value="" disabled>Choose template</option>{compatibleTemplates.map((template) => <option key={template.id} value={template.slotNumber}>{template.name} · {template.sourceDomain}</option>)}</select></label>
         <label>Assign to<select name="developer" defaultValue="Owner Account">{assignableDevelopers.map((name) => <option key={name}>{name}</option>)}</select></label>
         <label className="full-field">Project notes<textarea name="notes" rows={3} placeholder="Optional client brief or launch notes" /></label>
+        <div className="full-field"><ClientIntakeForm projectName={projectName} /></div>
         {!operational.length && <p className="launch-readiness-warning full-field">Activate WordPress Management for a cPanel account in Settings before launching.</p>}
         <div className="launch-summary full-field"><span>1</span><p><strong>Create a new subdomain</strong><small>The launch stops if the address already exists.</small></p><span>2</span><p><strong>Clone the selected template</strong><small>Softaculous creates WordPress directly at https://subdomain/ with an empty directory field.</small></p><span>3</span><p><strong>Verify and track</strong><small>The project is added to Projects, assigned, soft locked, and moved to Template Loaded.</small></p></div>
         <button className="primary-button launch-project-submit full-field" disabled={busy || !operational.length || !compatibleTemplates.length}>{busy ? 'Creating subdomain & loading template…' : 'Launch New Project'}</button>
       </form>
+    </section>
+    <section className="panel template-library-panel">
+      <div className="section-heading"><div><p className="eyebrow">Template selection and setup</p><h2>Four launch-ready templates</h2><p>Edit the display name and connect each window to its live template domain.</p></div><span className="manual-mode-pill">4 template spaces</span></div>
+      <div className="template-preview-grid">{templates.map((slot) => <TemplatePreviewCard key={`${slot.id}:${slot.updatedAt ?? slot.name}:${slot.sourceDomainId ?? ''}`} slot={slot} domains={domains} onSave={onSaveTemplate} />)}</div>
     </section>
   </div>;
 }

@@ -11,9 +11,11 @@
     "start": "vinext start",
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next",
     "test:wordpress-memory": "node --experimental-strip-types tests/wordpress-memory.test.mjs",
-    "test:launch-project": "node --experimental-strip-types tests/launch-project.test.mjs"
+    "test:launch-project": "node --experimental-strip-types tests/launch-project.test.mjs",
+    "test:client-intake-docx": "node --experimental-strip-types tests/client-intake-docx.test.mjs"
   },
   "dependencies": {
+    "docx": "^9.7.1",
     "drizzle-orm": "^0.45.2",
     "next": "16.2.6",
     "react": "19.2.6",

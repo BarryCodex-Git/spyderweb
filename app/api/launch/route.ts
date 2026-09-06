@@ -2,6 +2,7 @@ import { createCpanelSubdomain, discoverCpanel, publicWordPressInfo } from '@/li
 import { decryptHostingToken, decryptSecret } from '@/lib/credential-crypto';
 import { ensureHostingSchema, stableId } from '@/lib/hosting-db';
 import { normalizeSubdomainLabel, rootInstallationUrl } from '@/lib/launch-project';
+import { parseClientIntake } from '@/lib/client-intake';
 import { PROJECT_DEVELOPERS, type ProjectDeveloper } from '@/lib/project-workflow';
 import { getRequestIdentity, isSameOrigin } from '@/lib/request-auth';
 import { listSoftaculousInstallations, softaculousAction, type OperationalCredential } from '@/lib/softaculous';
@@ -110,6 +111,11 @@ export async function POST(request: Request) {
     const developer = requiredText(body.developer, 'developer', 80) as ProjectDeveloper;
     if (!PROJECT_DEVELOPERS.includes(developer)) throw new Error('Choose a valid developer.');
     const notes = typeof body.notes === 'string' ? body.notes.trim().slice(0, 4000) : '';
+    let intakeSource: unknown = {};
+    if (typeof body.intakeJson === 'string' && body.intakeJson) {
+      try { intakeSource = JSON.parse(body.intakeJson); } catch { throw new Error('The submitted project details could not be read.'); }
+    }
+    const intake = parseClientIntake(intakeSource, projectName);
 
     const connection = await db.prepare(`SELECT id, base_url AS baseUrl, username, encrypted_token AS encryptedToken,
       encryption_iv AS encryptionIv, encrypted_operational_secret AS encryptedOperationalSecret,
@@ -169,11 +175,12 @@ export async function POST(request: Request) {
         ?, 1, 'not_checked', 'not_checked', 1, ?)`)
         .bind(domainId, connectionId, identity.userId, targetDomain, created.documentRoot, created.phpVersion, developer, now),
       db.prepare(`INSERT INTO projects (id, owner_user_id, domain_id, domain, client_name, build_type,
-        assigned_developer, current_stage, stage_status, progress, next_action, intake_notes,
+        assigned_developer, current_stage, stage_status, progress, next_action, intake_notes, intake_json,
         lifecycle_status, last_reported_by, created_at, updated_at, sort_order)
         VALUES (?, ?, ?, ?, ?, 'Template', ?, 'Setup', 'in_progress', 4,
-        'Review the loaded template and begin the home page', ?, 'active', 'Owner Account', ?, ?, ?)`)
-        .bind(projectId, identity.userId, domainId, targetDomain, projectName, developer, notes || null, now, now, Number(nextOrder?.nextOrder || 1)),
+        'Review the loaded template and begin the home page', ?, ?, 'active', 'Owner Account', ?, ?, ?)`)
+        .bind(projectId, identity.userId, domainId, targetDomain, projectName, developer, notes || null,
+          JSON.stringify(intake), now, now, Number(nextOrder?.nextOrder || 1)),
     ]);
 
     await softaculousAction({ baseUrl: String(connection.baseUrl), credential, action: 'clone', domain: targetDomain,
