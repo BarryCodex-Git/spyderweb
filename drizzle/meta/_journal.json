@@ -50,6 +50,13 @@
       "when": 1788709117617,
       "tag": "0006_cuddly_magneto",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "6",
+      "when": 1788726655252,
+      "tag": "0007_repair_subdomain_roots",
+      "breakpoints": true
     }
   ]
 }
