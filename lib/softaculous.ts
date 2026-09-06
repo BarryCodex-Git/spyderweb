@@ -24,12 +24,18 @@ export type SoftaculousBackup = {
 export class SoftaculousRequestError extends Error {
   readonly safeToRetry: boolean;
   readonly responseWasAmbiguous: boolean;
+  readonly diagnostics: Record<string, string | number | boolean | null>;
 
-  constructor(message: string, options: { safeToRetry?: boolean; responseWasAmbiguous?: boolean } = {}) {
+  constructor(message: string, options: {
+    safeToRetry?: boolean;
+    responseWasAmbiguous?: boolean;
+    diagnostics?: Record<string, string | number | boolean | null>;
+  } = {}) {
     super(message);
     this.name = 'SoftaculousRequestError';
     this.safeToRetry = options.safeToRetry === true;
     this.responseWasAmbiguous = options.responseWasAmbiguous === true;
+    this.diagnostics = options.diagnostics ?? {};
   }
 }
 
@@ -39,6 +45,10 @@ export function canSafelyRetrySoftaculousRequest(error: unknown) {
 
 export function softaculousResponseWasAmbiguous(error: unknown) {
   return error instanceof SoftaculousRequestError && error.responseWasAmbiguous;
+}
+
+export function softaculousErrorDetails(error: unknown) {
+  return error instanceof SoftaculousRequestError ? error.diagnostics : {};
 }
 
 function authorization(credential: OperationalCredential) {
@@ -176,25 +186,52 @@ async function request(input: {
   form?: Record<string, string>;
 }) {
   const isWrite = Boolean(input.form);
-  const perform = (securityToken = '', cookies = '', useAuthorization = true) => {
+  const tokenMode = input.credential.authMode === 'cpanel_token' || Boolean(input.credential.token);
+  const perform = (securityToken = '', cookies = '', useAuthorization = true, includeForm = true) => {
     const url = new URL(`${input.baseUrl}${securityToken}/frontend/jupiter/softaculous/index.live.php`);
     url.searchParams.set('api', 'json');
     Object.entries(input.query).forEach(([key, value]) => url.searchParams.set(key, value));
     return fetch(url, {
-      method: input.form ? 'POST' : 'GET',
+      method: includeForm && input.form ? 'POST' : 'GET',
       headers: {
         Accept: 'application/json',
         ...(useAuthorization ? { Authorization: authorization(input.credential) } : {}),
         ...(cookies ? { Cookie: cookies } : {}),
-        ...(input.form ? { 'Content-Type': 'application/x-www-form-urlencoded' } : {}),
+        ...(includeForm && input.form ? { 'Content-Type': 'application/x-www-form-urlencoded' } : {}),
       },
-      body: input.form ? new URLSearchParams(input.form).toString() : undefined,
+      body: includeForm && input.form ? new URLSearchParams(input.form).toString() : undefined,
       redirect: 'manual',
       signal: AbortSignal.timeout(55_000),
     });
   };
-  let response = await perform();
-  const tokenMode = input.credential.authMode === 'cpanel_token' || Boolean(input.credential.token);
+  let writeCookies = '';
+  if (isWrite && !tokenMode) {
+    // Some cPanel builds accept HTTP Basic authentication for Softaculous reads,
+    // but require the PHP session cookie established by the matching action page
+    // before they will accept its POST. This GET is read-only.
+    const bootstrap = await perform('', '', true, false);
+    const getSetCookie = (bootstrap.headers as Headers & { getSetCookie?: () => string[] }).getSetCookie?.() ?? [];
+    const rawCookies = getSetCookie.length ? getSetCookie : [bootstrap.headers.get('set-cookie') || ''];
+    writeCookies = rawCookies.flatMap((header) => header.split(/,(?=\s*[^;,=]+=[^;,]+)/))
+      .map((header) => header.trim().match(/^([^=;,\s]+)=([^;,]*)/)?.slice(1).join('='))
+      .filter((cookie): cookie is string => Boolean(cookie))
+      .join('; ');
+    if (bootstrap.status === 401 || bootstrap.status === 403 || (bootstrap.status >= 300 && bootstrap.status < 400)) {
+      const location = bootstrap.headers.get('location') || '';
+      throw new SoftaculousRequestError('Softaculous redirected its authenticated install setup page to cPanel sign-in.', {
+        safeToRetry: true,
+        diagnostics: { phase: 'write_session', status: bootstrap.status, redirectPath: safeRedirectPath(location), authMode: 'cpanel_basic' },
+      });
+    }
+    if (!bootstrap.ok) {
+      throw new SoftaculousRequestError(`Softaculous could not prepare the install session (${bootstrap.status}).`, {
+        safeToRetry: true,
+        diagnostics: { phase: 'write_session', status: bootstrap.status, redirectPath: null, authMode: 'cpanel_basic' },
+      });
+    }
+    await bootstrap.arrayBuffer();
+  }
+  let response = await perform('', writeCookies);
   const directRejected = response.status === 401 || response.status === 403 || (response.status >= 300 && response.status < 400);
   // A read-only request may safely be repeated through a cPanel browser session.
   // Never repeat a write after an unclear response: Softaculous may already have
@@ -205,18 +242,20 @@ async function request(input: {
   }
   if (response.status >= 300 && response.status < 400) {
     const location = response.headers.get('location') || '';
-    const signInRedirect = /(?:^|\/)login(?:\/|\?|$)/i.test(location);
     throw new SoftaculousRequestError(tokenMode
       ? 'Softaculous redirected this cPanel API-token request to sign-in.'
       : 'Softaculous redirected this management request to cPanel sign-in.', {
-      safeToRetry: isWrite && signInRedirect,
-      responseWasAmbiguous: isWrite && !signInRedirect,
+      // api=json must return an API payload. A redirect means the request was
+      // rejected by the authentication layer before Softaculous handled it.
+      safeToRetry: isWrite,
+      diagnostics: { phase: 'action', status: response.status, redirectPath: safeRedirectPath(location), authMode: tokenMode ? 'cpanel_token' : 'cpanel_basic' },
     });
   }
   if (response.status === 401 || response.status === 403) throw new SoftaculousRequestError(tokenMode
     ? 'This cPanel API token is not permitted to run this Softaculous action.'
     : 'The saved cPanel management login was not permitted to run this Softaculous action.', {
     safeToRetry: isWrite,
+    diagnostics: { phase: 'action', status: response.status, redirectPath: null, authMode: tokenMode ? 'cpanel_token' : 'cpanel_basic' },
   });
   if (!response.ok) throw new Error(`Softaculous returned ${response.status}.`);
   let text = await response.text();
@@ -235,6 +274,7 @@ async function request(input: {
       : 'Softaculous returned an unexpected web page instead of an API result.', {
       safeToRetry: isWrite && signInPage,
       responseWasAmbiguous: isWrite && !signInPage,
+      diagnostics: { phase: 'action', status: response.status, redirectPath: null, authMode: tokenMode ? 'cpanel_token' : 'cpanel_basic' },
     });
   }
   let payload: unknown;
@@ -243,6 +283,16 @@ async function request(input: {
   const errors = errorText(record.error ?? record.errors);
   if (errors) throw new Error(errors);
   return payload;
+}
+
+function safeRedirectPath(location: string) {
+  if (!location) return null;
+  try {
+    const url = new URL(location, 'https://cpanel.invalid');
+    return `${url.pathname}${url.search}`.slice(0, 300);
+  } catch {
+    return 'unreadable';
+  }
 }
 
 export async function softaculousActionWithCredentialFallback(input: Parameters<typeof softaculousAction>[0] & {

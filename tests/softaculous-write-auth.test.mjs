@@ -13,7 +13,7 @@ const tokenCredential = {
   username: 'webbuilder', token: 'api-token', authMode: 'cpanel_token',
 };
 
-test('install retries once with the cPanel API token after a definite sign-in redirect', async () => {
+test('install retries once with the cPanel API token when the password session setup redirects', async () => {
   const originalFetch = globalThis.fetch;
   const calls = [];
   globalThis.fetch = async (url, init) => {
@@ -32,6 +32,7 @@ test('install retries once with the cPanel API token after a definite sign-in re
     });
     assert.equal(calls.length, 2);
     assert.equal(calls.some((call) => call.url.includes('/login/')), false);
+    assert.equal(calls[0].init.method, 'GET');
     assert.match(calls[0].init.headers.Authorization, /^Basic /);
     assert.equal(calls[1].init.headers.Authorization, 'cpanel webbuilder:api-token');
     assert.equal(new URLSearchParams(calls[1].init.body).get('softdirectory'), '');
@@ -58,7 +59,32 @@ test('install never repeats an ambiguous write response', async () => {
       }),
       (error) => error instanceof SoftaculousRequestError && error.responseWasAmbiguous,
     );
-    assert.equal(calls, 1);
+    assert.equal(calls, 2);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('install establishes and forwards the Softaculous session cookie before posting', async () => {
+  const originalFetch = globalThis.fetch;
+  const calls = [];
+  globalThis.fetch = async (url, init) => {
+    calls.push({ url: String(url), init });
+    if (calls.length === 1) {
+      return new Response('{"ready":true}', { status: 200, headers: { 'Set-Cookie': 'soft_session=abc123; Path=/; Secure' } });
+    }
+    return Response.json({ done: 1 });
+  };
+  try {
+    await softaculousActionWithCredentialFallback({
+      baseUrl: 'https://cpanel.example:2083', credential: passwordCredential,
+      fallbackCredentials: [tokenCredential], action: 'install',
+      domain: 'dev4.testwebsitebuild.com', databaseName: 'sw123',
+    });
+    assert.equal(calls.length, 2);
+    assert.equal(calls[0].init.method, 'GET');
+    assert.equal(calls[1].init.method, 'POST');
+    assert.equal(calls[1].init.headers.Cookie, 'soft_session=abc123');
   } finally {
     globalThis.fetch = originalFetch;
   }

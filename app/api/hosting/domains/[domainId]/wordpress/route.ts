@@ -8,7 +8,7 @@ import {
 import { getRequestIdentity, isSameOrigin } from '@/lib/request-auth';
 import {
   listSoftaculousBackups, listSoftaculousInstallations,
-  softaculousActionWithCredentialFallback, softaculousResponseWasAmbiguous,
+  softaculousActionWithCredentialFallback, softaculousErrorDetails, softaculousResponseWasAmbiguous,
   type OperationalCredential, type SoftaculousBackup,
 } from '@/lib/softaculous';
 
@@ -371,7 +371,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ dom
     const message = replacementRemoved
       ? `The previous WordPress website was removed, but the new ${action === 'clone_template' ? 'template clone' : 'WordPress installation'} did not complete. The destination is empty. ${cause}`
       : cause;
-    if (record) await audit(db, { ownerUserId: identity.userId, connectionId: record.connectionId, action: `wordpress.${action}`, target: record.domain, outcome: 'blocked', details: { message } }).catch(() => undefined);
+    if (record) await audit(db, { ownerUserId: identity.userId, connectionId: record.connectionId, action: `wordpress.${action}`, target: record.domain, outcome: 'blocked', details: { message, ...softaculousErrorDetails(error) } }).catch(() => undefined);
     const requiresConfirmation = message.startsWith('Confirmation required:');
     return json({ error: message, requiresConfirmation, replacementSiteName: replacementSiteName || null }, requiresConfirmation ? 409 : 400);
   }
