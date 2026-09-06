@@ -1577,24 +1577,36 @@ function LaunchProjectView({ connections, domains, templates, busy, onSaveTempla
   const [connectionId, setConnectionId] = useState(operational[0]?.id ?? '');
   const [projectName, setProjectName] = useState('');
   const [subdomain, setSubdomain] = useState('');
+  const [targetMode, setTargetMode] = useState<'existing' | 'new'>('existing');
   const effectiveConnectionId = connectionId || operational[0]?.id || '';
   const parents = domains.filter((domain) => domain.connectionId === effectiveConnectionId && (domain.domainType === 'main' || domain.domainType === 'addon'));
   const compatibleTemplates = templates.filter((template) => template.connectionId === effectiveConnectionId && template.sourceDomainId);
+  const templateDomainIds = new Set(compatibleTemplates.map((template) => String(template.sourceDomainId)));
+  const existingTargets = domains.filter((domain) => domain.connectionId === effectiveConnectionId
+    && domain.domainType === 'subdomain' && !templateDomainIds.has(String(domain.id))
+    && (domain.status === 'Available' || domain.status === 'Needs Inspection'));
   return <div className="view-stack launch-project-view">
     <section className="panel new-project-panel">
-      <div className="section-heading"><div><p className="eyebrow">Create and deploy</p><h2>New custom subdomain project</h2><p>SpyderWeb creates the subdomain and clones the selected template directly to its root.</p></div><span className="root-install-pill">Root install · no /wp folder</span></div>
+      <div className="section-heading"><div><p className="eyebrow">Create and deploy</p><h2>Launch a new project</h2><p>Use an available development domain or create a new subdomain, then load the selected template at its root.</p></div><span className="root-install-pill">Root install · no /wp folder</span></div>
       <form className="new-project-form" onSubmit={(event) => void onLaunch(event)}>
         <label>Project name<input name="projectName" required value={projectName} onChange={(event) => { const value = event.target.value; setProjectName(value); setSubdomain((current) => current && current !== suggestedSubdomainLabel(projectName) ? current : suggestedSubdomainLabel(value)); }} placeholder="Jamie's Plumbing" /></label>
         <label>cPanel account<select name="connectionId" required value={effectiveConnectionId} onChange={(event) => setConnectionId(event.target.value)}><option value="" disabled>Choose cPanel</option>{operational.map((connection) => <option key={connection.id} value={connection.id}>{connection.name}</option>)}</select></label>
-        <label>Parent domain<select name="parentDomain" required defaultValue=""><option value="" disabled>Choose parent domain</option>{parents.map((domain) => <option key={domain.id} value={domain.domain}>{domain.domain}</option>)}</select></label>
-        <label>New subdomain<input name="subdomainLabel" required value={subdomain} onChange={(event) => setSubdomain(event.target.value.toLowerCase())} pattern="[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?" placeholder="jamies-plumbing" /><small>The WordPress address will be the domain root, never /wp.</small></label>
+        <fieldset className="launch-target-switch"><legend>Website address</legend><div>
+          <label className={targetMode === 'existing' ? 'active' : ''}><input type="radio" name="targetMode" value="existing" checked={targetMode === 'existing'} onChange={() => setTargetMode('existing')} /><span>Existing domain</span></label>
+          <label className={targetMode === 'new' ? 'active' : ''}><input type="radio" name="targetMode" value="new" checked={targetMode === 'new'} onChange={() => setTargetMode('new')} /><span>Create new</span></label>
+        </div></fieldset>
+        {targetMode === 'existing' ? <label className="launch-existing-domain">Existing development domain<select name="existingDomainId" required defaultValue=""><option value="" disabled>Choose available domain</option>{existingTargets.map((domain) => <option key={domain.id} value={String(domain.id)}>{domain.domain}{domain.softLocked ? ' · Soft locked' : ''}</option>)}</select><small>A soft-locked domain must be unlocked in Domains before its WordPress installation can be replaced.</small></label> : <>
+          <label>Parent domain<select name="parentDomain" required defaultValue=""><option value="" disabled>Choose parent domain</option>{parents.map((domain) => <option key={domain.id} value={domain.domain}>{domain.domain}</option>)}</select></label>
+          <label>New subdomain<input name="subdomainLabel" required value={subdomain} onChange={(event) => setSubdomain(event.target.value.toLowerCase())} pattern="[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?" placeholder="jamies-plumbing" /><small>The WordPress address will be the domain root, never /wp.</small></label>
+        </>}
         <label>Template<select name="templateSlotNumber" required defaultValue=""><option value="" disabled>Choose template</option>{compatibleTemplates.map((template) => <option key={template.id} value={template.slotNumber}>{template.name} · {template.sourceDomain}</option>)}</select></label>
         <label>Assign to<select name="developer" defaultValue="Owner Account">{assignableDevelopers.map((name) => <option key={name}>{name}</option>)}</select></label>
+        {targetMode === 'existing' && <label className="launch-overwrite-confirm"><input type="checkbox" name="confirmExistingOverwrite" value="true" required /><span><strong>Confirm template replacement</strong><small>This deletes any WordPress installation on the selected domain before loading the template.</small></span></label>}
         <label className="full-field">Project notes<textarea name="notes" rows={3} placeholder="Optional client brief or launch notes" /></label>
         <div className="full-field"><ClientIntakeForm projectName={projectName} /></div>
         {!operational.length && <p className="launch-readiness-warning full-field">Activate WordPress Management for a cPanel account in Settings before launching.</p>}
-        <div className="launch-summary full-field"><span>1</span><p><strong>Create a new subdomain</strong><small>The launch stops if the address already exists.</small></p><span>2</span><p><strong>Clone the selected template</strong><small>Softaculous creates WordPress directly at https://subdomain/ with an empty directory field.</small></p><span>3</span><p><strong>Verify and track</strong><small>The project is added to Projects, assigned, soft locked, and moved to Template Loaded.</small></p></div>
-        <button className="primary-button launch-project-submit full-field" disabled={busy || !operational.length || !compatibleTemplates.length}>{busy ? 'Creating subdomain & loading template…' : 'Launch New Project'}</button>
+        <div className="launch-summary full-field"><span>1</span><p><strong>{targetMode === 'existing' ? 'Prepare the selected domain' : 'Create the new subdomain'}</strong><small>{targetMode === 'existing' ? 'Any existing WordPress installation is removed only after confirmation.' : 'The launch stops if the address already exists.'}</small></p><span>2</span><p><strong>Clone the selected template</strong><small>Softaculous installs it directly at the domain root with an empty directory field.</small></p><span>3</span><p><strong>Verify and track</strong><small>The project is assigned, soft locked, and moved to Template Loaded.</small></p></div>
+        <button className="primary-button launch-project-submit full-field" disabled={busy || !operational.length || !compatibleTemplates.length || (targetMode === 'existing' && !existingTargets.length)}>{busy ? 'Preparing domain & loading template…' : 'Launch New Project'}</button>
       </form>
     </section>
     <section className="panel template-library-panel">
