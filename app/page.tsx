@@ -61,6 +61,7 @@ type Domain = {
   restorePointAt?: string | null;
   phpProfileStatus?: string;
   wordpressActivityAt?: string | null;
+  needsInspection?: boolean;
 };
 
 type HostingConnection = {
@@ -190,7 +191,8 @@ const viewCopy: Record<View, { eyebrow: string; title: string; subtitle: string 
   },
 };
 
-const columns: DomainStatus[] = ['Needs Inspection', 'Available', 'Template Loaded', 'Busy Working', 'Final Stages'];
+const workflowStatuses: DomainStatus[] = ['Needs Inspection', 'Available', 'Template Loaded', 'Busy Working', 'Final Stages'];
+const columns: Exclude<DomainStatus, 'Needs Inspection'>[] = ['Available', 'Template Loaded', 'Busy Working', 'Final Stages'];
 const assignableDevelopers: Developer[] = ['Barry', 'Clive', 'Owner Account'];
 const buildStages = [...PROJECT_STAGES];
 const projectStageStatuses: { value: ProjectStageStatus; label: string }[] = [
@@ -217,8 +219,12 @@ function mapHostingDomains(records: HostingDomain[], connections: HostingConnect
     const isTemplate = installed && /(\btemplate\b|\bnew\s+(?:client\s+)?build\b)/i.test(
       `${record.domain} ${record.wordpressSiteName ?? ''}`,
     );
-    const workflowOverride = columns.includes(record.workflowStatusOverride as DomainStatus)
-      ? record.workflowStatusOverride as DomainStatus
+    const rawWorkflowOverride = record.workflowStatusOverride as DomainStatus | null;
+    const needsInspection = rawWorkflowOverride === 'Needs Inspection'
+      || !['installed', 'not_installed'].includes(record.wordpressStatus)
+      || /(?:failed|error|attention|pending)/i.test(record.phpProfileStatus || '');
+    const workflowOverride = workflowStatuses.includes(rawWorkflowOverride as DomainStatus)
+      ? rawWorkflowOverride
       : null;
     const status: DomainStatus = workflowOverride
       ? workflowOverride
@@ -262,6 +268,7 @@ function mapHostingDomains(records: HostingDomain[], connections: HostingConnect
       restorePointAt: record.restorePointAt,
       phpProfileStatus: record.phpProfileStatus,
       wordpressActivityAt: record.wordpressActivityAt,
+      needsInspection,
     };
   });
 }
@@ -368,7 +375,7 @@ export default function Home() {
     const projectWorkflow = project ? domainWorkflowForStage(project.stage as ProjectStage) : null;
     return project
       ? { ...domain, client: project.client, developer: project.developer, stage: project.stage,
-          progress: project.progress, status: projectWorkflow ?? domain.status }
+          progress: project.progress, status: domain.needsInspection ? 'Needs Inspection' : projectWorkflow ?? domain.status }
       : domain;
   });
   const selectedDomainProject = selectedDomain
@@ -1528,7 +1535,11 @@ function Dashboard({ domains, onDomain, onLaunch, onMoveToFinalStages, inventory
         <div className="section-heading"><div><p className="eyebrow">Domain board</p><h2>Website workspace</h2></div><div className="board-heading-actions"><span className={`live-refresh-pill ${inventoryRefreshing ? 'refreshing' : ''}`}><i />{inventoryRefreshing ? 'Refreshing live data…' : refreshTime ? `Live · updated ${refreshTime}` : 'Connecting to live data…'}</span><div className="board-tools"><button>All developers⌄</button><button>Filter</button></div></div></div>
         <div className="kanban-board">
           {columns.map((column) => {
-            const items = domains.filter((domain) => domain.status === column);
+            const items = domains.filter((domain) => domain.status === column
+              || (column === 'Available' && domain.needsInspection))
+              .sort((left, right) => column === 'Available'
+                ? Number(Boolean(left.needsInspection)) - Number(Boolean(right.needsInspection))
+                : 0);
             return (
               <div className={`kanban-column ${column === 'Final Stages' && draggingDomainId !== null ? 'drop-ready' : ''}`} key={column}
                 onDragOver={(event) => { if (column === 'Final Stages' && draggingDomainId !== null) event.preventDefault(); }}
@@ -1560,7 +1571,10 @@ function DomainCard({ domain, onClick, draggable = false, onDragStart, onDragEnd
       <div className="domain-top"><span className="domain-icon">◎</span><span className="more">•••</span></div>
       <strong>{domain.domain}</strong><p>{domain.client}</p>
       {domain.source === 'cpanel' && <div className="domain-control-badges"><span className={domain.softLocked ? '' : 'ready'}>{domain.softLocked ? 'Locked' : 'Unlocked'}</span><span className={domain.connectionMode === 'managed_write' && domain.operationalReady ? 'ready' : ''}>{domain.connectionMode === 'managed_write' && domain.operationalReady ? 'Operational' : domain.operationalReady ? 'Paused' : 'Activate in Settings'}</span></div>}
-      {domain.stage && <span className="stage-label">{domain.stage}</span>}
+      {(domain.stage || domain.needsInspection) && <div className="domain-stage-badges">
+        {domain.stage && <span className="stage-label">{domain.stage}</span>}
+        {domain.needsInspection && <span className="inspection-label">Needs Inspection</span>}
+      </div>}
       {domain.source === 'demo' && <div className="progress-track"><span style={{ width: `${Math.max(domain.progress, 6)}%` }} /></div>}
       <div className="domain-meta"><span>{domain.source === 'cpanel' ? domain.wordpress : `${domain.progress}%`}</span>{domain.developer ? <span className={`developer ${domain.developer.toLowerCase().replaceAll(' ', '-')}`}>{domain.developer.slice(0, 1)} · {domain.developer}</span> : <span>Unallocated</span>}</div>
     </button>
@@ -1589,7 +1603,7 @@ function DomainsView({ connections, domains, onDomain, onNotice, notice, invento
   const previewDomain = cleanLabel && effectiveParentDomain ? `${cleanLabel}.${effectiveParentDomain}` : '';
   const availableCount = domains.filter((domain) => domain.status === 'Available').length;
   const templateCount = domains.filter((domain) => domain.status === 'Template Loaded').length;
-  const attentionCount = domains.filter((domain) => domain.status === 'Needs Inspection').length;
+  const attentionCount = domains.filter((domain) => domain.needsInspection).length;
   return (
     <div className="view-stack">
       <section className="mini-summary-row">
