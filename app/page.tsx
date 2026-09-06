@@ -254,7 +254,7 @@ function mapHostingDomains(records: HostingDomain[], connections: HostingConnect
       host: connection?.name ?? 'Connected cPanel',
       template: status === 'Template Loaded'
         ? record.wordpressSiteName ?? 'Template loaded'
-        : installed ? 'Client website' : 'None',
+        : installed && status === 'Available' ? 'Clean WordPress' : installed ? 'Client website' : 'None',
       source: 'cpanel',
       domainType: record.domainType,
       phpVersion: record.phpVersion,
@@ -1239,7 +1239,7 @@ export default function Home() {
                 <section className="domain-facts-grid">
                   <div><span>WordPress</span><strong>{selectedDomain.wordpress}</strong></div>
                   <div><span>Template</span><strong>{selectedDomain.template}</strong></div>
-                  <div><span>PHP / WordPress memory</span><strong>{selectedDomain.phpProfileStatus === 'wordpress_memory_verified' ? '768 MB PHP · 512/768 MB WP' : selectedDomain.phpProfileStatus === 'recommended_applied' ? '768 MB PHP · WP check needed' : selectedDomain.phpVersion ?? 'Not reported'}</strong></div>
+                  <div><span>PHP / WordPress memory</span><strong>{selectedDomain.phpProfileStatus === 'wordpress_memory_verified' ? '768 MB PHP · 512/768 MB WP' : ['recommended_applied', 'wordpress_memory_pending'].includes(selectedDomain.phpProfileStatus ?? '') ? '768 MB PHP · WP check needed' : selectedDomain.phpProfileStatus === 'failed' ? 'PHP / WP update failed' : selectedDomain.phpVersion ?? 'Not reported'}</strong></div>
                   <div><span>Hosting</span><strong>{selectedDomain.host}</strong></div>
                 </section>
 
@@ -1259,9 +1259,15 @@ export default function Home() {
                 ) : (
                   <section className="domain-readiness-card">
                     <p className="eyebrow">Workspace readiness</p>
-                    <h3>{selectedDomain.status === 'Template Loaded' ? 'Ready to assign and begin' : selectedDomain.status === 'Available' ? 'Ready for a fresh WordPress build' : 'Check this domain before using it'}</h3>
+                    <h3>{selectedDomain.status === 'Template Loaded'
+                      ? 'Ready to assign and begin'
+                      : selectedDomain.status === 'Available' && selectedDomain.wordpress.startsWith('Installed')
+                        ? 'Clean WordPress is installed and ready'
+                        : selectedDomain.status === 'Available' ? 'Ready for a fresh WordPress build' : 'Check this domain before using it'}</h3>
                     <p>{selectedDomain.status === 'Template Loaded'
                       ? 'The approved template is loaded. Assign it to a developer or user to move it into active work.'
+                      : selectedDomain.status === 'Available' && selectedDomain.wordpress.startsWith('Installed')
+                        ? 'A clean WordPress installation was verified at the domain root. It is available for the next project.'
                       : selectedDomain.status === 'Available'
                         ? 'No WordPress installation was detected. This domain is available for the next build.'
                         : 'The domain did not respond reliably during inspection. No destructive action should be taken yet.'}</p>

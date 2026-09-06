@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import {
   buildSubdomainCreateQuery,
+  effectiveDocumentRoot,
   isCpanelSuccessStatus,
   issueSubdomainCreate,
   reconcileCreatedSubdomain,
@@ -37,5 +38,9 @@ const reconciled = reconcileCreatedSubdomain(
 );
 assert.equal(reconciled.documentRoot, '/dev5.testwebsitebuild.com',
   'an authoritative cPanel inventory match must override a misleading write response');
+assert.equal(effectiveDocumentRoot({ domain: 'dev6.testwebsitebuild.com', domainType: 'subdomain', documentRoot: null }),
+  'dev6.testwebsitebuild.com', 'a missing root must recover from the full-hostname convention');
+assert.equal(effectiveDocumentRoot({ domain: 'testwebsitebuild.com', domainType: 'main', documentRoot: null }), null,
+  'a primary-domain root must never be guessed');
 assert.throws(() => reconcileCreatedSubdomain([], 'dev5.testwebsitebuild.com', misleadingError), misleadingError);
 console.log('Single-write cPanel subdomain creation passed.');

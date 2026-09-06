@@ -1,4 +1,5 @@
 import { discoverCpanel } from '@/lib/cpanel';
+import { effectiveDocumentRoot } from '@/lib/cpanel-subdomain';
 import { encryptHostingToken, encryptSecret } from '@/lib/credential-crypto';
 import { ensureHostingSchema, getDatabase, stableId } from '@/lib/hosting-db';
 import { getRequestIdentity, isSameOrigin } from '@/lib/request-auth';
@@ -224,8 +225,9 @@ export async function POST(request: Request) {
             wordpress_installation_id, wordpress_source, wordpress_activity_at, ssl_status, active, last_seen_at
           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'not_checked', 1, ?)
           ON CONFLICT(connection_id, domain) DO UPDATE SET
-            domain_type = excluded.domain_type, document_root = excluded.document_root,
-            php_version = excluded.php_version,
+            domain_type = excluded.domain_type,
+            document_root = COALESCE(excluded.document_root, hosting_domains.document_root),
+            php_version = COALESCE(excluded.php_version, hosting_domains.php_version),
             wordpress_status = CASE WHEN excluded.wordpress_status = 'not_checked'
               THEN hosting_domains.wordpress_status ELSE excluded.wordpress_status END,
             wordpress_version = CASE WHEN excluded.wordpress_status = 'not_checked'
@@ -246,7 +248,7 @@ export async function POST(request: Request) {
             identity.userId,
             domain.domain,
             domain.domainType,
-            domain.documentRoot,
+            effectiveDocumentRoot(domain),
             domain.phpVersion,
             domain.wordpressStatus,
             domain.wordpressVersion,

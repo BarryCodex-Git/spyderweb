@@ -17,6 +17,18 @@ export function buildSubdomainCreateQuery(input: SubdomainCreateInput) {
   };
 }
 
+export function effectiveDocumentRoot(input: {
+  domain: string;
+  domainType?: string | null;
+  documentRoot?: string | null;
+}) {
+  const reported = input.documentRoot?.trim();
+  if (reported) return reported;
+  // SpyderWeb creates every subdomain with `dir` equal to its full hostname.
+  // Some shared cPanel accounts do not expose that value again during scans.
+  return input.domainType === 'subdomain' ? input.domain.trim().toLowerCase() : null;
+}
+
 export async function issueSubdomainCreate(
   call: (module: string, fn: string, query: Record<string, string>) => Promise<unknown>,
   input: SubdomainCreateInput,

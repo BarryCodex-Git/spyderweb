@@ -1,11 +1,18 @@
-import { createCpanelSubdomain, discoverCpanel, publicWordPressInfo } from '@/lib/cpanel';
+import {
+  createCpanelSubdomain, discoverCpanel, ensureRecommendedPhpProfile,
+  ensureWordPressMemoryProfile, publicWordPressInfo,
+} from '@/lib/cpanel';
+import { effectiveDocumentRoot, reconcileCreatedSubdomain } from '@/lib/cpanel-subdomain';
 import { decryptHostingToken, decryptSecret } from '@/lib/credential-crypto';
 import { ensureHostingSchema, stableId } from '@/lib/hosting-db';
 import { normalizeSubdomainLabel, rootInstallationUrl } from '@/lib/launch-project';
 import { parseClientIntake } from '@/lib/client-intake';
 import { PROJECT_DEVELOPERS, type ProjectDeveloper } from '@/lib/project-workflow';
 import { getRequestIdentity, isSameOrigin } from '@/lib/request-auth';
-import { listSoftaculousInstallations, softaculousAction, type OperationalCredential } from '@/lib/softaculous';
+import {
+  createCpanelSession, listSoftaculousInstallations, softaculousAction,
+  type OperationalCredential,
+} from '@/lib/softaculous';
 
 export const dynamic = 'force-dynamic';
 
@@ -213,10 +220,15 @@ export async function POST(request: Request) {
 
     let created: Awaited<ReturnType<typeof discoverCpanel>>['domains'][number] | null = null;
     if (targetMode === 'new') {
-      await createCpanelSubdomain({ baseUrl: String(connection.baseUrl), username: String(connection.username), token,
-        label: subdomainLabel, parentDomain });
+      let creationError: unknown = null;
+      try {
+        await createCpanelSubdomain({ baseUrl: String(connection.baseUrl), username: String(connection.username), token,
+          label: subdomainLabel, parentDomain });
+      } catch (error) {
+        creationError = error;
+      }
       const discovered = await discoverCpanel({ baseUrl: String(connection.baseUrl), username: String(connection.username), token });
-      created = discovered.domains.find((item) => item.domain === targetDomain) ?? null;
+      created = reconcileCreatedSubdomain(discovered.domains, targetDomain, creationError);
       if (!created) throw new Error(`cPanel accepted the request, but ${targetDomain} could not yet be verified. Rescan cPanel before retrying.`);
     }
 
@@ -233,7 +245,7 @@ export async function POST(request: Request) {
         assigned_developer, wordpress_soft_locked, php_profile_status, ssl_status, active, last_seen_at)
         VALUES (?, ?, ?, ?, 'subdomain', ?, ?, 'not_installed', 'New cPanel subdomain', 'Needs Inspection',
         ?, 1, 'not_checked', 'not_checked', 1, ?)`)
-        .bind(domainId, connectionId, identity.userId, targetDomain, created!.documentRoot, created!.phpVersion, developer, now));
+        .bind(domainId, connectionId, identity.userId, targetDomain, effectiveDocumentRoot(created!), created!.phpVersion, developer, now));
     const projectWrite = existingProject
       ? db.prepare(`UPDATE projects SET client_name = ?, build_type = 'Template', assigned_developer = ?,
           current_stage = 'Setup', stage_status = 'in_progress', progress = 4,
@@ -255,6 +267,8 @@ export async function POST(request: Request) {
     let verifiedUrl = keepExistingTemplate ? String(existingDomain?.wordpressUrl || `https://${targetDomain}`) : '';
     let siteName = keepExistingTemplate ? String(existingDomain?.wordpressSiteName || 'Template loaded') : String(template!.name);
     let version = keepExistingTemplate ? String(existingDomain?.wordpressVersion || '') : '';
+    let memoryProfileStatus = keepExistingTemplate ? 'wordpress_memory_pending' : 'not_checked';
+    let memoryWarning = '';
     if (!keepExistingTemplate) {
       await softaculousAction({ baseUrl: String(connection.baseUrl), credential: credential!, action: 'clone', domain: targetDomain,
         sourceInstallationId, databaseName: `sw_${crypto.randomUUID().replaceAll('-', '').slice(0, 12)}` });
@@ -274,6 +288,32 @@ export async function POST(request: Request) {
           throw new Error('The subdomain and project were created, but the root WordPress clone is still awaiting verification. Do not retry the launch; rescan cPanel first.');
         }
       }
+      const documentRoot = effectiveDocumentRoot({
+        domain: targetDomain,
+        domainType: created?.domainType ?? String(existingDomain?.domainType || 'subdomain'),
+        documentRoot: created?.documentRoot ?? (existingDomain?.documentRoot ? String(existingDomain.documentRoot) : null),
+      });
+      if (!documentRoot) {
+        memoryProfileStatus = 'failed';
+        memoryWarning = ' The project is live, but its memory profile needs inspection because cPanel did not return its document root.';
+      } else {
+        try {
+          const session = await createCpanelSession(String(connection.baseUrl), credential!).catch(() => null);
+          await ensureRecommendedPhpProfile({
+            baseUrl: String(connection.baseUrl), username: String(connection.username), token,
+            domain: targetDomain, documentRoot, password: credential!.password, session,
+          });
+          await ensureWordPressMemoryProfile({
+            baseUrl: String(connection.baseUrl), username: String(connection.username), token,
+            domain: targetDomain, documentRoot, password: credential!.password, session,
+          });
+          memoryProfileStatus = 'wordpress_memory_verified';
+        } catch (error) {
+          memoryProfileStatus = 'failed';
+          const detail = error instanceof Error ? error.message : 'The memory profile could not be verified.';
+          memoryWarning = ` The project is live, but its PHP and WordPress memory profile needs inspection. ${detail}`;
+        }
+      }
     }
     const templateName = keepExistingTemplate ? siteName : String(template!.name);
     const templateDomain = keepExistingTemplate ? targetDomain : String(template!.domain);
@@ -281,9 +321,17 @@ export async function POST(request: Request) {
       db.prepare(`UPDATE hosting_domains SET wordpress_status = 'installed', wordpress_version = ?,
         wordpress_site_name = ?, wordpress_url = ?, wordpress_installation_id = ?,
         wordpress_source = ?, workflow_status_override = 'Template Loaded',
-        wordpress_soft_locked = 1, last_seen_at = ? WHERE id = ? AND owner_user_id = ?`)
+        wordpress_soft_locked = 1,
+        document_root = COALESCE(document_root, ?), php_profile_status = ?,
+        last_seen_at = ? WHERE id = ? AND owner_user_id = ?`)
         .bind(version || null, siteName, verifiedUrl || `https://${targetDomain}`, installationId || null,
-          keepExistingTemplate ? 'Existing loaded template' : 'Softaculous project launch', new Date().toISOString(), domainId, identity.userId),
+          keepExistingTemplate ? 'Existing loaded template' : 'Softaculous project launch',
+          effectiveDocumentRoot({
+            domain: targetDomain,
+            domainType: created?.domainType ?? String(existingDomain?.domainType || 'subdomain'),
+            documentRoot: created?.documentRoot ?? (existingDomain?.documentRoot ? String(existingDomain.documentRoot) : null),
+          }), memoryProfileStatus,
+          new Date().toISOString(), domainId, identity.userId),
       db.prepare(`INSERT INTO project_events (id, project_id, owner_user_id, event_type, source,
         stage, stage_status, note, details_json, created_at) VALUES (?, ?, ?, 'project.launched',
         'Owner Account', 'Setup', 'in_progress', ?, ?, ?)`)
@@ -295,12 +343,12 @@ export async function POST(request: Request) {
       db.prepare(`INSERT INTO hosting_audit_events (id, owner_user_id, connection_id, action, target,
         outcome, details_json, created_at) VALUES (?, ?, ?, 'project.launch', ?, 'success', ?, ?)`)
         .bind(crypto.randomUUID(), identity.userId, connectionId, targetDomain,
-          JSON.stringify({ projectName, targetMode, templateDecision: keepExistingTemplate ? 'keep' : 'replace', template: templateName, templateDomain, wordpressDirectory: '' }), new Date().toISOString()),
+          JSON.stringify({ projectName, targetMode, templateDecision: keepExistingTemplate ? 'keep' : 'replace', template: templateName, templateDomain, wordpressDirectory: '', memoryProfileStatus }), new Date().toISOString()),
     ]);
     return json({ projectId, domainId, domain: targetDomain,
       message: keepExistingTemplate
         ? `${projectName} is ready at ${targetDomain}. Its existing ${templateName} template was kept unchanged.`
-        : `${projectName} is ready at ${targetDomain}. The template was loaded directly at the domain root.` }, 201);
+        : `${projectName} is ready at ${targetDomain}. The template was loaded directly at the domain root.${memoryWarning}` }, 201);
   } catch (error) {
     if (connectionId) {
       await db.prepare(`INSERT INTO hosting_audit_events (id, owner_user_id, connection_id, action, target,

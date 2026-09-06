@@ -186,6 +186,14 @@ export async function ensureHostingSchema(db = getDatabase()) {
   for (const [name, statement] of projectColumnMigrations) {
     if (!existingProjectColumns.has(name)) await db.prepare(statement).run();
   }
+  // Repair older SpyderWeb-created subdomains whose cPanel scans omitted the
+  // root. Creation always uses the full hostname as the document-root folder.
+  await db.prepare(`UPDATE hosting_domains SET document_root = domain
+    WHERE document_root IS NULL AND domain_type = 'subdomain'`).run();
+  // A successful WordPress install changes wp-config.php. Any earlier PHP-only
+  // verification must therefore be followed by a WordPress memory check.
+  await db.prepare(`UPDATE hosting_domains SET php_profile_status = 'wordpress_memory_pending'
+    WHERE wordpress_status = 'installed' AND php_profile_status = 'recommended_applied'`).run();
   return db;
 }
 

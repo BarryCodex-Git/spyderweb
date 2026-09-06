@@ -3,7 +3,7 @@ import { decryptHostingToken } from '@/lib/credential-crypto';
 import { ensureHostingSchema, stableId } from '@/lib/hosting-db';
 import { normalizeSubdomainLabel } from '@/lib/launch-project';
 import { getRequestIdentity, isSameOrigin } from '@/lib/request-auth';
-import { reconcileCreatedSubdomain } from '@/lib/cpanel-subdomain';
+import { effectiveDocumentRoot, reconcileCreatedSubdomain } from '@/lib/cpanel-subdomain';
 
 export const dynamic = 'force-dynamic';
 
@@ -73,6 +73,7 @@ export async function POST(request: Request) {
 
     const now = new Date().toISOString();
     const domainId = await stableId(connectionId, targetDomain);
+    const documentRoot = effectiveDocumentRoot(created);
     await db.batch([
       db.prepare(`INSERT INTO hosting_domains (
         id, connection_id, owner_user_id, domain, domain_type, document_root, php_version,
@@ -81,19 +82,21 @@ export async function POST(request: Request) {
         wordpress_soft_locked, php_profile_status, ssl_status, active, last_seen_at
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Available', 1, 'not_checked', 'not_checked', 1, ?)
       ON CONFLICT(connection_id, domain) DO UPDATE SET
-        domain_type = excluded.domain_type, document_root = excluded.document_root,
-        php_version = excluded.php_version, wordpress_status = excluded.wordpress_status,
+        domain_type = excluded.domain_type,
+        document_root = COALESCE(excluded.document_root, hosting_domains.document_root),
+        php_version = COALESCE(excluded.php_version, hosting_domains.php_version),
+        wordpress_status = excluded.wordpress_status,
         workflow_status_override = 'Available', wordpress_soft_locked = 1,
         active = 1, last_seen_at = excluded.last_seen_at`)
         .bind(domainId, connectionId, identity.userId, targetDomain, created.domainType,
-          created.documentRoot, created.phpVersion, created.wordpressStatus,
+          documentRoot, created.phpVersion, created.wordpressStatus,
           created.wordpressVersion, created.wordpressSiteName, created.wordpressUrl,
           created.wordpressInstallationId, created.wordpressSource, now),
       db.prepare(`INSERT INTO hosting_audit_events (
         id, owner_user_id, connection_id, action, target, outcome, details_json, created_at
       ) VALUES (?, ?, ?, 'cpanel.subdomain_create', ?, 'success', ?, ?)`)
         .bind(crypto.randomUUID(), identity.userId, connectionId, targetDomain,
-          JSON.stringify({ parentDomain, label, documentRoot: created.documentRoot,
+          JSON.stringify({ parentDomain, label, documentRoot,
             reconciledAfterCpanelError: Boolean(creationError) }), now),
     ]);
 

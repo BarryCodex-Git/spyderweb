@@ -1,4 +1,5 @@
 import { ensureRecommendedPhpProfile, ensureWordPressMemoryProfile, publicWordPressInfo } from '@/lib/cpanel';
+import { effectiveDocumentRoot } from '@/lib/cpanel-subdomain';
 import { decryptHostingToken, decryptSecret } from '@/lib/credential-crypto';
 import { ensureHostingSchema } from '@/lib/hosting-db';
 import {
@@ -7,7 +8,7 @@ import {
 } from '@/lib/operational-security';
 import { getRequestIdentity, isSameOrigin } from '@/lib/request-auth';
 import {
-  listSoftaculousBackups, listSoftaculousInstallations,
+  createCpanelSession, listSoftaculousBackups, listSoftaculousInstallations,
   softaculousManagedAction, softaculousErrorDetails, softaculousResponseWasAmbiguous,
   type OperationalCredential, type SoftaculousBackup,
 } from '@/lib/softaculous';
@@ -108,6 +109,8 @@ async function refreshDomainWordPress(
     await db.prepare(`UPDATE hosting_domains SET wordpress_status = 'installed', wordpress_version = ?,
       wordpress_site_name = ?, wordpress_url = ?, wordpress_installation_id = ?,
       wordpress_source = 'Softaculous live verification', restore_point_at = NULL,
+      php_profile_status = CASE WHEN php_profile_status = 'wordpress_memory_verified'
+        THEN php_profile_status ELSE 'wordpress_memory_pending' END,
       workflow_status_override = COALESCE(?, workflow_status_override) WHERE id = ? AND owner_user_id = ?`)
       .bind(
         installation.version,
@@ -130,6 +133,8 @@ async function refreshDomainWordPress(
       await db.prepare(`UPDATE hosting_domains SET wordpress_status = 'installed', wordpress_version = ?,
         wordpress_site_name = ?, wordpress_url = ?, wordpress_installation_id = NULL,
         wordpress_source = 'Public WordPress endpoint', restore_point_at = NULL,
+        php_profile_status = CASE WHEN php_profile_status = 'wordpress_memory_verified'
+          THEN php_profile_status ELSE 'wordpress_memory_pending' END,
         workflow_status_override = COALESCE(?, workflow_status_override) WHERE id = ? AND owner_user_id = ?`)
         .bind(
           publicInfo.version,
@@ -181,28 +186,33 @@ export async function POST(request: Request, { params }: { params: Promise<{ dom
     if (!connection) throw new Error('The hosting connection for this domain was not found.');
     if (action === 'apply_php_profile') {
       const cpanelToken = await decryptHostingToken(String(connection.encryptedToken), String(connection.encryptionIv), identity.userId, record.connectionId);
-      let managementPassword: string | null = null;
+      let managementCredential: OperationalCredential | null = null;
       if (connection.encryptedOperationalSecret && connection.operationalSecretIv) {
-        const credential = JSON.parse(await decryptSecret(
+        managementCredential = JSON.parse(await decryptSecret(
           String(connection.encryptedOperationalSecret), String(connection.operationalSecretIv),
           identity.userId, `operational:${record.connectionId}`,
         )) as OperationalCredential;
-        if (credential.password) managementPassword = credential.password;
       }
+      const managementPassword = managementCredential?.password ?? null;
+      const documentRoot = effectiveDocumentRoot(record);
+      const session = managementCredential?.password
+        ? await createCpanelSession(String(connection.baseUrl), managementCredential).catch(() => null)
+        : null;
       const phpResult = await ensureRecommendedPhpProfile({
         baseUrl: String(connection.baseUrl), username: String(connection.username), token: cpanelToken,
-        domain: record.domain, documentRoot: record.documentRoot, password: managementPassword,
+        domain: record.domain, documentRoot, password: managementPassword, session,
       });
       let wordpressResult: Awaited<ReturnType<typeof ensureWordPressMemoryProfile>> | null = null;
       if (record.wordpressStatus === 'installed') {
-        if (!record.documentRoot) throw new Error(`The document root for ${record.domain} is unavailable. Scan the cPanel account again before changing wp-config.php.`);
+        if (!documentRoot) throw new Error(`The document root for ${record.domain} could not be determined safely.`);
         wordpressResult = await ensureWordPressMemoryProfile({
           baseUrl: String(connection.baseUrl), username: String(connection.username), token: cpanelToken,
-          domain: record.domain, documentRoot: record.documentRoot, password: managementPassword,
+          domain: record.domain, documentRoot, password: managementPassword, session,
         });
       }
-      await db.prepare(`UPDATE hosting_domains SET php_profile_status = ? WHERE id = ? AND owner_user_id = ?`)
-        .bind(wordpressResult ? 'wordpress_memory_verified' : 'recommended_applied', record.id, identity.userId).run();
+      await db.prepare(`UPDATE hosting_domains SET php_profile_status = ?,
+        document_root = COALESCE(document_root, ?) WHERE id = ? AND owner_user_id = ?`)
+        .bind(wordpressResult ? 'wordpress_memory_verified' : 'recommended_applied', documentRoot, record.id, identity.userId).run();
       await audit(db, { ownerUserId: identity.userId, connectionId: record.connectionId, action: 'wordpress.apply_php_profile', target: record.domain, outcome: 'success', details: {
         phpStatus: phpResult.status,
         wordpressStatus: wordpressResult?.status ?? 'not_installed',
@@ -228,7 +238,45 @@ export async function POST(request: Request, { params }: { params: Promise<{ dom
     }
     const secrets = JSON.parse(await decryptSecret(String(connection.encryptedOperationalSecret), String(connection.operationalSecretIv), identity.userId, `operational:${record.connectionId}`)) as OperationalCredential & { adminUsername?: string; adminPassword?: string; adminEmail?: string };
     const baseUrl = String(connection.baseUrl);
+    const cpanelUsername = String(connection.username);
+    const encryptedToken = String(connection.encryptedToken);
+    const encryptionIv = String(connection.encryptionIv);
     const replacementConfirmed = body.confirmReplacement === true;
+
+    async function applyPostInstallMemoryProfile() {
+      if (!record) return;
+      const documentRoot = effectiveDocumentRoot(record);
+      if (!documentRoot) throw new Error(`The document root for ${record.domain} could not be determined safely.`);
+      const cpanelToken = await decryptHostingToken(
+        encryptedToken, encryptionIv, identity!.userId, record.connectionId,
+      );
+      const session = await createCpanelSession(baseUrl, secrets).catch(() => null);
+      const phpResult = await ensureRecommendedPhpProfile({
+        baseUrl, username: cpanelUsername, token: cpanelToken,
+        domain: record.domain, documentRoot, password: secrets.password, session,
+      });
+      const wordpressResult = await ensureWordPressMemoryProfile({
+        baseUrl, username: cpanelUsername, token: cpanelToken,
+        domain: record.domain, documentRoot, password: secrets.password, session,
+      });
+      await db.prepare(`UPDATE hosting_domains SET php_profile_status = 'wordpress_memory_verified',
+        document_root = COALESCE(document_root, ?) WHERE id = ? AND owner_user_id = ?`)
+        .bind(documentRoot, record.id, identity!.userId).run();
+      await audit(db, {
+        ownerUserId: identity!.userId,
+        connectionId: record.connectionId,
+        action: 'wordpress.post_install_memory',
+        target: record.domain,
+        outcome: 'success',
+        details: {
+          phpStatus: phpResult.status,
+          wordpressStatus: wordpressResult.status,
+          wordpressMemoryLimit: wordpressResult.values.WP_MEMORY_LIMIT,
+          wordpressMaxMemoryLimit: wordpressResult.values.WP_MAX_MEMORY_LIMIT,
+          rollbackCopy: wordpressResult.backupFile,
+        },
+      });
+    }
 
     function freshDatabaseName() {
       // Softaculous requires a database for both fresh installs and clones.
@@ -328,6 +376,16 @@ export async function POST(request: Request, { params }: { params: Promise<{ dom
           : 'WordPress was installed and independently verified after Softaculous rejected the first authentication method.';
       }
       if (!refreshed.verified) verificationWarning = 'Softaculous accepted the installation but has not reported the new installation yet. SpyderWeb marked it for inspection; scan again shortly.';
+      if (refreshed.verified) {
+        try {
+          await applyPostInstallMemoryProfile();
+        } catch (error) {
+          await db.prepare(`UPDATE hosting_domains SET php_profile_status = 'failed'
+            WHERE id = ? AND owner_user_id = ?`).bind(record.id, identity.userId).run();
+          const detail = error instanceof Error ? error.message : 'The memory profile could not be verified.';
+          verificationWarning = `${verificationWarning ? `${verificationWarning} ` : ''}WordPress is installed, but its PHP and WordPress memory profile still needs attention. ${detail}`;
+        }
+      }
     } else if (action === 'clone_template') {
       let templateDomain = String(connection.defaultTemplateDomain || '');
       if (!templateDomain) {
@@ -349,6 +407,16 @@ export async function POST(request: Request, { params }: { params: Promise<{ dom
       const refreshed = await refreshDomainWordPress(db, { ownerUserId: identity.userId, domainId: record.id,
         domain: record.domain, baseUrl, credential: secrets, expected: 'template' });
       if (!refreshed.verified) verificationWarning = 'Softaculous accepted the clone but has not reported the destination yet. SpyderWeb marked it for inspection; scan again shortly.';
+      if (refreshed.verified) {
+        try {
+          await applyPostInstallMemoryProfile();
+        } catch (error) {
+          await db.prepare(`UPDATE hosting_domains SET php_profile_status = 'failed'
+            WHERE id = ? AND owner_user_id = ?`).bind(record.id, identity.userId).run();
+          const detail = error instanceof Error ? error.message : 'The memory profile could not be verified.';
+          verificationWarning = `The template is loaded, but its PHP and WordPress memory profile still needs attention. ${detail}`;
+        }
+      }
     } else {
       throw new Error('Choose a valid WordPress management action.');
     }
@@ -367,7 +435,13 @@ export async function POST(request: Request, { params }: { params: Promise<{ dom
     const message = replacementRemoved
       ? `The previous WordPress website was removed, but the new ${action === 'clone_template' ? 'template clone' : 'WordPress installation'} did not complete. The destination is empty. ${cause}`
       : cause;
-    if (record) await audit(db, { ownerUserId: identity.userId, connectionId: record.connectionId, action: `wordpress.${action}`, target: record.domain, outcome: 'blocked', details: { message, ...softaculousErrorDetails(error) } }).catch(() => undefined);
+    if (record) {
+      if (action === 'apply_php_profile') {
+        await db.prepare(`UPDATE hosting_domains SET php_profile_status = 'failed'
+          WHERE id = ? AND owner_user_id = ?`).bind(record.id, identity.userId).run().catch(() => undefined);
+      }
+      await audit(db, { ownerUserId: identity.userId, connectionId: record.connectionId, action: `wordpress.${action}`, target: record.domain, outcome: 'blocked', details: { message, ...softaculousErrorDetails(error) } }).catch(() => undefined);
+    }
     const requiresConfirmation = message.startsWith('Confirmation required:');
     return json({ error: message, requiresConfirmation, replacementSiteName: replacementSiteName || null }, requiresConfirmation ? 409 : 400);
   }
