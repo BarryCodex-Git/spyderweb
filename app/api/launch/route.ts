@@ -105,6 +105,7 @@ export async function POST(request: Request) {
     const projectName = requiredText(body.projectName, 'project name', 180);
     connectionId = requiredText(body.connectionId, 'cPanel account', 64);
     const targetMode = body.targetMode === 'existing' ? 'existing' : 'new';
+    const keepExistingTemplate = targetMode === 'existing' && body.templateDecision === 'keep';
     const existingDomainId = targetMode === 'existing' ? requiredText(body.existingDomainId, 'existing domain', 64) : '';
     const parentDomain = targetMode === 'new' ? requiredText(body.parentDomain, 'parent domain', 253).toLowerCase() : '';
     const subdomainLabel = targetMode === 'new' ? normalizeSubdomainLabel(requiredText(body.subdomainLabel, 'subdomain name', 63)) : '';
@@ -125,20 +126,32 @@ export async function POST(request: Request) {
       FROM hosting_connections WHERE id = ? AND owner_user_id = ? LIMIT 1`)
       .bind(connectionId, identity.userId).first<Record<string, unknown>>();
     if (!connection) throw new Error('Choose a connected cPanel account.');
-    if (connection.mode !== 'managed_write' || connection.operationalStatus !== 'verified') {
+    if (!keepExistingTemplate && (connection.mode !== 'managed_write' || connection.operationalStatus !== 'verified')) {
       throw new Error('WordPress Management must be active for the selected cPanel account.');
     }
     let existingDomain: Record<string, unknown> | null = null;
     if (targetMode === 'existing') {
       existingDomain = await db.prepare(`SELECT id, domain, domain_type AS domainType,
         document_root AS documentRoot, php_version AS phpVersion,
-        wordpress_status AS wordpressStatus, wordpress_soft_locked AS softLocked
+        wordpress_status AS wordpressStatus, wordpress_version AS wordpressVersion,
+        wordpress_site_name AS wordpressSiteName, wordpress_url AS wordpressUrl,
+        wordpress_installation_id AS wordpressInstallationId,
+        workflow_status_override AS workflowStatusOverride, wordpress_soft_locked AS softLocked
         FROM hosting_domains WHERE id = ? AND connection_id = ? AND owner_user_id = ? AND active = 1 LIMIT 1`)
         .bind(existingDomainId, connectionId, identity.userId).first<Record<string, unknown>>();
-      if (!existingDomain || String(existingDomain.domainType) !== 'subdomain') {
-        throw new Error('Choose an existing development subdomain from this cPanel account.');
-      }
+      if (!existingDomain) throw new Error('Choose an existing domain from this cPanel account.');
       targetDomain = String(existingDomain.domain).toLowerCase();
+      const masterTemplate = await db.prepare(`SELECT id FROM template_slots
+        WHERE owner_user_id = ? AND source_domain_id = ? LIMIT 1`)
+        .bind(identity.userId, existingDomainId).first();
+      if (masterTemplate) throw new Error('A master template domain cannot be used as a project destination.');
+      const templateDetected = String(existingDomain.wordpressStatus) === 'installed'
+        && (existingDomain.workflowStatusOverride === 'Template Loaded'
+          || /(\btemplate\b|\bnew\s+(?:client\s+)?build\b)/i.test(`${targetDomain} ${String(existingDomain.wordpressSiteName || '')}`));
+      const available = existingDomain.workflowStatusOverride === 'Available'
+        || String(existingDomain.wordpressStatus) === 'not_installed';
+      if (!available && !templateDetected) throw new Error('Choose a domain marked Available or Template Loaded on the Dashboard.');
+      if (keepExistingTemplate && !templateDetected) throw new Error('Only a Template Loaded domain can keep its current template.');
     } else {
       const parent = await db.prepare(`SELECT id, domain_type AS domainType FROM hosting_domains
         WHERE connection_id = ? AND owner_user_id = ? AND domain = ? AND active = 1`)
@@ -150,43 +163,52 @@ export async function POST(request: Request) {
         .bind(identity.userId, targetDomain).first();
       if (collision) throw new Error(`${targetDomain} already exists. Nothing was changed.`);
     }
-    if (![1, 2, 3, 4].includes(templateSlotNumber)) throw new Error('Choose a template.');
-    const template = await db.prepare(`SELECT s.name, d.id AS domainId, d.domain,
-      d.connection_id AS connectionId, d.wordpress_installation_id AS installationId
-      FROM template_slots s JOIN hosting_domains d ON d.id = s.source_domain_id
-      WHERE s.owner_user_id = ? AND s.slot_number = ? AND d.wordpress_status = 'installed'`)
-      .bind(identity.userId, templateSlotNumber).first<Record<string, unknown>>();
-    if (!template) throw new Error('The selected template does not have a verified WordPress installation.');
-    if (String(template.connectionId) !== connectionId) {
-      throw new Error('Choose a template hosted in the same cPanel account as the destination domain.');
+    let template: Record<string, unknown> | null = null;
+    if (!keepExistingTemplate) {
+      if (![1, 2, 3, 4].includes(templateSlotNumber)) throw new Error('Choose a template.');
+      template = await db.prepare(`SELECT s.name, d.id AS domainId, d.domain,
+        d.connection_id AS connectionId, d.wordpress_installation_id AS installationId
+        FROM template_slots s JOIN hosting_domains d ON d.id = s.source_domain_id
+        WHERE s.owner_user_id = ? AND s.slot_number = ? AND d.wordpress_status = 'installed'`)
+        .bind(identity.userId, templateSlotNumber).first<Record<string, unknown>>();
+      if (!template) throw new Error('The selected template does not have a verified WordPress installation.');
+      if (String(template.connectionId) !== connectionId) {
+        throw new Error('Choose a template hosted in the same cPanel account as the destination domain.');
+      }
+      if (String(template.domain).toLowerCase() === targetDomain) throw new Error('The template source cannot be used as its own destination.');
     }
-    if (String(template.domain).toLowerCase() === targetDomain) throw new Error('The template source cannot be used as its own destination.');
 
-    const token = await decryptHostingToken(String(connection.encryptedToken), String(connection.encryptionIv), identity.userId, connectionId);
-    const credential = JSON.parse(await decryptSecret(
-      String(connection.encryptedOperationalSecret), String(connection.operationalSecretIv),
-      identity.userId, `operational:${connectionId}`,
-    )) as OperationalCredential;
-    const installations = await listSoftaculousInstallations(String(connection.baseUrl), credential);
-    const destination = installations.find((item) => item.domain === targetDomain);
-    if (targetMode === 'new' && destination) throw new Error(`${targetDomain} already has a Softaculous installation. Nothing was changed.`);
-    const source = installations.find((item) => item.domain === String(template.domain));
-    if (!source?.id) throw new Error('Softaculous could not find the selected template installation.');
+    let token = '';
+    let credential: OperationalCredential | null = null;
+    let sourceInstallationId = '';
+    if (!keepExistingTemplate) {
+      token = await decryptHostingToken(String(connection.encryptedToken), String(connection.encryptionIv), identity.userId, connectionId);
+      credential = JSON.parse(await decryptSecret(
+        String(connection.encryptedOperationalSecret), String(connection.operationalSecretIv),
+        identity.userId, `operational:${connectionId}`,
+      )) as OperationalCredential;
+      const installations = await listSoftaculousInstallations(String(connection.baseUrl), credential);
+      const destination = installations.find((item) => item.domain === targetDomain);
+      if (targetMode === 'new' && destination) throw new Error(`${targetDomain} already has a Softaculous installation. Nothing was changed.`);
+      const source = installations.find((item) => item.domain === String(template!.domain));
+      if (!source?.id) throw new Error('Softaculous could not find the selected template installation.');
+      sourceInstallationId = source.id;
 
-    if (destination) {
-      if (Number(existingDomain?.softLocked || 0) === 1) throw new Error(`${targetDomain} is soft locked. Unlock it in Domains before replacing WordPress.`);
-      if (body.confirmExistingOverwrite !== true && body.confirmExistingOverwrite !== 'true') {
-        throw new Error(`Confirm that SpyderWeb may delete “${destination.siteName || targetDomain}” before loading the selected template.`);
+      if (destination) {
+        if (Number(existingDomain?.softLocked || 0) === 1) throw new Error(`${targetDomain} is soft locked. Unlock it in Domains before replacing WordPress.`);
+        if (body.confirmExistingOverwrite !== true && body.confirmExistingOverwrite !== 'true') {
+          throw new Error(`Confirm that SpyderWeb may delete “${destination.siteName || targetDomain}” before loading the selected template.`);
+        }
+        if (!destination.id) throw new Error(`Softaculous did not provide an installation ID for ${targetDomain}. Scan cPanel before retrying.`);
+        await softaculousAction({ baseUrl: String(connection.baseUrl), credential, action: 'remove', domain: targetDomain, installationId: destination.id });
+        let removed = false;
+        for (const delay of [0, 800, 1600]) {
+          if (delay) await new Promise((resolve) => setTimeout(resolve, delay));
+          const remaining = await listSoftaculousInstallations(String(connection.baseUrl), credential);
+          if (!remaining.some((item) => item.domain === targetDomain)) { removed = true; break; }
+        }
+        if (!removed) throw new Error(`Softaculous still reports the old WordPress installation on ${targetDomain}. The template was not loaded.`);
       }
-      if (!destination.id) throw new Error(`Softaculous did not provide an installation ID for ${targetDomain}. Scan cPanel before retrying.`);
-      await softaculousAction({ baseUrl: String(connection.baseUrl), credential, action: 'remove', domain: targetDomain, installationId: destination.id });
-      let removed = false;
-      for (const delay of [0, 800, 1600]) {
-        if (delay) await new Promise((resolve) => setTimeout(resolve, delay));
-        const remaining = await listSoftaculousInstallations(String(connection.baseUrl), credential);
-        if (!remaining.some((item) => item.domain === targetDomain)) { removed = true; break; }
-      }
-      if (!removed) throw new Error(`Softaculous still reports the old WordPress installation on ${targetDomain}. The template was not loaded.`);
     }
 
     let created: Awaited<ReturnType<typeof discoverCpanel>>['domains'][number] | null = null;
@@ -229,42 +251,56 @@ export async function POST(request: Request) {
     setupWrites.push(projectWrite);
     await db.batch(setupWrites);
 
-    await softaculousAction({ baseUrl: String(connection.baseUrl), credential, action: 'clone', domain: targetDomain,
-      sourceInstallationId: source.id, databaseName: `sw_${crypto.randomUUID().replaceAll('-', '').slice(0, 12)}` });
-    const refreshed = await listSoftaculousInstallations(String(connection.baseUrl), credential);
-    const installation = refreshed.find((item) => item.domain === targetDomain);
-    let verifiedUrl = installation?.url ?? null;
-    let siteName = installation?.siteName ?? String(template.name);
-    let version = installation?.version ?? null;
-    if (!installation || !rootInstallationUrl(verifiedUrl, targetDomain)) {
-      const publicInfo = await publicWordPressInfo(targetDomain);
-      if (publicInfo.detected && rootInstallationUrl(publicInfo.url, targetDomain)) {
-        verifiedUrl = publicInfo.url; siteName = publicInfo.siteName ?? siteName; version = publicInfo.version;
-      } else if (installation?.url && !rootInstallationUrl(installation.url, targetDomain)) {
-        throw new Error(`Softaculous reported ${installation.url}. SpyderWeb requires WordPress at the domain root and will not accept a /wp installation.`);
-      } else {
-        throw new Error('The subdomain and project were created, but the root WordPress clone is still awaiting verification. Do not retry the launch; rescan cPanel first.');
+    let installationId = keepExistingTemplate ? String(existingDomain?.wordpressInstallationId || '') : '';
+    let verifiedUrl = keepExistingTemplate ? String(existingDomain?.wordpressUrl || `https://${targetDomain}`) : '';
+    let siteName = keepExistingTemplate ? String(existingDomain?.wordpressSiteName || 'Template loaded') : String(template!.name);
+    let version = keepExistingTemplate ? String(existingDomain?.wordpressVersion || '') : '';
+    if (!keepExistingTemplate) {
+      await softaculousAction({ baseUrl: String(connection.baseUrl), credential: credential!, action: 'clone', domain: targetDomain,
+        sourceInstallationId, databaseName: `sw_${crypto.randomUUID().replaceAll('-', '').slice(0, 12)}` });
+      const refreshed = await listSoftaculousInstallations(String(connection.baseUrl), credential!);
+      const installation = refreshed.find((item) => item.domain === targetDomain);
+      installationId = installation?.id ?? '';
+      verifiedUrl = installation?.url ?? '';
+      siteName = installation?.siteName ?? String(template!.name);
+      version = installation?.version ?? '';
+      if (!installation || !rootInstallationUrl(verifiedUrl, targetDomain)) {
+        const publicInfo = await publicWordPressInfo(targetDomain);
+        if (publicInfo.detected && rootInstallationUrl(publicInfo.url, targetDomain)) {
+          verifiedUrl = publicInfo.url || ''; siteName = publicInfo.siteName ?? siteName; version = publicInfo.version || '';
+        } else if (installation?.url && !rootInstallationUrl(installation.url, targetDomain)) {
+          throw new Error(`Softaculous reported ${installation.url}. SpyderWeb requires WordPress at the domain root and will not accept a /wp installation.`);
+        } else {
+          throw new Error('The subdomain and project were created, but the root WordPress clone is still awaiting verification. Do not retry the launch; rescan cPanel first.');
+        }
       }
     }
+    const templateName = keepExistingTemplate ? siteName : String(template!.name);
+    const templateDomain = keepExistingTemplate ? targetDomain : String(template!.domain);
     await db.batch([
       db.prepare(`UPDATE hosting_domains SET wordpress_status = 'installed', wordpress_version = ?,
         wordpress_site_name = ?, wordpress_url = ?, wordpress_installation_id = ?,
-        wordpress_source = 'Softaculous project launch', workflow_status_override = 'Template Loaded',
+        wordpress_source = ?, workflow_status_override = 'Template Loaded',
         wordpress_soft_locked = 1, last_seen_at = ? WHERE id = ? AND owner_user_id = ?`)
-        .bind(version, siteName, verifiedUrl || `https://${targetDomain}`, installation?.id ?? null, new Date().toISOString(), domainId, identity.userId),
+        .bind(version || null, siteName, verifiedUrl || `https://${targetDomain}`, installationId || null,
+          keepExistingTemplate ? 'Existing loaded template' : 'Softaculous project launch', new Date().toISOString(), domainId, identity.userId),
       db.prepare(`INSERT INTO project_events (id, project_id, owner_user_id, event_type, source,
         stage, stage_status, note, details_json, created_at) VALUES (?, ?, ?, 'project.launched',
         'Owner Account', 'Setup', 'in_progress', ?, ?, ?)`)
         .bind(crypto.randomUUID(), projectId, identity.userId,
-          `${targetMode === 'new' ? 'Created' : 'Prepared'} ${targetDomain} and loaded ${String(template.name)} at the domain root.`,
-          JSON.stringify({ targetMode, templateSlotNumber, templateDomain: template.domain, wordpressDirectory: '' }), new Date().toISOString()),
+          keepExistingTemplate
+            ? `Started ${projectName} on ${targetDomain} using its existing ${templateName} template without changing WordPress.`
+            : `${targetMode === 'new' ? 'Created' : 'Prepared'} ${targetDomain} and loaded ${templateName} at the domain root.`,
+          JSON.stringify({ targetMode, templateDecision: keepExistingTemplate ? 'keep' : 'replace', templateSlotNumber: keepExistingTemplate ? null : templateSlotNumber, templateDomain, wordpressDirectory: '' }), new Date().toISOString()),
       db.prepare(`INSERT INTO hosting_audit_events (id, owner_user_id, connection_id, action, target,
         outcome, details_json, created_at) VALUES (?, ?, ?, 'project.launch', ?, 'success', ?, ?)`)
         .bind(crypto.randomUUID(), identity.userId, connectionId, targetDomain,
-          JSON.stringify({ projectName, targetMode, template: template.name, templateDomain: template.domain, wordpressDirectory: '' }), new Date().toISOString()),
+          JSON.stringify({ projectName, targetMode, templateDecision: keepExistingTemplate ? 'keep' : 'replace', template: templateName, templateDomain, wordpressDirectory: '' }), new Date().toISOString()),
     ]);
     return json({ projectId, domainId, domain: targetDomain,
-      message: `${projectName} is ready at ${targetDomain}. The template was loaded directly at the domain root.` }, 201);
+      message: keepExistingTemplate
+        ? `${projectName} is ready at ${targetDomain}. Its existing ${templateName} template was kept unchanged.`
+        : `${projectName} is ready at ${targetDomain}. The template was loaded directly at the domain root.` }, 201);
   } catch (error) {
     if (connectionId) {
       await db.prepare(`INSERT INTO hosting_audit_events (id, owner_user_id, connection_id, action, target,
