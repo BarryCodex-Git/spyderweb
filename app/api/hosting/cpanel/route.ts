@@ -120,6 +120,18 @@ export async function POST(request: Request) {
     const defaultTemplateDomain = discovered.domains
       .filter((domain) => /template/i.test(domain.domain))
       .sort((a, b) => Number(b.wordpressStatus === 'installed') - Number(a.wordpressStatus === 'installed'))[0]?.domain ?? null;
+    const persistedDomains = await Promise.all(discovered.domains.map(async (domain) => ({
+      ...domain,
+      id: await stableId(connectionId, domain.domain),
+      connectionId,
+      workflowStatusOverride: null,
+      assignedDeveloper: null,
+      wordpressSoftLocked: 1,
+      restorePointAt: null,
+      phpProfileStatus: 'not_checked',
+      sslStatus: 'not_checked',
+      lastSeenAt: now,
+    })));
     const statements = [
       db
         .prepare(`INSERT INTO hosting_connections (
@@ -167,8 +179,7 @@ export async function POST(request: Request) {
       statements.push(db.prepare('UPDATE hosting_domains SET active = 0 WHERE connection_id = ?').bind(connectionId));
     }
 
-    for (const domain of discovered.domains) {
-      const domainId = await stableId(connectionId, domain.domain);
+    for (const domain of persistedDomains) {
       statements.push(
         db
           .prepare(`INSERT INTO hosting_domains (
@@ -194,7 +205,7 @@ export async function POST(request: Request) {
             wordpress_activity_at = COALESCE(excluded.wordpress_activity_at, hosting_domains.wordpress_activity_at),
             active = 1, last_seen_at = excluded.last_seen_at`)
           .bind(
-            domainId,
+            domain.id,
             connectionId,
             identity.userId,
             domain.domain,
@@ -255,14 +266,7 @@ export async function POST(request: Request) {
         confirmationPolicy: 'soft_lock+clear_confirmation',
         lastSyncAt: now,
       },
-      domains: discovered.domains.map((domain) => ({
-        ...domain,
-        id: undefined,
-        connectionId,
-        sslStatus: 'not_checked',
-        workflowStatusOverride: null,
-        lastSeenAt: now,
-      })),
+      domains: persistedDomains,
       scanStatus: discovered.scanStatus,
       wordpressScanStatus: discovered.wordpressScanStatus,
       message: discovered.scanStatus === 'complete'

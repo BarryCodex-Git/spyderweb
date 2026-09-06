@@ -354,6 +354,7 @@ export default function Home() {
   const [launchNotes, setLaunchNotes] = useState('');
   const toastTimers = useRef(new Map<string, number>());
   const inventoryRequestCounter = useRef(0);
+  const newestInventorySyncRef = useRef(0);
 
   const copy = viewCopy[activeView];
   const selectedStageIndex = selectedProject
@@ -418,6 +419,9 @@ export default function Home() {
         audit: AuditEvent[];
       };
       if (requestId !== inventoryRequestCounter.current) return data;
+      const responseSync = Math.max(0, ...data.connections.map((connection) => Date.parse(connection.lastSyncAt) || 0));
+      if (responseSync < newestInventorySyncRef.current) return data;
+      newestInventorySyncRef.current = responseSync;
       setHostingConnections((current) => JSON.stringify(current) === JSON.stringify(data.connections) ? current : data.connections);
       setAuditEvents(data.audit ?? []);
       if (data.domains.length > 0) {
@@ -793,11 +797,40 @@ export default function Home() {
           primaryDomain: formData.get('primaryDomain'),
         }),
       });
-      const result = (await response.json()) as { error?: string; message?: string; scanStatus?: 'complete' | 'needs_attention'; wordpressScanStatus?: 'complete' | 'needs_attention' };
+      const result = (await response.json()) as {
+        error?: string;
+        message?: string;
+        scanStatus?: 'complete' | 'needs_attention';
+        wordpressScanStatus?: 'complete' | 'needs_attention';
+        connection?: HostingConnection;
+        domains?: HostingDomain[];
+      };
       if (!response.ok) throw new Error(result.error || 'The cPanel connection failed.');
       const tokenInput = form.elements.namedItem('token') as HTMLInputElement | null;
       if (tokenInput) tokenInput.value = '';
-      await loadHostingInventory();
+      if (result.connection && result.domains) {
+        const connection = result.connection;
+        newestInventorySyncRef.current = Math.max(
+          newestInventorySyncRef.current,
+          Date.parse(connection.lastSyncAt) || Date.now(),
+        );
+        setHostingConnections((current) => [
+          ...current.filter((item) => item.id !== connection.id),
+          connection,
+        ]);
+        const scannedDomains = mapHostingDomains(result.domains, [
+          ...hostingConnections.filter((item) => item.id !== connection.id),
+          connection,
+        ]);
+        setManagedDomains((current) => [
+          ...current.filter((domain) => domain.connectionId !== connection.id),
+          ...scannedDomains,
+        ].sort((a, b) => a.domain.localeCompare(b.domain)));
+        setInventoryIsLive(true);
+        setInventoryLastRefreshedAt(connection.lastSyncAt);
+      } else {
+        await loadHostingInventory();
+      }
       await loadProjectData();
       const successMessage = result.message || 'cPanel connected with management rights active.';
       setHostingNotice(successMessage);
