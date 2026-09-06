@@ -11,6 +11,7 @@ import {
   type ProjectStageStatus,
 } from '@/lib/project-workflow';
 import { getRequestIdentity, isSameOrigin } from '@/lib/request-auth';
+import { latestProjectActivity } from '@/lib/project-activity';
 
 export const dynamic = 'force-dynamic';
 
@@ -48,8 +49,7 @@ function progressValue(value: unknown) {
 function mapProject(row: Record<string, unknown>) {
   const updatedAt = String(row.updatedAt);
   const wordpressActivityAt = row.wordpressActivityAt ? String(row.wordpressActivityAt) : null;
-  const latestActivityAt = wordpressActivityAt && new Date(wordpressActivityAt) > new Date(updatedAt)
-    ? wordpressActivityAt : updatedAt;
+  const latestActivity = latestProjectActivity(updatedAt, wordpressActivityAt);
   return {
     id: String(row.id),
     domainId: row.domainId ? String(row.domainId) : null,
@@ -69,7 +69,8 @@ function mapProject(row: Record<string, unknown>) {
     updatedAt,
     sortOrder: Number(row.sortOrder || 0),
     wordpressActivityAt,
-    latestActivityAt,
+    latestActivityAt: latestActivity.at,
+    latestActivitySource: latestActivity.source,
   };
 }
 

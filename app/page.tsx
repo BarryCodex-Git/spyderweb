@@ -125,6 +125,7 @@ type Project = {
   sortOrder: number;
   wordpressActivityAt: string | null;
   latestActivityAt: string;
+  latestActivitySource: 'wordpress' | 'project';
 };
 
 type TemplateSlot = {
@@ -345,6 +346,8 @@ export default function Home() {
   const [projectRecords, setProjectRecords] = useState<Project[]>([]);
   const [projectEvents, setProjectEvents] = useState<ProjectEvent[]>([]);
   const [projectBusy, setProjectBusy] = useState(false);
+  const [projectActivityRefreshing, setProjectActivityRefreshing] = useState(false);
+  const [projectActivityCheckedAt, setProjectActivityCheckedAt] = useState<string | null>(null);
   const [templateSlots, setTemplateSlots] = useState<TemplateSlot[]>([]);
   const [launchBusy, setLaunchBusy] = useState(false);
   const [launchClientName, setLaunchClientName] = useState('');
@@ -470,6 +473,19 @@ export default function Home() {
     }
   }, []);
 
+  const refreshProjectActivity = useCallback(async (force = false) => {
+    if (document.visibilityState !== 'visible') return;
+    setProjectActivityRefreshing(true);
+    try {
+      const response = await fetch('/api/projects/activity', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ force }) });
+      if (!response.ok) return;
+      const result = await response.json() as { checkedAt?: string };
+      setProjectActivityCheckedAt(result.checkedAt ?? new Date().toISOString());
+      await loadProjectData();
+    } finally { setProjectActivityRefreshing(false); }
+  }, [loadProjectData]);
+
   const loadTemplateSlots = useCallback(async () => {
     try {
       const response = await fetch('/api/launch', { cache: 'no-store' });
@@ -514,6 +530,14 @@ export default function Home() {
       window.removeEventListener('focus', refreshProjects);
     };
   }, [loadProjectData]);
+
+  useEffect(() => {
+    const refresh = () => { if (document.visibilityState === 'visible') void refreshProjectActivity(false); };
+    const initialTimer = window.setTimeout(refresh, 1200);
+    const timer = window.setInterval(refresh, 5 * 60_000);
+    window.addEventListener('focus', refresh);
+    return () => { window.clearTimeout(initialTimer); window.clearInterval(timer); window.removeEventListener('focus', refresh); };
+  }, [refreshProjectActivity]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => void loadTemplateSlots(), 0);
@@ -1037,7 +1061,7 @@ export default function Home() {
         {activeView === 'Dashboard' && <Dashboard domains={projectAwareDomains} onDomain={openDomain} onLaunch={openLaunch} onMoveToFinalStages={moveProjectToFinalStages} inventoryIsLive={inventoryIsLive} inventoryRefreshing={inventoryRefreshing} inventoryLastRefreshedAt={inventoryLastRefreshedAt} />}
         {activeView === 'New Project' && <LaunchProjectView connections={hostingConnections} domains={projectAwareDomains} templates={templateSlots} busy={launchBusy} onSaveTemplate={saveTemplateSlot} onLaunch={launchNewProject} />}
         {activeView === 'Domains' && <DomainsView domains={projectAwareDomains} onDomain={openDomain} onNotice={setNotice} notice={notice} inventoryIsLive={inventoryIsLive} />}
-        {activeView === 'Projects' && <ProjectsView domains={projectAwareDomains} projects={projectRecords} onProject={setSelectedProject} onManageDomains={() => changeView('Domains')} onReorder={reorderProjects} />}
+        {activeView === 'Projects' && <ProjectsView domains={projectAwareDomains} projects={projectRecords} activityRefreshing={projectActivityRefreshing} activityCheckedAt={projectActivityCheckedAt} onRefreshActivity={() => void refreshProjectActivity(true)} onProject={setSelectedProject} onManageDomains={() => changeView('Domains')} onReorder={reorderProjects} />}
         {activeView === 'Agent Activity' && <AgentActivity auditEvents={auditEvents} projects={projectRecords} projectEvents={projectEvents} filter={activityFilter} onFilter={setActivityFilter} />}
         {activeView === 'Settings' && <SettingsView connections={hostingConnections} syncingId={hostingSyncingId} modeChangingId={hostingModeChangingId} notice={settingsHostingNotice} onSync={syncHostingConnection} onModeChange={changeHostingMode} onActivateWordPress={setWordpressActivationConnection} onConnect={(provider) => { setHostingNotice(''); setHostingProvider(provider); }} />}
       </section>
@@ -1627,7 +1651,7 @@ function relativeActivity(value: string) {
   return days === 0 ? 'Today' : days === 1 ? 'Yesterday' : `${days} days ago`;
 }
 
-function ProjectsView({ domains, projects, onProject, onManageDomains, onReorder }: { domains: Domain[]; projects: Project[]; onProject: (project: Project) => void; onManageDomains: () => void; onReorder: (projectIds: string[]) => Promise<void> }) {
+function ProjectsView({ domains, projects, activityRefreshing, activityCheckedAt, onRefreshActivity, onProject, onManageDomains, onReorder }: { domains: Domain[]; projects: Project[]; activityRefreshing: boolean; activityCheckedAt: string | null; onRefreshActivity: () => void; onProject: (project: Project) => void; onManageDomains: () => void; onReorder: (projectIds: string[]) => Promise<void> }) {
   const [draggingId, setDraggingId] = useState<string | null>(null);
   const operationalDomains = domains.filter((domain) => domain.connectionMode === 'managed_write' && domain.operationalReady).length;
   const lockedDomains = domains.filter((domain) => domain.softLocked).length;
@@ -1648,7 +1672,7 @@ function ProjectsView({ domains, projects, onProject, onManageDomains, onReorder
         <div className="agent-load purple-load"><span><b>Clive</b><small>{cliveProjects} project{cliveProjects === 1 ? '' : 's'}</small></span><div><i style={{ width: `${Math.min(cliveProjects * 20, 100)}%` }} /></div></div>
       </section>
       <section className="panel project-board-panel">
-        <div className="section-heading"><div><p className="eyebrow">Current work</p><h2>Manual project pipeline</h2></div><div className="board-heading-actions"><span className="manual-mode-pill">Manual mode</span><span className="auto-project-pill">Domains added automatically</span></div></div>
+        <div className="section-heading"><div><p className="eyebrow">Current work</p><h2>Manual project pipeline</h2></div><div className="board-heading-actions"><span className="manual-mode-pill">Manual stages</span><span className="auto-project-pill">WordPress activity monitored</span><button className="outline-button compact-button" disabled={activityRefreshing} onClick={onRefreshActivity}>{activityRefreshing ? 'Checking…' : 'Refresh activity'}</button>{activityCheckedAt && <small className="activity-checked-time">Checked {new Date(activityCheckedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</small>}</div></div>
         <div className="project-card-row">
           {projects.map((project) => (
             <article className={`project-board-card ${projectActivityClass(project)} ${draggingId === project.id ? 'dragging' : ''}`} key={project.id} draggable
@@ -1660,7 +1684,7 @@ function ProjectsView({ domains, projects, onProject, onManageDomains, onReorder
                 <h3>{project.client}</h3><p>{project.domain}</p>
                 <div className="project-card-meta"><span><small>Started</small><strong>{new Date(project.createdAt).toLocaleDateString('en-ZA', { day: 'numeric', month: 'short', year: 'numeric' })}</strong></span><span><small>Assigned</small><strong>{project.developer}</strong></span></div>
                 <div className="project-progress"><b>{project.progress}%</b><span className="progress-track"><i style={{ width: `${project.progress}%` }} /></span></div>
-                <footer><span className="activity-indicator" /><span>Last activity {relativeActivity(project.latestActivityAt || project.updatedAt)}</span><b>Open →</b></footer>
+                <footer title={new Date(project.latestActivityAt).toLocaleString()}><span className="activity-indicator" /><span>{project.latestActivitySource === 'wordpress' ? 'WordPress changed' : 'Project updated'} {relativeActivity(project.latestActivityAt || project.updatedAt)}</span><b>Open →</b></footer>
               </button>
             </article>
           ))}

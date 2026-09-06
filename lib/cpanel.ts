@@ -952,8 +952,19 @@ export type PublicWordPressInfo = {
 };
 
 async function latestPublicWordPressActivity(baseUrl: string) {
-  const endpoints = ['pages', 'posts'];
-  const values = await Promise.all(endpoints.map(async (type) => {
+  const endpoints = new Set(['pages', 'posts', 'media']);
+  try {
+    const response = await fetch(`${baseUrl}/wp-json/wp/v2/types?_fields=rest_base,viewable`, {
+      headers: { Accept: 'application/json' }, redirect: 'follow', signal: AbortSignal.timeout(8_000),
+    });
+    if (response.ok) {
+      const types = await response.json() as Record<string, { rest_base?: string; viewable?: boolean }>;
+      Object.values(types).forEach((type) => {
+        if (type.viewable !== false && type.rest_base && /^[a-z0-9_-]+$/i.test(type.rest_base)) endpoints.add(type.rest_base);
+      });
+    }
+  } catch { /* Default public content types remain sufficient for most sites. */ }
+  const values = await Promise.all([...endpoints].slice(0, 8).map(async (type) => {
     try {
       const response = await fetch(`${baseUrl}/wp-json/wp/v2/${type}?per_page=1&orderby=modified&order=desc&_fields=modified_gmt`, {
         headers: { Accept: 'application/json' }, redirect: 'follow', signal: AbortSignal.timeout(8_000),

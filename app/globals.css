@@ -362,6 +362,7 @@ body { font-size: 16px; line-height: 1.45; }
 .project-card-open footer { display: grid; grid-template-columns: auto 1fr auto; gap: 7px; align-items: center; margin-top: 15px; color: #697690; font-size: 11px; }
 .activity-indicator { width: 8px; height: 8px; border-radius: 50%; background: #43af82; }.activity-watch .activity-indicator { background: #e7a83d; }.activity-stale .activity-indicator { background: #d95b67; }
 .project-card-open footer b { color: var(--blue); }
+.compact-button { min-height: 34px; padding: 7px 11px; }.activity-checked-time { color: var(--muted); font-size: 11px; white-space: nowrap; }
 
 @media (max-width: 1380px) { .project-card-row { grid-template-columns: repeat(3,minmax(0,1fr)); } }
 @media (max-width: 1180px) { .template-preview-grid, .project-card-row { grid-template-columns: repeat(2,minmax(0,1fr)); }.new-project-form { grid-template-columns: repeat(2,minmax(0,1fr)); }.launch-summary { grid-template-columns: auto 1fr; } }
