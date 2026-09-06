@@ -12,7 +12,7 @@ export function buildSubdomainCreateQuery(input: SubdomainCreateInput) {
   return {
     domain: input.label,
     rootdomain: input.parentDomain,
-    dir: `public_html/${hostname}`,
+    dir: hostname,
     disallowdot: '1',
   };
 }
@@ -22,4 +22,15 @@ export async function issueSubdomainCreate(
   input: SubdomainCreateInput,
 ) {
   return call('SubDomain', 'addsubdomain', buildSubdomainCreateQuery(input));
+}
+
+export function reconcileCreatedSubdomain<T extends { domain: string }>(
+  domains: T[],
+  targetDomain: string,
+  creationError: unknown,
+) {
+  const created = domains.find((domain) => domain.domain === targetDomain) ?? null;
+  if (created) return created;
+  if (creationError) throw creationError;
+  return null;
 }

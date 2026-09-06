@@ -3,6 +3,7 @@ import { decryptHostingToken } from '@/lib/credential-crypto';
 import { ensureHostingSchema, stableId } from '@/lib/hosting-db';
 import { normalizeSubdomainLabel } from '@/lib/launch-project';
 import { getRequestIdentity, isSameOrigin } from '@/lib/request-auth';
+import { reconcileCreatedSubdomain } from '@/lib/cpanel-subdomain';
 
 export const dynamic = 'force-dynamic';
 
@@ -65,9 +66,8 @@ export async function POST(request: Request) {
     const discovered = await discoverCpanel({
       baseUrl: String(connection.baseUrl), username: String(connection.username), token,
     });
-    const created = discovered.domains.find((domain) => domain.domain === targetDomain);
+    const created = reconcileCreatedSubdomain(discovered.domains, targetDomain, creationError);
     if (!created) {
-      if (creationError) throw creationError;
       throw new Error(`cPanel accepted the request, but ${targetDomain} could not yet be verified. Scan the account before trying again.`);
     }
 
