@@ -602,7 +602,7 @@ export default function Home() {
     } finally { setLaunchBusy(false); }
   }
 
-  async function createStandaloneSubdomain(input: { connectionId: string; parentDomain: string; subdomainLabel: string; confirmDnsReplacement?: boolean }) {
+  async function createStandaloneSubdomain(input: { connectionId: string; parentDomain: string; subdomainLabel: string }) {
     const toastId = 'create-subdomain';
     showActionToast({ id: toastId, status: 'progress', title: 'Creating subdomain',
       message: `Creating ${input.subdomainLabel}.${input.parentDomain} in cPanel and verifying it.` });
@@ -610,22 +610,14 @@ export default function Home() {
       const response = await fetch('/api/hosting/subdomains', {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(input),
       });
-      const result = await response.json() as { error?: string; message?: string; requiresDnsCleanup?: boolean; dnsRecords?: Array<{ type: string; value: string }> };
-      if (!response.ok) {
-        const failure = Object.assign(new Error(result.error || 'The subdomain could not be created.'), {
-          requiresDnsCleanup: result.requiresDnsCleanup === true,
-          dnsRecords: result.dnsRecords ?? [],
-        });
-        throw failure;
-      }
+      const result = await response.json() as { error?: string; message?: string };
+      if (!response.ok) throw new Error(result.error || 'The subdomain could not be created.');
       await Promise.all([loadHostingInventory(true), loadProjectData()]);
       showActionToast({ id: toastId, status: 'success', title: 'Subdomain created',
         message: result.message || 'The new subdomain is available in Domain Management.' });
     } catch (error) {
       const message = error instanceof Error ? error.message : 'The subdomain could not be created.';
-      const needsDnsCleanup = Boolean((error as Error & { requiresDnsCleanup?: boolean }).requiresDnsCleanup);
-      showActionToast({ id: toastId, status: needsDnsCleanup ? 'warning' : 'error',
-        title: needsDnsCleanup ? 'DNS confirmation required' : 'Subdomain creation failed', message });
+      showActionToast({ id: toastId, status: 'error', title: 'Subdomain creation failed', message });
       throw error;
     }
   }
@@ -1578,7 +1570,7 @@ function DomainCard({ domain, onClick, draggable = false, onDragStart, onDragEnd
 function DomainsView({ connections, domains, onDomain, onNotice, notice, inventoryIsLive, onCreateSubdomain }: {
   connections: HostingConnection[]; domains: Domain[]; onDomain: (domain: Domain) => void;
   onNotice: (message: string) => void; notice: string; inventoryIsLive: boolean;
-  onCreateSubdomain: (input: { connectionId: string; parentDomain: string; subdomainLabel: string; confirmDnsReplacement?: boolean }) => Promise<void>;
+  onCreateSubdomain: (input: { connectionId: string; parentDomain: string; subdomainLabel: string }) => Promise<void>;
 }) {
   const [subdomainOpen, setSubdomainOpen] = useState(false);
   const [connectionId, setConnectionId] = useState('');
@@ -1586,7 +1578,6 @@ function DomainsView({ connections, domains, onDomain, onNotice, notice, invento
   const [subdomainLabel, setSubdomainLabel] = useState('');
   const [creating, setCreating] = useState(false);
   const [createError, setCreateError] = useState('');
-  const [dnsConflict, setDnsConflict] = useState<Array<{ type: string; value: string }> | null>(null);
   const cpanelConnections = connections.filter((connection) => connection.provider === 'cpanel');
   const effectiveConnectionId = connectionId || cpanelConnections[0]?.id || '';
   const selectedConnection = cpanelConnections.find((connection) => connection.id === effectiveConnectionId) ?? null;
@@ -1608,7 +1599,7 @@ function DomainsView({ connections, domains, onDomain, onNotice, notice, invento
         <div><span>Needs inspection</span><strong>{attentionCount}</strong><small>WordPress data pending</small></div>
       </section>
       <section className="panel">
-        <div className="section-heading"><div><p className="eyebrow">Connected installations</p><h2>WordPress domain inventory</h2></div><div className="domain-heading-actions"><button className="primary-button" onClick={() => { setCreateError(''); setDnsConflict(null); setSubdomainOpen(true); }}>＋ New Subdomain</button><button className="outline-button" onClick={() => onNotice(inventoryIsLive ? 'SpyderWeb scans domains and WordPress installations automatically. Use Sync now in Settings whenever you want an immediate refresh.' : 'Connect cPanel in Settings to replace this demo inventory with live domains.')}>{inventoryIsLive ? 'Scan information' : 'Connection status'}</button></div></div>
+        <div className="section-heading"><div><p className="eyebrow">Connected installations</p><h2>WordPress domain inventory</h2></div><div className="domain-heading-actions"><button className="primary-button" onClick={() => { setCreateError(''); setSubdomainOpen(true); }}>＋ New Subdomain</button><button className="outline-button" onClick={() => onNotice(inventoryIsLive ? 'SpyderWeb scans domains and WordPress installations automatically. Use Sync now in Settings whenever you want an immediate refresh.' : 'Connect cPanel in Settings to replace this demo inventory with live domains.')}>{inventoryIsLive ? 'Scan information' : 'Connection status'}</button></div></div>
         {notice && <p className="notice inline-notice">{notice}</p>}
         <div className="data-table domain-table">
           <div className="table-row table-head"><span>Domain</span><span>Status</span><span>WordPress</span><span>Protection</span><span>Operations</span><span>Host</span><span /></div>
@@ -1625,30 +1616,25 @@ function DomainsView({ connections, domains, onDomain, onNotice, notice, invento
         <form className="new-subdomain-modal" onClick={(event) => event.stopPropagation()} onSubmit={async (event) => {
           event.preventDefault(); setCreateError(''); setCreating(true);
           try {
-            await onCreateSubdomain({ connectionId: effectiveConnectionId, parentDomain: effectiveParentDomain, subdomainLabel: cleanLabel, confirmDnsReplacement: Boolean(dnsConflict) });
+            await onCreateSubdomain({ connectionId: effectiveConnectionId, parentDomain: effectiveParentDomain, subdomainLabel: cleanLabel });
             setSubdomainLabel(''); setParentDomain(''); setSubdomainOpen(false);
           } catch (error) {
-            const conflict = error as Error & { requiresDnsCleanup?: boolean; dnsRecords?: Array<{ type: string; value: string }> };
-            if (conflict.requiresDnsCleanup) {
-              setDnsConflict(conflict.dnsRecords ?? []);
-              setCreateError('');
-            } else setCreateError(error instanceof Error ? error.message : 'The subdomain could not be created.');
+            setCreateError(error instanceof Error ? error.message : 'The subdomain could not be created.');
           } finally { setCreating(false); }
         }}>
           <button className="close-button" type="button" disabled={creating} onClick={() => setSubdomainOpen(false)}>×</button>
           <p className="eyebrow">Domain administration</p><h2>Create a new subdomain</h2>
           <p>Choose the cPanel account and parent domain. SpyderWeb will create the address in cPanel, verify it, and add it to the Available column.</p>
           <div className="new-subdomain-fields">
-            <label>cPanel account<select required value={effectiveConnectionId} onChange={(event) => { setConnectionId(event.target.value); setParentDomain(''); setCreateError(''); setDnsConflict(null); }}><option value="" disabled>Choose cPanel</option>{cpanelConnections.map((connection) => <option key={connection.id} value={connection.id}>{connection.name}{connection.mode === 'managed_write' ? '' : ' · operations paused'}</option>)}</select></label>
-            <label>Parent domain<select required value={effectiveParentDomain} onChange={(event) => { setParentDomain(event.target.value); setDnsConflict(null); }}><option value="" disabled>Choose parent domain</option>{parentDomains.map((domain) => <option key={domain.id} value={domain.domain}>{domain.domain}</option>)}</select></label>
-            <label className="full-field">Subdomain name<div className="subdomain-address-input"><input required value={subdomainLabel} onChange={(event) => { setSubdomainLabel(event.target.value.toLowerCase()); setDnsConflict(null); }} pattern="[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?" placeholder="client-name" /><span>.{effectiveParentDomain || 'parent-domain.com'}</span></div><small>Use letters, numbers and hyphens. This creates the domain only; WordPress can be installed afterwards.</small></label>
+            <label>cPanel account<select required value={effectiveConnectionId} onChange={(event) => { setConnectionId(event.target.value); setParentDomain(''); setCreateError(''); }}><option value="" disabled>Choose cPanel</option>{cpanelConnections.map((connection) => <option key={connection.id} value={connection.id}>{connection.name}{connection.mode === 'managed_write' ? '' : ' · operations paused'}</option>)}</select></label>
+            <label>Parent domain<select required value={effectiveParentDomain} onChange={(event) => setParentDomain(event.target.value)}><option value="" disabled>Choose parent domain</option>{parentDomains.map((domain) => <option key={domain.id} value={domain.domain}>{domain.domain}</option>)}</select></label>
+            <label className="full-field">Subdomain name<div className="subdomain-address-input"><input required value={subdomainLabel} onChange={(event) => setSubdomainLabel(event.target.value.toLowerCase())} pattern="[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?" placeholder="client-name" /><span>.{effectiveParentDomain || 'parent-domain.com'}</span></div><small>Use letters, numbers and hyphens. This creates the domain only; WordPress can be installed afterwards.</small></label>
           </div>
           {previewDomain && <div className="subdomain-preview"><span>New address</span><strong>{previewDomain}</strong><small>It will appear as Available after cPanel verification.</small></div>}
-          {dnsConflict && <div className="danger-callout dns-conflict-callout"><strong>A DNS-only record already uses this address</strong><span>No cPanel website exists for {previewDomain}. SpyderWeb can remove only the conflicting address record, then create and verify the real subdomain.</span>{dnsConflict.length > 0 && <ul>{dnsConflict.map((record, index) => <li key={`${record.type}-${index}`}><b>{record.type}</b> {record.value || 'Existing record'}</li>)}</ul>}</div>}
           {selectedConnection?.mode !== 'managed_write' && <p className="notice">Resume operations for {selectedConnection?.name} in Settings before creating this subdomain.</p>}
           {!parentDomains.length && <p className="notice">No main or add-on parent domain was found for this cPanel account. Scan it again in Settings.</p>}
           {createError && <p className="notice error-notice">{createError}</p>}
-          <div className="operation-confirm-actions"><button className="text-button" type="button" disabled={creating} onClick={() => setSubdomainOpen(false)}>Cancel</button><button className={`primary-button ${dnsConflict ? 'danger-button' : ''}`} type="submit" disabled={creating || !cleanLabel || !effectiveParentDomain || selectedConnection?.mode !== 'managed_write'}>{creating ? 'Creating & verifying…' : dnsConflict ? 'Remove DNS record & create subdomain' : 'Create Subdomain'}</button></div>
+          <div className="operation-confirm-actions"><button className="text-button" type="button" disabled={creating} onClick={() => setSubdomainOpen(false)}>Cancel</button><button className="primary-button" type="submit" disabled={creating || !cleanLabel || !effectiveParentDomain || selectedConnection?.mode !== 'managed_write'}>{creating ? 'Creating & verifying…' : 'Create Subdomain'}</button></div>
         </form>
       </div>}
     </div>

@@ -1,5 +1,5 @@
 import { ensureWordPressMemoryConstants, inspectWordPressMemory } from './wordpress-memory';
-import { parseCpanelDnsZone, type CpanelDnsRecord } from './cpanel-dns';
+import { isCpanelSuccessStatus, issueSubdomainCreate } from './cpanel-subdomain';
 
 export type CpanelDomain = {
   domain: string;
@@ -150,7 +150,7 @@ export async function cpanelUapi(
   }
 
   const payload = (await response.json()) as UapiEnvelope;
-  if (payload.result?.status !== 1) {
+  if (!isCpanelSuccessStatus(payload.result?.status)) {
     const errors = payload.result?.errors;
     const messages = payload.result?.messages;
     const detail =
@@ -170,54 +170,15 @@ export async function createCpanelSubdomain(input: {
   label: string;
   parentDomain: string;
 }) {
-  const query = {
-    domain: validateCredentialPart(input.label, 'subdomain name', 63),
-    rootdomain: validateCredentialPart(input.parentDomain, 'parent domain', 253),
-    disallowdot: '1',
-  };
-  try {
-    return await cpanelUapi(input.baseUrl, input.username, input.token, 'SubDomain', 'addsubdomain', query);
-  } catch (error) {
-    if (error instanceof CpanelAuthenticationError) throw error;
-    return cpanelJsonUapi(input.baseUrl, input.username, input.token, 'SubDomain', 'addsubdomain', query);
-  }
-}
-
-export async function inspectCpanelDnsRecords(input: {
-  baseUrl: string;
-  username: string;
-  token: string;
-  parentDomain: string;
-  hostname: string;
-}) {
-  const data = await cpanelUapi(input.baseUrl, input.username, input.token, 'DNS', 'parse_zone', {
-    zone: validateCredentialPart(input.parentDomain, 'parent domain', 253),
-  });
-  return parseCpanelDnsZone(data, input.hostname);
-}
-
-export async function removeExactCpanelDnsRecords(input: {
-  baseUrl: string;
-  username: string;
-  token: string;
-  parentDomain: string;
-  hostname: string;
-}) {
-  const removed: CpanelDnsRecord[] = [];
-  for (let attempt = 0; attempt < 8; attempt += 1) {
-    const snapshot = await inspectCpanelDnsRecords(input);
-    const removable = snapshot.records.filter((record) => ['A', 'AAAA', 'CNAME'].includes(record.type));
-    if (!removable.length) return removed;
-    if (snapshot.serial === null) throw new Error('cPanel returned the DNS record without the zone serial required for safe removal.');
-    const record = removable[0];
-    await cpanelUapi(input.baseUrl, input.username, input.token, 'DNS', 'mass_edit_zone', {
-      zone: input.parentDomain,
-      serial: String(snapshot.serial),
-      remove: String(record.lineIndex),
-    });
-    removed.push(record);
-  }
-  throw new Error(`Too many DNS records exist for ${input.hostname}. Remove the remaining records in cPanel DNS Zone Editor.`);
+  const label = validateCredentialPart(input.label, 'subdomain name', 63);
+  const parentDomain = validateCredentialPart(input.parentDomain, 'parent domain', 253);
+  validateCredentialPart(`${label}.${parentDomain}`, 'subdomain address', 253);
+  // Creation is intentionally a single write. Retrying a failed-looking create can
+  // duplicate a request that cPanel has already partially or fully completed.
+  return issueSubdomainCreate(
+    (module, fn, query) => cpanelUapi(input.baseUrl, input.username, input.token, module, fn, query),
+    { label, parentDomain },
+  );
 }
 
 const recommendedPhpDirectives = {
