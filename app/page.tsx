@@ -3,8 +3,9 @@
 import Image from 'next/image';
 import { type DragEvent, type FormEvent, useCallback, useEffect, useRef, useState } from 'react';
 import { PROJECT_STAGES, domainWorkflowForStage, suggestedProgress, type ProjectStage } from '@/lib/project-workflow';
+import { suggestedSubdomainLabel } from '@/lib/launch-project';
 
-type View = 'Dashboard' | 'Domains' | 'Projects' | 'Agent Activity' | 'Settings';
+type View = 'Dashboard' | 'Launch New Project' | 'Domains' | 'Projects' | 'Agent Activity' | 'Settings';
 type Developer = 'Barry' | 'Clive' | 'Owner Account';
 type DomainStatus = 'Available' | 'Template Loaded' | 'Busy Working' | 'Final Stages' | 'Needs Inspection';
 type HostingProvider = 'cPanel' | 'Hostinger';
@@ -58,6 +59,7 @@ type Domain = {
   operationalReady?: boolean;
   restorePointAt?: string | null;
   phpProfileStatus?: string;
+  wordpressActivityAt?: string | null;
 };
 
 type HostingConnection = {
@@ -99,6 +101,7 @@ type HostingDomain = {
   lastSeenAt: string;
   restorePointAt: string | null;
   phpProfileStatus: string;
+  wordpressActivityAt: string | null;
 };
 
 type Project = {
@@ -118,6 +121,15 @@ type Project = {
   lastReportedBy: string;
   createdAt: string;
   updatedAt: string;
+  sortOrder: number;
+  wordpressActivityAt: string | null;
+  latestActivityAt: string;
+};
+
+type TemplateSlot = {
+  id: string; slotNumber: number; name: string; sourceDomainId: string | null;
+  sourceDomain: string | null; connectionId: string | null; siteName: string | null; previewUrl: string | null;
+  updatedAt?: string;
 };
 
 type ProjectEvent = {
@@ -136,6 +148,7 @@ type ProjectEvent = {
 
 const navItems: { label: View; icon: string }[] = [
   { label: 'Dashboard', icon: '⌂' },
+  { label: 'Launch New Project', icon: '＋' },
   { label: 'Projects', icon: '▤' },
   { label: 'Agent Activity', icon: '◉' },
   { label: 'Domains', icon: '◇' },
@@ -147,6 +160,11 @@ const viewCopy: Record<View, { eyebrow: string; title: string; subtitle: string 
     eyebrow: 'Website production',
     title: 'Good morning',
     subtitle: 'See what is available, active, and ready for review.',
+  },
+  'Launch New Project': {
+    eyebrow: 'Fast website deployment',
+    title: 'Launch New Project',
+    subtitle: 'Create a subdomain and load the right WordPress template in one guided action.',
   },
   Domains: {
     eyebrow: 'Domain management',
@@ -241,6 +259,7 @@ function mapHostingDomains(records: HostingDomain[], connections: HostingConnect
       operationalReady: connection?.operationalCredentialStatus === 'verified',
       restorePointAt: record.restorePointAt,
       phpProfileStatus: record.phpProfileStatus,
+      wordpressActivityAt: record.wordpressActivityAt,
     };
   });
 }
@@ -325,6 +344,8 @@ export default function Home() {
   const [projectRecords, setProjectRecords] = useState<Project[]>([]);
   const [projectEvents, setProjectEvents] = useState<ProjectEvent[]>([]);
   const [projectBusy, setProjectBusy] = useState(false);
+  const [templateSlots, setTemplateSlots] = useState<TemplateSlot[]>([]);
+  const [launchBusy, setLaunchBusy] = useState(false);
   const [launchClientName, setLaunchClientName] = useState('');
   const [launchNotes, setLaunchNotes] = useState('');
   const toastTimers = useRef(new Map<string, number>());
@@ -448,6 +469,16 @@ export default function Home() {
     }
   }, []);
 
+  const loadTemplateSlots = useCallback(async () => {
+    try {
+      const response = await fetch('/api/launch', { cache: 'no-store' });
+      if (!response.ok) return null;
+      const data = await response.json() as { templates: TemplateSlot[] };
+      setTemplateSlots(data.templates);
+      return data.templates;
+    } catch { return null; }
+  }, []);
+
   useEffect(() => {
     let active = true;
     const refreshVisibleInventory = () => {
@@ -483,6 +514,11 @@ export default function Home() {
     };
   }, [loadProjectData]);
 
+  useEffect(() => {
+    const timer = window.setTimeout(() => void loadTemplateSlots(), 0);
+    return () => window.clearTimeout(timer);
+  }, [loadTemplateSlots]);
+
   function changeView(view: View) {
     setActiveView(view);
     setSelectedDomain(null);
@@ -499,7 +535,53 @@ export default function Home() {
     setLaunchClientName('');
     setLaunchNotes('');
     setNotice('');
-    setLaunchOpen(true);
+    setLaunchOpen(false);
+    setActiveView('Launch New Project');
+  }
+
+  async function saveTemplateSlot(slotNumber: number, name: string, sourceDomainId: string | null) {
+    const response = await fetch('/api/launch', { method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ slotNumber, name, sourceDomainId }) });
+    const result = await response.json() as { error?: string; message?: string; templates?: TemplateSlot[] };
+    if (!response.ok) throw new Error(result.error || 'The template could not be saved.');
+    if (result.templates) setTemplateSlots(result.templates);
+    showActionToast({ id: `template-slot-${slotNumber}`, status: 'success', title: 'Template saved', message: result.message || 'Template updated.' });
+  }
+
+  async function launchNewProject(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const formData = new FormData(form);
+    setLaunchBusy(true);
+    showActionToast({ id: 'new-project-launch', status: 'progress', title: 'Launching new project',
+      message: 'Creating the subdomain, cloning the selected template to its root, and verifying WordPress.' });
+    try {
+      const response = await fetch('/api/launch', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(Object.fromEntries(formData.entries())) });
+      const result = await response.json() as { error?: string; message?: string };
+      if (!response.ok) throw new Error(result.error || 'The project could not be launched.');
+      await Promise.all([loadHostingInventory(), loadProjectData(), loadTemplateSlots()]);
+      showActionToast({ id: 'new-project-launch', status: 'success', title: 'Project launched', message: result.message || 'The new project is ready.' });
+      form.reset();
+      setActiveView('Projects');
+    } catch (error) {
+      showActionToast({ id: 'new-project-launch', status: 'error', title: 'Project launch stopped',
+        message: error instanceof Error ? error.message : 'The project could not be launched.' });
+    } finally { setLaunchBusy(false); }
+  }
+
+  async function reorderProjects(projectIds: string[]) {
+    const previous = projectRecords;
+    const byId = new Map(previous.map((project) => [project.id, project]));
+    setProjectRecords(projectIds.map((id) => byId.get(id)).filter((item): item is Project => Boolean(item)));
+    try {
+      const response = await fetch('/api/projects/reorder', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ projectIds }) });
+      const result = await response.json() as { error?: string };
+      if (!response.ok) throw new Error(result.error || 'The project order could not be saved.');
+    } catch (error) {
+      setProjectRecords(previous);
+      showActionToast({ id: 'project-order', status: 'error', title: 'Order not saved', message: error instanceof Error ? error.message : 'Refresh and try again.' });
+    }
   }
 
   function openDomain(domain: Domain) {
@@ -952,8 +1034,9 @@ export default function Home() {
         </header>
 
         {activeView === 'Dashboard' && <Dashboard domains={projectAwareDomains} onDomain={openDomain} onLaunch={openLaunch} onMoveToFinalStages={moveProjectToFinalStages} inventoryIsLive={inventoryIsLive} inventoryRefreshing={inventoryRefreshing} inventoryLastRefreshedAt={inventoryLastRefreshedAt} />}
+        {activeView === 'Launch New Project' && <LaunchProjectView connections={hostingConnections} domains={projectAwareDomains} templates={templateSlots} busy={launchBusy} onSaveTemplate={saveTemplateSlot} onLaunch={launchNewProject} />}
         {activeView === 'Domains' && <DomainsView domains={projectAwareDomains} onDomain={openDomain} onNotice={setNotice} notice={notice} inventoryIsLive={inventoryIsLive} />}
-        {activeView === 'Projects' && <ProjectsView domains={projectAwareDomains} projects={projectRecords} onProject={setSelectedProject} onManageDomains={() => changeView('Domains')} />}
+        {activeView === 'Projects' && <ProjectsView domains={projectAwareDomains} projects={projectRecords} onProject={setSelectedProject} onManageDomains={() => changeView('Domains')} onReorder={reorderProjects} />}
         {activeView === 'Agent Activity' && <AgentActivity auditEvents={auditEvents} projects={projectRecords} projectEvents={projectEvents} filter={activityFilter} onFilter={setActivityFilter} />}
         {activeView === 'Settings' && <SettingsView connections={hostingConnections} syncingId={hostingSyncingId} modeChangingId={hostingModeChangingId} notice={settingsHostingNotice} onSync={syncHostingConnection} onModeChange={changeHostingMode} onActivateWordPress={setWordpressActivationConnection} onConnect={(provider) => { setHostingNotice(''); setHostingProvider(provider); }} />}
       </section>
@@ -1428,7 +1511,71 @@ function DomainsView({ domains, onDomain, onNotice, notice, inventoryIsLive }: {
   );
 }
 
-function ProjectsView({ domains, projects, onProject, onManageDomains }: { domains: Domain[]; projects: Project[]; onProject: (project: Project) => void; onManageDomains: () => void }) {
+function TemplatePreviewCard({ slot, domains, onSave }: { slot: TemplateSlot; domains: Domain[]; onSave: (slotNumber: number, name: string, sourceDomainId: string | null) => Promise<void> }) {
+  const [name, setName] = useState(slot.name);
+  const [sourceDomainId, setSourceDomainId] = useState(slot.sourceDomainId ?? '');
+  const [saving, setSaving] = useState(false);
+  const eligible = domains.filter((domain) => domain.source === 'cpanel' && domain.wordpress.startsWith('Installed'));
+  return <article className="template-preview-card">
+    <div className="template-preview-frame">
+      {slot.previewUrl ? <iframe src={slot.previewUrl} title={`${slot.name} preview`} loading="lazy" sandbox="allow-scripts allow-same-origin" /> : <div><span>◇</span><strong>Choose a template domain</strong><small>A live preview will appear here.</small></div>}
+    </div>
+    <div className="template-preview-fields">
+      <label>Template name<input value={name} maxLength={80} onChange={(event) => setName(event.target.value)} /></label>
+      <label>Source domain<select value={sourceDomainId} onChange={(event) => setSourceDomainId(event.target.value)}><option value="">Not configured</option>{eligible.map((domain) => <option key={domain.id} value={String(domain.id)}>{domain.domain}</option>)}</select></label>
+      <button className="outline-button" disabled={saving || !name.trim()} onClick={async () => { setSaving(true); try { await onSave(slot.slotNumber, name, sourceDomainId || null); } finally { setSaving(false); } }}>{saving ? 'Saving…' : 'Save template'}</button>
+    </div>
+  </article>;
+}
+
+function LaunchProjectView({ connections, domains, templates, busy, onSaveTemplate, onLaunch }: {
+  connections: HostingConnection[]; domains: Domain[]; templates: TemplateSlot[]; busy: boolean;
+  onSaveTemplate: (slotNumber: number, name: string, sourceDomainId: string | null) => Promise<void>;
+  onLaunch: (event: FormEvent<HTMLFormElement>) => Promise<void>;
+}) {
+  const operational = connections.filter((connection) => connection.mode === 'managed_write' && connection.operationalCredentialStatus === 'verified');
+  const [connectionId, setConnectionId] = useState(operational[0]?.id ?? '');
+  const [projectName, setProjectName] = useState('');
+  const [subdomain, setSubdomain] = useState('');
+  const effectiveConnectionId = connectionId || operational[0]?.id || '';
+  const parents = domains.filter((domain) => domain.connectionId === effectiveConnectionId && (domain.domainType === 'main' || domain.domainType === 'addon'));
+  const compatibleTemplates = templates.filter((template) => template.connectionId === effectiveConnectionId && template.sourceDomainId);
+  return <div className="view-stack launch-project-view">
+    <section className="panel template-library-panel">
+      <div className="section-heading"><div><p className="eyebrow">Template library</p><h2>Choose from four launch-ready templates</h2><p>Edit the display name and connect each window to its live template domain.</p></div><span className="manual-mode-pill">4 template spaces</span></div>
+      <div className="template-preview-grid">{templates.map((slot) => <TemplatePreviewCard key={`${slot.id}:${slot.updatedAt ?? slot.name}:${slot.sourceDomainId ?? ''}`} slot={slot} domains={domains} onSave={onSaveTemplate} />)}</div>
+    </section>
+    <section className="panel new-project-panel">
+      <div className="section-heading"><div><p className="eyebrow">Create and deploy</p><h2>New custom subdomain project</h2><p>SpyderWeb creates the subdomain and clones the selected template directly to its root.</p></div><span className="root-install-pill">Root install · no /wp folder</span></div>
+      <form className="new-project-form" onSubmit={(event) => void onLaunch(event)}>
+        <label>Project name<input name="projectName" required value={projectName} onChange={(event) => { const value = event.target.value; setProjectName(value); setSubdomain((current) => current && current !== suggestedSubdomainLabel(projectName) ? current : suggestedSubdomainLabel(value)); }} placeholder="Jamie's Plumbing" /></label>
+        <label>cPanel account<select name="connectionId" required value={effectiveConnectionId} onChange={(event) => setConnectionId(event.target.value)}><option value="" disabled>Choose cPanel</option>{operational.map((connection) => <option key={connection.id} value={connection.id}>{connection.name}</option>)}</select></label>
+        <label>Parent domain<select name="parentDomain" required defaultValue=""><option value="" disabled>Choose parent domain</option>{parents.map((domain) => <option key={domain.id} value={domain.domain}>{domain.domain}</option>)}</select></label>
+        <label>New subdomain<input name="subdomainLabel" required value={subdomain} onChange={(event) => setSubdomain(event.target.value.toLowerCase())} pattern="[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?" placeholder="jamies-plumbing" /><small>The WordPress address will be the domain root, never /wp.</small></label>
+        <label>Template<select name="templateSlotNumber" required defaultValue=""><option value="" disabled>Choose template</option>{compatibleTemplates.map((template) => <option key={template.id} value={template.slotNumber}>{template.name} · {template.sourceDomain}</option>)}</select></label>
+        <label>Assign to<select name="developer" defaultValue="Owner Account">{assignableDevelopers.map((name) => <option key={name}>{name}</option>)}</select></label>
+        <label className="full-field">Project notes<textarea name="notes" rows={3} placeholder="Optional client brief or launch notes" /></label>
+        {!operational.length && <p className="launch-readiness-warning full-field">Activate WordPress Management for a cPanel account in Settings before launching.</p>}
+        <div className="launch-summary full-field"><span>1</span><p><strong>Create a new subdomain</strong><small>The launch stops if the address already exists.</small></p><span>2</span><p><strong>Clone the selected template</strong><small>Softaculous creates WordPress directly at https://subdomain/ with an empty directory field.</small></p><span>3</span><p><strong>Verify and track</strong><small>The project is added to Projects, assigned, soft locked, and moved to Template Loaded.</small></p></div>
+        <button className="primary-button launch-project-submit full-field" disabled={busy || !operational.length || !compatibleTemplates.length}>{busy ? 'Creating subdomain & loading template…' : 'Launch New Project'}</button>
+      </form>
+    </section>
+  </div>;
+}
+
+function projectActivityClass(project: Project) {
+  const timestamp = new Date(project.latestActivityAt || project.updatedAt).getTime();
+  const ageDays = Number.isFinite(timestamp) ? (Date.now() - timestamp) / 86_400_000 : 99;
+  return ageDays > 14 ? 'activity-stale' : ageDays > 7 ? 'activity-watch' : 'activity-current';
+}
+
+function relativeActivity(value: string) {
+  const days = Math.max(0, Math.floor((Date.now() - new Date(value).getTime()) / 86_400_000));
+  return days === 0 ? 'Today' : days === 1 ? 'Yesterday' : `${days} days ago`;
+}
+
+function ProjectsView({ domains, projects, onProject, onManageDomains, onReorder }: { domains: Domain[]; projects: Project[]; onProject: (project: Project) => void; onManageDomains: () => void; onReorder: (projectIds: string[]) => Promise<void> }) {
+  const [draggingId, setDraggingId] = useState<string | null>(null);
   const operationalDomains = domains.filter((domain) => domain.connectionMode === 'managed_write' && domain.operationalReady).length;
   const lockedDomains = domains.filter((domain) => domain.softLocked).length;
   const barryProjects = projects.filter((project) => project.developer === 'Barry').length;
@@ -1447,19 +1594,22 @@ function ProjectsView({ domains, projects, onProject, onManageDomains }: { domai
         <div className="agent-load"><span><b>Barry</b><small>{barryProjects} project{barryProjects === 1 ? '' : 's'}</small></span><div><i style={{ width: `${Math.min(barryProjects * 20, 100)}%` }} /></div></div>
         <div className="agent-load purple-load"><span><b>Clive</b><small>{cliveProjects} project{cliveProjects === 1 ? '' : 's'}</small></span><div><i style={{ width: `${Math.min(cliveProjects * 20, 100)}%` }} /></div></div>
       </section>
-      <section className="panel">
+      <section className="panel project-board-panel">
         <div className="section-heading"><div><p className="eyebrow">Current work</p><h2>Manual project pipeline</h2></div><div className="board-heading-actions"><span className="manual-mode-pill">Manual mode</span><span className="auto-project-pill">Domains added automatically</span></div></div>
-        <div className="project-list">
+        <div className="project-card-row">
           {projects.map((project) => (
-            <button className="project-row" key={project.id} onClick={() => onProject(project)}>
-              <span className={`project-avatar small ${project.developer.toLowerCase()}`}>{project.client.slice(0, 1)}</span>
-              <span className="project-name"><strong>{project.client}</strong><small>{project.domain}</small></span>
-              <span className="project-type"><b>{project.buildType}</b><small>{project.developer}</small></span>
-              <span className="project-stage"><strong>{project.stage}</strong><small>{project.stageStatus.replaceAll('_', ' ')} · Next: {project.next}</small></span>
-              <span className="project-progress"><b>{project.progress}%</b><span className="progress-track"><i style={{ width: `${project.progress}%` }} /></span></span>
-              <span className="project-due"><small>Target</small><strong>{project.due}</strong></span>
-              <span className="table-arrow">→</span>
-            </button>
+            <article className={`project-board-card ${projectActivityClass(project)} ${draggingId === project.id ? 'dragging' : ''}`} key={project.id} draggable
+              onDragStart={(event) => { setDraggingId(project.id); event.dataTransfer.effectAllowed = 'move'; }} onDragEnd={() => setDraggingId(null)}
+              onDragOver={(event) => { if (draggingId && draggingId !== project.id) event.preventDefault(); }}
+              onDrop={(event) => { event.preventDefault(); if (!draggingId || draggingId === project.id) return; const ids = projects.map((item) => item.id); const from = ids.indexOf(draggingId); const to = ids.indexOf(project.id); ids.splice(to, 0, ids.splice(from, 1)[0]); setDraggingId(null); void onReorder(ids); }}>
+              <button className="project-card-open" onClick={() => onProject(project)}>
+                <div className="project-card-top"><span className={`project-avatar small ${project.developer.toLowerCase()}`}>{project.client.slice(0, 1)}</span><span><b>{project.stage}</b><small>{project.stageStatus.replaceAll('_', ' ')}</small></span><i title="Drag to arrange">⋮⋮</i></div>
+                <h3>{project.client}</h3><p>{project.domain}</p>
+                <div className="project-card-meta"><span><small>Started</small><strong>{new Date(project.createdAt).toLocaleDateString('en-ZA', { day: 'numeric', month: 'short', year: 'numeric' })}</strong></span><span><small>Assigned</small><strong>{project.developer}</strong></span></div>
+                <div className="project-progress"><b>{project.progress}%</b><span className="progress-track"><i style={{ width: `${project.progress}%` }} /></span></div>
+                <footer><span className="activity-indicator" /><span>Last activity {relativeActivity(project.latestActivityAt || project.updatedAt)}</span><b>Open →</b></footer>
+              </button>
+            </article>
           ))}
           {projects.length === 0 && <div className="empty-project-state"><span>◇</span><div><strong>Connecting project records…</strong><p>Every connected domain is added here automatically. Project stages remain manual and do not change WordPress.</p></div></div>}
         </div>

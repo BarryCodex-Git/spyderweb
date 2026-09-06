@@ -46,6 +46,10 @@ function progressValue(value: unknown) {
 }
 
 function mapProject(row: Record<string, unknown>) {
+  const updatedAt = String(row.updatedAt);
+  const wordpressActivityAt = row.wordpressActivityAt ? String(row.wordpressActivityAt) : null;
+  const latestActivityAt = wordpressActivityAt && new Date(wordpressActivityAt) > new Date(updatedAt)
+    ? wordpressActivityAt : updatedAt;
   return {
     id: String(row.id),
     domainId: row.domainId ? String(row.domainId) : null,
@@ -62,7 +66,10 @@ function mapProject(row: Record<string, unknown>) {
     lifecycleStatus: String(row.lifecycleStatus),
     lastReportedBy: String(row.lastReportedBy),
     createdAt: String(row.createdAt),
-    updatedAt: String(row.updatedAt),
+    updatedAt,
+    sortOrder: Number(row.sortOrder || 0),
+    wordpressActivityAt,
+    latestActivityAt,
   };
 }
 
@@ -164,13 +171,16 @@ export async function GET(request: Request) {
     const db = await ensureHostingSchema();
     await ensureDomainProjects(db, identity.userId);
     const [projectRows, eventRows] = await Promise.all([
-      db.prepare(`SELECT id, domain_id AS domainId, domain, client_name AS client,
-        build_type AS buildType, assigned_developer AS developer, current_stage AS stage,
-        stage_status AS stageStatus, progress, target_date AS due, next_action AS nextAction,
-        intake_notes AS intakeNotes, lifecycle_status AS lifecycleStatus,
-        last_reported_by AS lastReportedBy, created_at AS createdAt, updated_at AS updatedAt
-        FROM projects WHERE owner_user_id = ? AND lifecycle_status != 'archived'
-        ORDER BY updated_at DESC`).bind(identity.userId).all<Record<string, unknown>>(),
+      db.prepare(`SELECT p.id, p.domain_id AS domainId, p.domain, p.client_name AS client,
+        p.build_type AS buildType, p.assigned_developer AS developer, p.current_stage AS stage,
+        p.stage_status AS stageStatus, p.progress, p.target_date AS due, p.next_action AS nextAction,
+        p.intake_notes AS intakeNotes, p.lifecycle_status AS lifecycleStatus,
+        p.last_reported_by AS lastReportedBy, p.created_at AS createdAt, p.updated_at AS updatedAt,
+        sort_order AS sortOrder, d.wordpress_activity_at AS wordpressActivityAt
+        FROM projects p LEFT JOIN hosting_domains d ON d.id = p.domain_id
+        WHERE p.owner_user_id = ? AND p.lifecycle_status != 'archived'
+        ORDER BY CASE WHEN p.sort_order > 0 THEN 0 ELSE 1 END, p.sort_order, p.created_at ASC`)
+        .bind(identity.userId).all<Record<string, unknown>>(),
       db.prepare(`SELECT e.id, e.project_id AS projectId, p.client_name AS project,
         p.assigned_developer AS developer, e.event_type AS eventType, e.source,
         e.stage, e.stage_status AS stageStatus, e.note, e.details_json AS detailsJson,

@@ -102,8 +102,8 @@ export async function POST(
           .prepare(`INSERT INTO hosting_domains (
             id, connection_id, owner_user_id, domain, domain_type, document_root, php_version,
             wordpress_status, wordpress_version, wordpress_site_name, wordpress_url,
-            wordpress_installation_id, wordpress_source, ssl_status, active, last_seen_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'not_checked', 1, ?)
+            wordpress_installation_id, wordpress_source, wordpress_activity_at, ssl_status, active, last_seen_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'not_checked', 1, ?)
           ON CONFLICT(connection_id, domain) DO UPDATE SET
             domain_type = excluded.domain_type, document_root = excluded.document_root,
             php_version = excluded.php_version,
@@ -119,6 +119,7 @@ export async function POST(
               THEN hosting_domains.wordpress_installation_id ELSE excluded.wordpress_installation_id END,
             wordpress_source = CASE WHEN excluded.wordpress_status = 'not_checked'
               THEN hosting_domains.wordpress_source ELSE excluded.wordpress_source END,
+            wordpress_activity_at = COALESCE(excluded.wordpress_activity_at, hosting_domains.wordpress_activity_at),
             active = 1, last_seen_at = excluded.last_seen_at`)
           .bind(
             domainId,
@@ -134,6 +135,7 @@ export async function POST(
             domain.wordpressUrl,
             domain.wordpressInstallationId,
             domain.wordpressSource,
+            domain.wordpressActivityAt,
             now,
           ),
       );

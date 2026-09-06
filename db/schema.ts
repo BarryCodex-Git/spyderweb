@@ -60,6 +60,7 @@ export const hostingDomains = sqliteTable(
     wordpressUrl: text('wordpress_url'),
     wordpressInstallationId: text('wordpress_installation_id'),
     wordpressSource: text('wordpress_source'),
+    wordpressActivityAt: text('wordpress_activity_at'),
     workflowStatusOverride: text('workflow_status_override'),
     assignedDeveloper: text('assigned_developer'),
     wordpressSoftLocked: integer('wordpress_soft_locked').notNull().default(1),
@@ -123,10 +124,27 @@ export const projects = sqliteTable(
     lastReportedBy: text('last_reported_by').notNull().default('Owner Account'),
     createdAt: text('created_at').notNull(),
     updatedAt: text('updated_at').notNull(),
+    sortOrder: integer('sort_order').notNull().default(0),
   },
   (table) => [
     index('idx_projects_owner_updated').on(table.ownerUserId, table.updatedAt),
     index('idx_projects_owner_domain').on(table.ownerUserId, table.domain),
+  ],
+);
+
+export const templateSlots = sqliteTable(
+  'template_slots',
+  {
+    id: text('id').primaryKey(),
+    ownerUserId: text('owner_user_id').notNull(),
+    slotNumber: integer('slot_number').notNull(),
+    name: text('name').notNull(),
+    sourceDomainId: text('source_domain_id').references(() => hostingDomains.id, { onDelete: 'set null' }),
+    createdAt: text('created_at').notNull(),
+    updatedAt: text('updated_at').notNull(),
+  },
+  (table) => [
+    uniqueIndex('idx_template_slots_owner_number').on(table.ownerUserId, table.slotNumber),
   ],
 );
 

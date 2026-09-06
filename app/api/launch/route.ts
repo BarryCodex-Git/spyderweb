@@ -1,0 +1,223 @@
+import { createCpanelSubdomain, discoverCpanel, publicWordPressInfo } from '@/lib/cpanel';
+import { decryptHostingToken, decryptSecret } from '@/lib/credential-crypto';
+import { ensureHostingSchema, stableId } from '@/lib/hosting-db';
+import { normalizeSubdomainLabel, rootInstallationUrl } from '@/lib/launch-project';
+import { PROJECT_DEVELOPERS, type ProjectDeveloper } from '@/lib/project-workflow';
+import { getRequestIdentity, isSameOrigin } from '@/lib/request-auth';
+import { listSoftaculousInstallations, softaculousAction, type OperationalCredential } from '@/lib/softaculous';
+
+export const dynamic = 'force-dynamic';
+
+function json(body: unknown, status = 200) {
+  return Response.json(body, { status, headers: { 'Cache-Control': 'no-store' } });
+}
+
+function requiredText(value: unknown, label: string, max = 255) {
+  const text = typeof value === 'string' ? value.trim() : '';
+  if (!text || text.length > max || /[\0]/.test(text)) throw new Error(`Enter a valid ${label}.`);
+  return text;
+}
+
+async function seedTemplateSlots(db: D1Database, ownerUserId: string) {
+  const existing = await db.prepare('SELECT COUNT(*) AS count FROM template_slots WHERE owner_user_id = ?')
+    .bind(ownerUserId).first<{ count: number }>();
+  if (Number(existing?.count || 0) >= 4) return;
+  const candidates = await db.prepare(`SELECT id FROM hosting_domains
+    WHERE owner_user_id = ? AND active = 1 AND wordpress_status = 'installed'
+      AND (LOWER(domain) LIKE '%template%' OR LOWER(COALESCE(wordpress_site_name, '')) LIKE '%template%')
+    ORDER BY domain LIMIT 4`).bind(ownerUserId).all<{ id: string }>();
+  const now = new Date().toISOString();
+  const writes = [];
+  for (let slotNumber = 1; slotNumber <= 4; slotNumber += 1) {
+    writes.push(db.prepare(`INSERT OR IGNORE INTO template_slots
+      (id, owner_user_id, slot_number, name, source_domain_id, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?)`)
+      .bind(crypto.randomUUID(), ownerUserId, slotNumber, `Template ${slotNumber}`,
+        candidates.results[slotNumber - 1]?.id ?? null, now, now));
+  }
+  await db.batch(writes);
+}
+
+async function loadSlots(db: D1Database, ownerUserId: string) {
+  await seedTemplateSlots(db, ownerUserId);
+  const rows = await db.prepare(`SELECT s.id, s.slot_number AS slotNumber, s.name,
+    s.source_domain_id AS sourceDomainId, d.domain AS sourceDomain,
+    d.connection_id AS connectionId, d.wordpress_site_name AS siteName,
+    d.wordpress_url AS previewUrl
+    FROM template_slots s LEFT JOIN hosting_domains d ON d.id = s.source_domain_id
+    WHERE s.owner_user_id = ? ORDER BY s.slot_number`).bind(ownerUserId).all<Record<string, unknown>>();
+  return rows.results.map((row) => ({
+    id: String(row.id), slotNumber: Number(row.slotNumber), name: String(row.name),
+    sourceDomainId: row.sourceDomainId ? String(row.sourceDomainId) : null,
+    sourceDomain: row.sourceDomain ? String(row.sourceDomain) : null,
+    connectionId: row.connectionId ? String(row.connectionId) : null,
+    siteName: row.siteName ? String(row.siteName) : null,
+    previewUrl: row.previewUrl ? String(row.previewUrl) : row.sourceDomain ? `https://${row.sourceDomain}` : null,
+  }));
+}
+
+export async function GET(request: Request) {
+  const identity = getRequestIdentity(request);
+  if (!identity) return json({ error: 'Sign in to configure project templates.' }, 401);
+  try {
+    const db = await ensureHostingSchema();
+    return json({ templates: await loadSlots(db, identity.userId) });
+  } catch {
+    return json({ error: 'Template choices are temporarily unavailable.' }, 500);
+  }
+}
+
+export async function PUT(request: Request) {
+  const identity = getRequestIdentity(request);
+  if (!identity) return json({ error: 'Sign in to edit project templates.' }, 401);
+  if (!isSameOrigin(request)) return json({ error: 'This template update was blocked.' }, 403);
+  try {
+    const body = await request.json() as Record<string, unknown>;
+    const slotNumber = Number(body.slotNumber);
+    if (![1, 2, 3, 4].includes(slotNumber)) throw new Error('Choose one of the four template spaces.');
+    const name = requiredText(body.name, 'template name', 80);
+    const sourceDomainId = body.sourceDomainId ? requiredText(body.sourceDomainId, 'template domain', 64) : null;
+    const db = await ensureHostingSchema();
+    await seedTemplateSlots(db, identity.userId);
+    if (sourceDomainId) {
+      const source = await db.prepare(`SELECT id FROM hosting_domains WHERE id = ? AND owner_user_id = ?
+        AND active = 1 AND wordpress_status = 'installed'`).bind(sourceDomainId, identity.userId).first();
+      if (!source) throw new Error('Choose a connected domain with WordPress installed.');
+    }
+    await db.prepare(`UPDATE template_slots SET name = ?, source_domain_id = ?, updated_at = ?
+      WHERE owner_user_id = ? AND slot_number = ?`).bind(name, sourceDomainId, new Date().toISOString(), identity.userId, slotNumber).run();
+    return json({ templates: await loadSlots(db, identity.userId), message: `${name} was saved.` });
+  } catch (error) {
+    return json({ error: error instanceof Error ? error.message : 'The template could not be saved.' }, 400);
+  }
+}
+
+export async function POST(request: Request) {
+  const identity = getRequestIdentity(request);
+  if (!identity) return json({ error: 'Sign in to launch a project.' }, 401);
+  if (!isSameOrigin(request)) return json({ error: 'This project launch was blocked.' }, 403);
+  const db = await ensureHostingSchema();
+  let connectionId = '';
+  let targetDomain = '';
+  try {
+    const body = await request.json() as Record<string, unknown>;
+    const projectName = requiredText(body.projectName, 'project name', 180);
+    connectionId = requiredText(body.connectionId, 'cPanel account', 64);
+    const parentDomain = requiredText(body.parentDomain, 'parent domain', 253).toLowerCase();
+    const subdomainLabel = normalizeSubdomainLabel(requiredText(body.subdomainLabel, 'subdomain name', 63));
+    targetDomain = `${subdomainLabel}.${parentDomain}`;
+    const templateSlotNumber = Number(body.templateSlotNumber);
+    const developer = requiredText(body.developer, 'developer', 80) as ProjectDeveloper;
+    if (!PROJECT_DEVELOPERS.includes(developer)) throw new Error('Choose a valid developer.');
+    const notes = typeof body.notes === 'string' ? body.notes.trim().slice(0, 4000) : '';
+
+    const connection = await db.prepare(`SELECT id, base_url AS baseUrl, username, encrypted_token AS encryptedToken,
+      encryption_iv AS encryptionIv, encrypted_operational_secret AS encryptedOperationalSecret,
+      operational_secret_iv AS operationalSecretIv, mode, operational_credential_status AS operationalStatus
+      FROM hosting_connections WHERE id = ? AND owner_user_id = ? LIMIT 1`)
+      .bind(connectionId, identity.userId).first<Record<string, unknown>>();
+    if (!connection) throw new Error('Choose a connected cPanel account.');
+    if (connection.mode !== 'managed_write' || connection.operationalStatus !== 'verified') {
+      throw new Error('WordPress Management must be active for the selected cPanel account.');
+    }
+    const parent = await db.prepare(`SELECT id, domain_type AS domainType FROM hosting_domains
+      WHERE connection_id = ? AND owner_user_id = ? AND domain = ? AND active = 1`)
+      .bind(connectionId, identity.userId, parentDomain).first<Record<string, unknown>>();
+    if (!parent || !['main', 'addon'].includes(String(parent.domainType))) {
+      throw new Error('Choose a main or add-on domain from this cPanel account.');
+    }
+    const collision = await db.prepare(`SELECT id FROM hosting_domains WHERE owner_user_id = ? AND domain = ? AND active = 1`)
+      .bind(identity.userId, targetDomain).first();
+    if (collision) throw new Error(`${targetDomain} already exists. Nothing was changed.`);
+    if (![1, 2, 3, 4].includes(templateSlotNumber)) throw new Error('Choose a template.');
+    const template = await db.prepare(`SELECT s.name, d.id AS domainId, d.domain,
+      d.connection_id AS connectionId, d.wordpress_installation_id AS installationId
+      FROM template_slots s JOIN hosting_domains d ON d.id = s.source_domain_id
+      WHERE s.owner_user_id = ? AND s.slot_number = ? AND d.wordpress_status = 'installed'`)
+      .bind(identity.userId, templateSlotNumber).first<Record<string, unknown>>();
+    if (!template) throw new Error('The selected template does not have a verified WordPress installation.');
+    if (String(template.connectionId) !== connectionId) {
+      throw new Error('Choose a template hosted in the same cPanel account as the new subdomain.');
+    }
+
+    const token = await decryptHostingToken(String(connection.encryptedToken), String(connection.encryptionIv), identity.userId, connectionId);
+    const credential = JSON.parse(await decryptSecret(
+      String(connection.encryptedOperationalSecret), String(connection.operationalSecretIv),
+      identity.userId, `operational:${connectionId}`,
+    )) as OperationalCredential;
+    const installations = await listSoftaculousInstallations(String(connection.baseUrl), credential);
+    if (installations.some((item) => item.domain === targetDomain)) throw new Error(`${targetDomain} already has a Softaculous installation. Nothing was changed.`);
+    const source = installations.find((item) => item.domain === String(template.domain));
+    if (!source?.id) throw new Error('Softaculous could not find the selected template installation.');
+
+    await createCpanelSubdomain({ baseUrl: String(connection.baseUrl), username: String(connection.username), token,
+      label: subdomainLabel, parentDomain });
+    const discovered = await discoverCpanel({ baseUrl: String(connection.baseUrl), username: String(connection.username), token });
+    const created = discovered.domains.find((item) => item.domain === targetDomain);
+    if (!created) throw new Error(`cPanel accepted the request, but ${targetDomain} could not yet be verified. Rescan cPanel before retrying.`);
+
+    const now = new Date().toISOString();
+    const domainId = await stableId(connectionId, targetDomain);
+    const projectId = crypto.randomUUID();
+    const nextOrder = await db.prepare(`SELECT COALESCE(MAX(sort_order), 0) + 1 AS nextOrder FROM projects WHERE owner_user_id = ?`)
+      .bind(identity.userId).first<{ nextOrder: number }>();
+    await db.batch([
+      db.prepare(`INSERT INTO hosting_domains (id, connection_id, owner_user_id, domain, domain_type,
+        document_root, php_version, wordpress_status, wordpress_source, workflow_status_override,
+        assigned_developer, wordpress_soft_locked, php_profile_status, ssl_status, active, last_seen_at)
+        VALUES (?, ?, ?, ?, 'subdomain', ?, ?, 'not_installed', 'New cPanel subdomain', 'Needs Inspection',
+        ?, 1, 'not_checked', 'not_checked', 1, ?)`)
+        .bind(domainId, connectionId, identity.userId, targetDomain, created.documentRoot, created.phpVersion, developer, now),
+      db.prepare(`INSERT INTO projects (id, owner_user_id, domain_id, domain, client_name, build_type,
+        assigned_developer, current_stage, stage_status, progress, next_action, intake_notes,
+        lifecycle_status, last_reported_by, created_at, updated_at, sort_order)
+        VALUES (?, ?, ?, ?, ?, 'Template', ?, 'Setup', 'in_progress', 4,
+        'Review the loaded template and begin the home page', ?, 'active', 'Owner Account', ?, ?, ?)`)
+        .bind(projectId, identity.userId, domainId, targetDomain, projectName, developer, notes || null, now, now, Number(nextOrder?.nextOrder || 1)),
+    ]);
+
+    await softaculousAction({ baseUrl: String(connection.baseUrl), credential, action: 'clone', domain: targetDomain,
+      sourceInstallationId: source.id, databaseName: `sw_${crypto.randomUUID().replaceAll('-', '').slice(0, 12)}` });
+    const refreshed = await listSoftaculousInstallations(String(connection.baseUrl), credential);
+    const installation = refreshed.find((item) => item.domain === targetDomain);
+    let verifiedUrl = installation?.url ?? null;
+    let siteName = installation?.siteName ?? String(template.name);
+    let version = installation?.version ?? null;
+    if (!installation || !rootInstallationUrl(verifiedUrl, targetDomain)) {
+      const publicInfo = await publicWordPressInfo(targetDomain);
+      if (publicInfo.detected && rootInstallationUrl(publicInfo.url, targetDomain)) {
+        verifiedUrl = publicInfo.url; siteName = publicInfo.siteName ?? siteName; version = publicInfo.version;
+      } else if (installation?.url && !rootInstallationUrl(installation.url, targetDomain)) {
+        throw new Error(`Softaculous reported ${installation.url}. SpyderWeb requires WordPress at the domain root and will not accept a /wp installation.`);
+      } else {
+        throw new Error('The subdomain and project were created, but the root WordPress clone is still awaiting verification. Do not retry the launch; rescan cPanel first.');
+      }
+    }
+    await db.batch([
+      db.prepare(`UPDATE hosting_domains SET wordpress_status = 'installed', wordpress_version = ?,
+        wordpress_site_name = ?, wordpress_url = ?, wordpress_installation_id = ?,
+        wordpress_source = 'Softaculous project launch', workflow_status_override = 'Template Loaded',
+        wordpress_soft_locked = 1, last_seen_at = ? WHERE id = ? AND owner_user_id = ?`)
+        .bind(version, siteName, verifiedUrl || `https://${targetDomain}`, installation?.id ?? null, new Date().toISOString(), domainId, identity.userId),
+      db.prepare(`INSERT INTO project_events (id, project_id, owner_user_id, event_type, source,
+        stage, stage_status, note, details_json, created_at) VALUES (?, ?, ?, 'project.launched',
+        'Owner Account', 'Setup', 'in_progress', ?, ?, ?)`)
+        .bind(crypto.randomUUID(), projectId, identity.userId,
+          `Created ${targetDomain} and loaded ${String(template.name)} at the domain root.`,
+          JSON.stringify({ templateSlotNumber, templateDomain: template.domain, wordpressDirectory: '' }), new Date().toISOString()),
+      db.prepare(`INSERT INTO hosting_audit_events (id, owner_user_id, connection_id, action, target,
+        outcome, details_json, created_at) VALUES (?, ?, ?, 'project.launch', ?, 'success', ?, ?)`)
+        .bind(crypto.randomUUID(), identity.userId, connectionId, targetDomain,
+          JSON.stringify({ projectName, template: template.name, templateDomain: template.domain, wordpressDirectory: '' }), new Date().toISOString()),
+    ]);
+    return json({ projectId, domainId, domain: targetDomain,
+      message: `${projectName} is ready at ${targetDomain}. The template was cloned directly to the domain root.` }, 201);
+  } catch (error) {
+    if (connectionId) {
+      await db.prepare(`INSERT INTO hosting_audit_events (id, owner_user_id, connection_id, action, target,
+        outcome, details_json, created_at) VALUES (?, ?, ?, 'project.launch', ?, 'failed', ?, ?)`)
+        .bind(crypto.randomUUID(), identity.userId, connectionId, targetDomain || null, JSON.stringify({ error: error instanceof Error ? error.message : 'Launch failed' }), new Date().toISOString()).run().catch(() => undefined);
+    }
+    return json({ error: error instanceof Error ? error.message : 'The project could not be launched.' }, 400);
+  }
+}

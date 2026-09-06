@@ -11,6 +11,7 @@ export type CpanelDomain = {
   wordpressUrl: string | null;
   wordpressInstallationId: string | null;
   wordpressSource: string | null;
+  wordpressActivityAt: string | null;
 };
 
 export type CpanelCapabilities = {
@@ -53,6 +54,7 @@ type WordPressInstallation = {
   url: string | null;
   version: string | null;
   source: string;
+  activityAt?: string | null;
 };
 
 type Api2Envelope = {
@@ -159,6 +161,26 @@ export async function cpanelUapi(
 }
 
 const uapi = cpanelUapi;
+
+export async function createCpanelSubdomain(input: {
+  baseUrl: string;
+  username: string;
+  token: string;
+  label: string;
+  parentDomain: string;
+}) {
+  const query = {
+    domain: validateCredentialPart(input.label, 'subdomain name', 63),
+    rootdomain: validateCredentialPart(input.parentDomain, 'parent domain', 253),
+    disallowdot: '1',
+  };
+  try {
+    return await cpanelUapi(input.baseUrl, input.username, input.token, 'SubDomain', 'addsubdomain', query);
+  } catch (error) {
+    if (error instanceof CpanelAuthenticationError) throw error;
+    return cpanelJsonUapi(input.baseUrl, input.username, input.token, 'SubDomain', 'addsubdomain', query);
+  }
+}
 
 const recommendedPhpDirectives = {
   memory_limit: '768M',
@@ -926,7 +948,26 @@ export type PublicWordPressInfo = {
   siteName: string | null;
   url: string;
   version: string | null;
+  activityAt: string | null;
 };
+
+async function latestPublicWordPressActivity(baseUrl: string) {
+  const endpoints = ['pages', 'posts'];
+  const values = await Promise.all(endpoints.map(async (type) => {
+    try {
+      const response = await fetch(`${baseUrl}/wp-json/wp/v2/${type}?per_page=1&orderby=modified&order=desc&_fields=modified_gmt`, {
+        headers: { Accept: 'application/json' }, redirect: 'follow', signal: AbortSignal.timeout(8_000),
+      });
+      if (!response.ok) return null;
+      const rows = await response.json() as Array<{ modified_gmt?: string }>;
+      const value = rows[0]?.modified_gmt;
+      if (!value) return null;
+      const parsed = new Date(`${value.replace(/Z$/i, '')}Z`);
+      return Number.isNaN(parsed.getTime()) ? null : parsed.toISOString();
+    } catch { return null; }
+  }));
+  return values.filter((value): value is string => Boolean(value)).sort().at(-1) ?? null;
+}
 
 export async function publicWordPressInfo(domain: string): Promise<PublicWordPressInfo> {
   const baseUrl = `https://${domain}`;
@@ -945,12 +986,14 @@ export async function publicWordPressInfo(domain: string): Promise<PublicWordPre
       const isWordPress = namespaces.some((namespace) => namespace === 'wp/v2' || namespace.startsWith('wp/'))
         || ('routes' in payload && 'name' in payload && 'url' in payload);
       if (isWordPress) {
+        const activityAt = await latestPublicWordPressActivity(baseUrl);
         return {
           detected: true,
           checked: true,
           siteName: cleanInventoryText(payload.name, 180),
           url: cleanInventoryText(payload.url, 2048) ?? response.url ?? baseUrl,
           version: null,
+          activityAt,
         };
       }
     }
@@ -967,7 +1010,7 @@ export async function publicWordPressInfo(domain: string): Promise<PublicWordPre
     });
     receivedResponse = true;
     if (!response.ok && (response.status >= 500 || [401, 403, 429].includes(response.status))) {
-      return { detected: false, checked: false, siteName: null, url: response.url || baseUrl, version: null };
+      return { detected: false, checked: false, siteName: null, url: response.url || baseUrl, version: null, activityAt: null };
     }
     const html = await response.text();
     const generator = html.match(/<meta[^>]+name=["']generator["'][^>]+content=["']WordPress\s*([^"']*)["']/i)
@@ -979,7 +1022,7 @@ export async function publicWordPressInfo(domain: string): Promise<PublicWordPre
       || /\/xmlrpc\.php(?:[?"'])/i.test(html),
     );
     if (!detected) {
-      return { detected: false, checked: true, siteName: null, url: response.url || baseUrl, version: null };
+      return { detected: false, checked: true, siteName: null, url: response.url || baseUrl, version: null, activityAt: null };
     }
     const match = html.match(/<meta[^>]+property=["']og:site_name["'][^>]+content=["']([^"']+)["']/i)
       ?? html.match(/<meta[^>]+content=["']([^"']+)["'][^>]+property=["']og:site_name["']/i)
@@ -996,9 +1039,10 @@ export async function publicWordPressInfo(domain: string): Promise<PublicWordPre
       siteName: cleanInventoryText(siteName, 180),
       url: response.url || baseUrl,
       version: cleanInventoryText(generator?.[1], 80),
+      activityAt: null,
     };
   } catch {
-    return { detected: false, checked: receivedResponse, siteName: null, url: baseUrl, version: null };
+    return { detected: false, checked: receivedResponse, siteName: null, url: baseUrl, version: null, activityAt: null };
   }
 }
 
@@ -1319,6 +1363,7 @@ export async function discoverCpanel(input: {
         url: info.url,
         version: info.version,
         source: 'Public WordPress endpoint',
+        activityAt: info.activityAt,
       } satisfies WordPressInstallation;
     },
   );
@@ -1334,6 +1379,7 @@ export async function discoverCpanel(input: {
       url: installation.url ?? existing?.url ?? null,
       version: existing?.version ?? installation.version,
       source: existing?.source ?? installation.source,
+      activityAt: installation.activityAt ?? existing?.activityAt ?? null,
     });
   }
   wordpressAttempts.push({
@@ -1397,6 +1443,7 @@ export async function discoverCpanel(input: {
         wordpressUrl: wordpress?.url ?? null,
         wordpressInstallationId: wordpress?.installationId ?? null,
         wordpressSource: wordpress?.source ?? null,
+        wordpressActivityAt: wordpress?.activityAt ?? null,
       } satisfies CpanelDomain;
     })
     .sort((a, b) => a.domain.localeCompare(b.domain));

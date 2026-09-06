@@ -51,6 +51,7 @@ const schemaStatements = [
     wordpress_url TEXT,
     wordpress_installation_id TEXT,
     wordpress_source TEXT,
+    wordpress_activity_at TEXT,
     workflow_status_override TEXT,
     assigned_developer TEXT,
     wordpress_soft_locked INTEGER NOT NULL DEFAULT 1,
@@ -93,7 +94,8 @@ const schemaStatements = [
     lifecycle_status TEXT NOT NULL DEFAULT 'active',
     last_reported_by TEXT NOT NULL DEFAULT 'Owner Account',
     created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
+    updated_at TEXT NOT NULL,
+    sort_order INTEGER NOT NULL DEFAULT 0
   )`,
   `CREATE INDEX IF NOT EXISTS idx_projects_owner_updated
     ON projects (owner_user_id, updated_at)`,
@@ -115,6 +117,17 @@ const schemaStatements = [
     ON project_events (project_id, created_at)`,
   `CREATE INDEX IF NOT EXISTS idx_project_events_owner_created
     ON project_events (owner_user_id, created_at)`,
+  `CREATE TABLE IF NOT EXISTS template_slots (
+    id TEXT PRIMARY KEY NOT NULL,
+    owner_user_id TEXT NOT NULL,
+    slot_number INTEGER NOT NULL,
+    name TEXT NOT NULL,
+    source_domain_id TEXT REFERENCES hosting_domains(id) ON DELETE SET NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  )`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS idx_template_slots_owner_number
+    ON template_slots (owner_user_id, slot_number)`,
   `CREATE TABLE IF NOT EXISTS owner_security (
     owner_user_id TEXT PRIMARY KEY NOT NULL,
     encrypted_totp_secret TEXT,
@@ -132,11 +145,16 @@ const hostingDomainColumnMigrations = [
   ['wordpress_url', 'ALTER TABLE hosting_domains ADD COLUMN wordpress_url TEXT'],
   ['wordpress_installation_id', 'ALTER TABLE hosting_domains ADD COLUMN wordpress_installation_id TEXT'],
   ['wordpress_source', 'ALTER TABLE hosting_domains ADD COLUMN wordpress_source TEXT'],
+  ['wordpress_activity_at', 'ALTER TABLE hosting_domains ADD COLUMN wordpress_activity_at TEXT'],
   ['workflow_status_override', 'ALTER TABLE hosting_domains ADD COLUMN workflow_status_override TEXT'],
   ['assigned_developer', 'ALTER TABLE hosting_domains ADD COLUMN assigned_developer TEXT'],
   ['wordpress_soft_locked', 'ALTER TABLE hosting_domains ADD COLUMN wordpress_soft_locked INTEGER NOT NULL DEFAULT 1'],
   ['restore_point_at', 'ALTER TABLE hosting_domains ADD COLUMN restore_point_at TEXT'],
   ['php_profile_status', "ALTER TABLE hosting_domains ADD COLUMN php_profile_status TEXT NOT NULL DEFAULT 'not_checked'"],
+] as const;
+
+const projectColumnMigrations = [
+  ['sort_order', 'ALTER TABLE projects ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0'],
 ] as const;
 
 const hostingConnectionColumnMigrations = [
@@ -158,6 +176,11 @@ export async function ensureHostingSchema(db = getDatabase()) {
   const existingConnectionColumns = new Set(connectionColumns.results.map((column) => column.name));
   for (const [name, statement] of hostingConnectionColumnMigrations) {
     if (!existingConnectionColumns.has(name)) await db.prepare(statement).run();
+  }
+  const projectColumns = await db.prepare("PRAGMA table_info('projects')").all<{ name: string }>();
+  const existingProjectColumns = new Set(projectColumns.results.map((column) => column.name));
+  for (const [name, statement] of projectColumnMigrations) {
+    if (!existingProjectColumns.has(name)) await db.prepare(statement).run();
   }
   return db;
 }
