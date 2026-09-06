@@ -3,7 +3,7 @@ import test from 'node:test';
 
 import {
   SoftaculousRequestError,
-  softaculousActionWithCredentialFallback,
+  softaculousManagedAction,
 } from '../lib/softaculous.ts';
 
 const passwordCredential = {
@@ -13,78 +13,85 @@ const tokenCredential = {
   username: 'webbuilder', token: 'api-token', authMode: 'cpanel_token',
 };
 
-test('install retries once with the cPanel API token when the password session setup redirects', async () => {
+test('install uses the same direct cPanel username/password request as the working host', async () => {
   const originalFetch = globalThis.fetch;
   const calls = [];
   globalThis.fetch = async (url, init) => {
     calls.push({ url: String(url), init });
-    if (calls.length === 1) {
-      return new Response('', { status: 302, headers: { Location: '/login/?login_only=1' } });
-    }
     return Response.json({ done: 1, __settings: { softurl: 'https://dev4.testwebsitebuild.com' } });
   };
   try {
-    await softaculousActionWithCredentialFallback({
+    await softaculousManagedAction({
       baseUrl: 'https://cpanel.example:2083', credential: passwordCredential,
-      fallbackCredentials: [tokenCredential], action: 'install',
+      action: 'install',
       domain: 'dev4.testwebsitebuild.com', databaseName: 'sw123',
       adminUsername: 'admin', adminPassword: 'strong-password', adminEmail: 'admin@example.com',
     });
-    assert.equal(calls.length, 2);
-    assert.equal(calls.some((call) => call.url.includes('/login/')), false);
-    assert.equal(calls[0].init.method, 'GET');
+    assert.equal(calls.length, 1);
+    assert.match(calls[0].url, /\/frontend\/jupiter\/softaculous\/index\.live\.php/);
+    assert.equal(calls[0].init.method, 'POST');
     assert.match(calls[0].init.headers.Authorization, /^Basic /);
-    assert.equal(calls[1].init.headers.Authorization, 'cpanel webbuilder:api-token');
-    assert.equal(new URLSearchParams(calls[1].init.body).get('softdirectory'), '');
+    assert.equal(new URLSearchParams(calls[0].init.body).get('softdirectory'), '');
   } finally {
     globalThis.fetch = originalFetch;
   }
 });
 
-test('install never repeats an ambiguous write response', async () => {
+test('definite direct-auth redirect retries through a real cPanel session, never an API token', async () => {
+  const originalFetch = globalThis.fetch;
+  const calls = [];
+  globalThis.fetch = async (url, init) => {
+    calls.push({ url: String(url), init });
+    if (calls.length === 1) return new Response('', { status: 302, headers: { Location: '/login/?login_only=1' } });
+    if (calls.length === 2) return new Response(JSON.stringify({ status: 1, security_token: '/cpsess1234567890' }), {
+      status: 200, headers: { 'Set-Cookie': 'cpsession=cp123; Path=/; Secure' },
+    });
+    return Response.json({ done: 1 });
+  };
+  try {
+    await softaculousManagedAction({
+      baseUrl: 'https://cpanel.example:2083', credential: passwordCredential,
+      action: 'install', domain: 'dev4.testwebsitebuild.com', databaseName: 'sw123',
+    });
+    assert.equal(calls.length, 3);
+    assert.match(calls[0].init.headers.Authorization, /^Basic /);
+    assert.match(calls[1].url, /\/login\/\?login_only=1$/);
+    assert.match(calls[2].url, /\/cpsess1234567890\/frontend\/jupiter\/softaculous\/index\.live\.php/);
+    assert.equal(calls[2].init.headers.Cookie, 'cpsession=cp123');
+    assert.equal('Authorization' in calls[2].init.headers, false);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('install never uses a cPanel API token as a Softaculous write fallback', async () => {
+  const originalFetch = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = async () => { calls += 1; return Response.json({ done: 1 }); };
+  try {
+    await assert.rejects(softaculousManagedAction({
+      baseUrl: 'https://cpanel.example:2083', credential: tokenCredential,
+      action: 'install', domain: 'dev4.testwebsitebuild.com', databaseName: 'sw123',
+    }), /API tokens cannot run Softaculous writes/);
+    assert.equal(calls, 0);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('install never repeats an ambiguous non-login response', async () => {
   const originalFetch = globalThis.fetch;
   let calls = 0;
   globalThis.fetch = async () => {
     calls += 1;
-    return new Response('<html><body>Operation processing</body></html>', {
-      status: 200, headers: { 'Content-Type': 'text/html' },
-    });
+    return new Response('<html><body>Operation processing</body></html>', { status: 200 });
   };
   try {
-    await assert.rejects(
-      softaculousActionWithCredentialFallback({
-        baseUrl: 'https://cpanel.example:2083', credential: passwordCredential,
-        fallbackCredentials: [tokenCredential], action: 'install',
-        domain: 'dev4.testwebsitebuild.com', databaseName: 'sw123',
-      }),
-      (error) => error instanceof SoftaculousRequestError && error.responseWasAmbiguous,
-    );
-    assert.equal(calls, 2);
-  } finally {
-    globalThis.fetch = originalFetch;
-  }
-});
-
-test('install establishes and forwards the Softaculous session cookie before posting', async () => {
-  const originalFetch = globalThis.fetch;
-  const calls = [];
-  globalThis.fetch = async (url, init) => {
-    calls.push({ url: String(url), init });
-    if (calls.length === 1) {
-      return new Response('{"ready":true}', { status: 200, headers: { 'Set-Cookie': 'soft_session=abc123; Path=/; Secure' } });
-    }
-    return Response.json({ done: 1 });
-  };
-  try {
-    await softaculousActionWithCredentialFallback({
+    await assert.rejects(softaculousManagedAction({
       baseUrl: 'https://cpanel.example:2083', credential: passwordCredential,
-      fallbackCredentials: [tokenCredential], action: 'install',
-      domain: 'dev4.testwebsitebuild.com', databaseName: 'sw123',
-    });
-    assert.equal(calls.length, 2);
-    assert.equal(calls[0].init.method, 'GET');
-    assert.equal(calls[1].init.method, 'POST');
-    assert.equal(calls[1].init.headers.Cookie, 'soft_session=abc123');
+      action: 'install', domain: 'dev4.testwebsitebuild.com', databaseName: 'sw123',
+    }), (error) => error instanceof SoftaculousRequestError && error.responseWasAmbiguous);
+    assert.equal(calls, 1);
   } finally {
     globalThis.fetch = originalFetch;
   }

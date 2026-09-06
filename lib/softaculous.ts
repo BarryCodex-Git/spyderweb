@@ -63,6 +63,23 @@ function authorization(credential: OperationalCredential) {
   return `Basic ${btoa(binary)}`;
 }
 
+function responseCookies(response: Response) {
+  const getSetCookie = (response.headers as Headers & { getSetCookie?: () => string[] }).getSetCookie?.() ?? [];
+  const rawHeaders = getSetCookie.length ? getSetCookie : [response.headers.get('set-cookie') || ''];
+  return rawHeaders.flatMap((header) => header.split(/,(?=\s*[^;,=]+=[^;,]+)/))
+    .map((header) => header.trim().match(/^([^=;,\s]+)=([^;]*)/)?.slice(1).join('='))
+    .filter((cookie): cookie is string => Boolean(cookie));
+}
+
+function mergeCookies(...groups: string[][]) {
+  const cookies = new Map<string, string>();
+  groups.flat().forEach((cookie) => {
+    const separator = cookie.indexOf('=');
+    if (separator > 0) cookies.set(cookie.slice(0, separator), cookie);
+  });
+  return [...cookies.values()].join('; ');
+}
+
 export async function createCpanelSession(baseUrl: string, credential: OperationalCredential) {
   if (!credential.password) throw new Error('Enter the normal cPanel account password.');
   const response = await fetch(`${baseUrl}/login/?login_only=1`, {
@@ -79,10 +96,8 @@ export async function createCpanelSession(baseUrl: string, credential: Operation
   if (Number(payload.status) !== 1 || !/^\/cpsess\d+$/.test(securityToken)) {
     throw new Error('cPanel rejected the account password. Use the same username and password that open this cPanel account in a private browser window.');
   }
-  const rawCookie = response.headers.get('set-cookie') || '';
-  const cookies = [...rawCookie.matchAll(/(?:^|,)\s*([^=;,\s]+)=([^;,\s]+)/g)]
-    .map((match) => `${match[1]}=${match[2]}`)
-    .join('; ');
+  const cookies = mergeCookies(responseCookies(response));
+  if (!cookies) throw new Error('cPanel authenticated the account but did not return a usable session cookie.');
   return { securityToken, cookies };
 }
 
@@ -204,41 +219,24 @@ async function request(input: {
       signal: AbortSignal.timeout(55_000),
     });
   };
-  let writeCookies = '';
-  if (isWrite && !tokenMode) {
-    // Some cPanel builds accept HTTP Basic authentication for Softaculous reads,
-    // but require the PHP session cookie established by the matching action page
-    // before they will accept its POST. This GET is read-only.
-    const bootstrap = await perform('', '', true, false);
-    const getSetCookie = (bootstrap.headers as Headers & { getSetCookie?: () => string[] }).getSetCookie?.() ?? [];
-    const rawCookies = getSetCookie.length ? getSetCookie : [bootstrap.headers.get('set-cookie') || ''];
-    writeCookies = rawCookies.flatMap((header) => header.split(/,(?=\s*[^;,=]+=[^;,]+)/))
-      .map((header) => header.trim().match(/^([^=;,\s]+)=([^;,]*)/)?.slice(1).join('='))
-      .filter((cookie): cookie is string => Boolean(cookie))
-      .join('; ');
-    if (bootstrap.status === 401 || bootstrap.status === 403 || (bootstrap.status >= 300 && bootstrap.status < 400)) {
-      const location = bootstrap.headers.get('location') || '';
-      throw new SoftaculousRequestError('Softaculous redirected its authenticated install setup page to cPanel sign-in.', {
-        safeToRetry: true,
-        diagnostics: { phase: 'write_session', status: bootstrap.status, redirectPath: safeRedirectPath(location), authMode: 'cpanel_basic' },
-      });
-    }
-    if (!bootstrap.ok) {
-      throw new SoftaculousRequestError(`Softaculous could not prepare the install session (${bootstrap.status}).`, {
-        safeToRetry: true,
-        diagnostics: { phase: 'write_session', status: bootstrap.status, redirectPath: null, authMode: 'cpanel_basic' },
-      });
-    }
-    await bootstrap.arrayBuffer();
+  if (isWrite && tokenMode) {
+    throw new SoftaculousRequestError('WordPress changes require the saved cPanel account password; API tokens cannot run Softaculous writes on this host.', {
+      diagnostics: { phase: 'write_preflight', status: 0, redirectPath: null, authMode: 'cpanel_token' },
+    });
   }
-  let response = await perform('', writeCookies);
+  // Preserve the proven My New Websites sequence: try Softaculous directly
+  // with the saved cPanel account login. Only a definite authentication-layer
+  // rejection is safe to repeat through a freshly-created cPanel session.
+  let response = await perform();
   const directRejected = response.status === 401 || response.status === 403 || (response.status >= 300 && response.status < 400);
   // A read-only request may safely be repeated through a cPanel browser session.
   // Never repeat a write after an unclear response: Softaculous may already have
   // accepted it, which would risk duplicate installs, clones or backups.
-  if (!isWrite && !tokenMode && directRejected) {
+  let sessionRetried = false;
+  if (!tokenMode && directRejected) {
     const session = await createCpanelSession(input.baseUrl, input.credential);
     response = await perform(session.securityToken, session.cookies, false);
+    sessionRetried = true;
   }
   if (response.status >= 300 && response.status < 400) {
     const location = response.headers.get('location') || '';
@@ -247,34 +245,36 @@ async function request(input: {
       : 'Softaculous redirected this management request to cPanel sign-in.', {
       // api=json must return an API payload. A redirect means the request was
       // rejected by the authentication layer before Softaculous handled it.
-      safeToRetry: isWrite,
-      diagnostics: { phase: 'action', status: response.status, redirectPath: safeRedirectPath(location), authMode: tokenMode ? 'cpanel_token' : 'cpanel_basic' },
+      safeToRetry: false,
+      diagnostics: { phase: 'action', status: response.status, redirectPath: safeRedirectPath(location), authMode: sessionRetried ? 'cpanel_session' : tokenMode ? 'cpanel_token' : 'cpanel_basic' },
     });
   }
   if (response.status === 401 || response.status === 403) throw new SoftaculousRequestError(tokenMode
     ? 'This cPanel API token is not permitted to run this Softaculous action.'
     : 'The saved cPanel management login was not permitted to run this Softaculous action.', {
-    safeToRetry: isWrite,
-    diagnostics: { phase: 'action', status: response.status, redirectPath: null, authMode: tokenMode ? 'cpanel_token' : 'cpanel_basic' },
+    safeToRetry: false,
+    diagnostics: { phase: 'action', status: response.status, redirectPath: null, authMode: sessionRetried ? 'cpanel_session' : tokenMode ? 'cpanel_token' : 'cpanel_basic' },
   });
   if (!response.ok) throw new Error(`Softaculous returned ${response.status}.`);
   let text = await response.text();
-  if (!isWrite && !tokenMode && /^\s*</.test(text)) {
+  if (!tokenMode && !sessionRetried && /^\s*</.test(text)
+    && /(?:login|sign[ -]?in|name=["']pass["'])/i.test(text.slice(0, 16_000))) {
     const session = await createCpanelSession(input.baseUrl, input.credential);
     response = await perform(session.securityToken, session.cookies, false);
     if (!response.ok || (response.status >= 300 && response.status < 400)) {
       throw new Error('Softaculous could not be opened through the authenticated cPanel session.');
     }
     text = await response.text();
+    sessionRetried = true;
   }
   if (/^\s*</.test(text)) {
     const signInPage = /(?:login|sign[ -]?in|name=["']pass["'])/i.test(text.slice(0, 16_000));
     throw new SoftaculousRequestError(signInPage
       ? 'Softaculous returned its cPanel sign-in page instead of running the requested action.'
       : 'Softaculous returned an unexpected web page instead of an API result.', {
-      safeToRetry: isWrite && signInPage,
+      safeToRetry: false,
       responseWasAmbiguous: isWrite && !signInPage,
-      diagnostics: { phase: 'action', status: response.status, redirectPath: null, authMode: tokenMode ? 'cpanel_token' : 'cpanel_basic' },
+      diagnostics: { phase: 'action', status: response.status, redirectPath: null, authMode: sessionRetried ? 'cpanel_session' : tokenMode ? 'cpanel_token' : 'cpanel_basic' },
     });
   }
   let payload: unknown;
@@ -295,25 +295,8 @@ function safeRedirectPath(location: string) {
   }
 }
 
-export async function softaculousActionWithCredentialFallback(input: Parameters<typeof softaculousAction>[0] & {
-  fallbackCredentials?: OperationalCredential[];
-}) {
-  const { fallbackCredentials = [], ...actionInput } = input;
-  const credentials = [actionInput.credential, ...fallbackCredentials].filter((credential, index, all) =>
-    all.findIndex((candidate) => candidate.authMode === credential.authMode
-      && candidate.username === credential.username
-      && candidate.password === credential.password
-      && candidate.token === credential.token) === index);
-  let lastError: unknown;
-  for (let index = 0; index < credentials.length; index += 1) {
-    try {
-      return await softaculousAction({ ...actionInput, credential: credentials[index] });
-    } catch (error) {
-      lastError = error;
-      if (!canSafelyRetrySoftaculousRequest(error) || index === credentials.length - 1) throw error;
-    }
-  }
-  throw lastError;
+export async function softaculousManagedAction(input: Parameters<typeof softaculousAction>[0]) {
+  return softaculousAction(input);
 }
 
 export async function listSoftaculousInstallations(baseUrl: string, credential: OperationalCredential) {

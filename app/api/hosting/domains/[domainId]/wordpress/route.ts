@@ -8,7 +8,7 @@ import {
 import { getRequestIdentity, isSameOrigin } from '@/lib/request-auth';
 import {
   listSoftaculousBackups, listSoftaculousInstallations,
-  softaculousActionWithCredentialFallback, softaculousErrorDetails, softaculousResponseWasAmbiguous,
+  softaculousManagedAction, softaculousErrorDetails, softaculousResponseWasAmbiguous,
   type OperationalCredential, type SoftaculousBackup,
 } from '@/lib/softaculous';
 
@@ -228,10 +228,6 @@ export async function POST(request: Request, { params }: { params: Promise<{ dom
     }
     const secrets = JSON.parse(await decryptSecret(String(connection.encryptedOperationalSecret), String(connection.operationalSecretIv), identity.userId, `operational:${record.connectionId}`)) as OperationalCredential & { adminUsername?: string; adminPassword?: string; adminEmail?: string };
     const baseUrl = String(connection.baseUrl);
-    const cpanelToken = await decryptHostingToken(String(connection.encryptedToken), String(connection.encryptionIv), identity.userId, record.connectionId);
-    const fallbackCredentials: OperationalCredential[] = [{
-      username: String(connection.username), token: cpanelToken, authMode: 'cpanel_token',
-    }];
     const replacementConfirmed = body.confirmReplacement === true;
 
     function freshDatabaseName() {
@@ -261,7 +257,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ dom
         throw new Error(`Softaculous detected “${siteName}” on ${record.domain} but did not provide an installation ID. Scan the hosting account again before replacing it.`);
       }
 
-      await softaculousActionWithCredentialFallback({ baseUrl, credential: secrets, fallbackCredentials,
+      await softaculousManagedAction({ baseUrl, credential: secrets,
         action: 'remove', domain: record.domain, installationId: existing.id });
       for (const delay of [0, 800, 1600]) {
         if (delay) await new Promise((resolve) => setTimeout(resolve, delay));
@@ -284,7 +280,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ dom
 
     if (action === 'create_restore_point') {
       if (record.wordpressStatus !== 'installed' || !record.wordpressInstallationId) throw new Error('Softaculous must identify this WordPress installation before it can create a restore point. Scan the connection in Settings.');
-      await softaculousActionWithCredentialFallback({ baseUrl, credential: secrets, fallbackCredentials,
+      await softaculousManagedAction({ baseUrl, credential: secrets,
         action: 'backup', domain: record.domain, installationId: record.wordpressInstallationId });
       const liveBackups = installationBackups(await listSoftaculousBackups(baseUrl, secrets), record.wordpressInstallationId, record.domain);
       const now = newestBackup(liveBackups)?.createdAt ?? new Date().toISOString();
@@ -299,7 +295,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ dom
       const current = installationBackups(await listSoftaculousBackups(baseUrl, secrets), record.wordpressInstallationId, record.domain);
       const oldest = oldestBackup(current);
       if (!oldest) throw new Error(`No saved Softaculous backup was found for ${record.domain}.`);
-      await softaculousActionWithCredentialFallback({ baseUrl, credential: secrets, fallbackCredentials,
+      await softaculousManagedAction({ baseUrl, credential: secrets,
         action: 'delete_backup', domain: record.domain, backupFileName: oldest.fileName });
       const remaining = installationBackups(await listSoftaculousBackups(baseUrl, secrets), record.wordpressInstallationId, record.domain);
       if (remaining.some((backup) => backup.fileName === oldest.fileName)) {
@@ -316,7 +312,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ dom
       await prepareCleanDestination('installing clean WordPress');
       let installError: unknown = null;
       try {
-        await softaculousActionWithCredentialFallback({ baseUrl, credential: secrets, fallbackCredentials,
+        await softaculousManagedAction({ baseUrl, credential: secrets,
           action: 'install', domain: record.domain, databaseName: freshDatabaseName(),
           adminUsername: secrets.adminUsername, adminPassword: secrets.adminPassword,
           adminEmail: secrets.adminEmail });
@@ -347,7 +343,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ dom
       const template = liveInstallations.find((installation) => installation.domain === templateDomain);
       if (!template?.id) throw new Error(`Softaculous did not identify the template installation on ${templateDomain}. Scan the hosting account again before loading it.`);
       await prepareCleanDestination('loading the default template');
-      await softaculousActionWithCredentialFallback({ baseUrl, credential: secrets, fallbackCredentials,
+      await softaculousManagedAction({ baseUrl, credential: secrets,
         action: 'clone', domain: record.domain, sourceInstallationId: template.id,
         databaseName: freshDatabaseName() });
       const refreshed = await refreshDomainWordPress(db, { ownerUserId: identity.userId, domainId: record.id,
