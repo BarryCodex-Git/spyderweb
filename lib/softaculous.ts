@@ -21,6 +21,26 @@ export type SoftaculousBackup = {
   sizeBytes: number | null;
 };
 
+export class SoftaculousRequestError extends Error {
+  readonly safeToRetry: boolean;
+  readonly responseWasAmbiguous: boolean;
+
+  constructor(message: string, options: { safeToRetry?: boolean; responseWasAmbiguous?: boolean } = {}) {
+    super(message);
+    this.name = 'SoftaculousRequestError';
+    this.safeToRetry = options.safeToRetry === true;
+    this.responseWasAmbiguous = options.responseWasAmbiguous === true;
+  }
+}
+
+export function canSafelyRetrySoftaculousRequest(error: unknown) {
+  return error instanceof SoftaculousRequestError && error.safeToRetry;
+}
+
+export function softaculousResponseWasAmbiguous(error: unknown) {
+  return error instanceof SoftaculousRequestError && error.responseWasAmbiguous;
+}
+
 function authorization(credential: OperationalCredential) {
   if (credential.authMode === 'cpanel_token' || credential.token) {
     if (!credential.token) throw new Error('The saved cPanel API token is unavailable. Reconnect this hosting account.');
@@ -155,6 +175,7 @@ async function request(input: {
   query: Record<string, string>;
   form?: Record<string, string>;
 }) {
+  const isWrite = Boolean(input.form);
   const perform = (securityToken = '', cookies = '', useAuthorization = true) => {
     const url = new URL(`${input.baseUrl}${securityToken}/frontend/jupiter/softaculous/index.live.php`);
     url.searchParams.set('api', 'json');
@@ -175,19 +196,31 @@ async function request(input: {
   let response = await perform();
   const tokenMode = input.credential.authMode === 'cpanel_token' || Boolean(input.credential.token);
   const directRejected = response.status === 401 || response.status === 403 || (response.status >= 300 && response.status < 400);
-  if (!tokenMode && directRejected) {
+  // A read-only request may safely be repeated through a cPanel browser session.
+  // Never repeat a write after an unclear response: Softaculous may already have
+  // accepted it, which would risk duplicate installs, clones or backups.
+  if (!isWrite && !tokenMode && directRejected) {
     const session = await createCpanelSession(input.baseUrl, input.credential);
     response = await perform(session.securityToken, session.cookies, false);
   }
-  if (response.status >= 300 && response.status < 400) throw new Error(tokenMode
-    ? 'This server redirected the Softaculous API request instead of accepting the connected cPanel token.'
-    : 'Softaculous redirected the management request. Check the cPanel management username and password.');
-  if (response.status === 401 || response.status === 403) throw new Error(tokenMode
-    ? 'This cPanel server accepted the API token for cPanel, but does not allow that token to access Softaculous.'
-    : 'Softaculous rejected the management username or password.');
+  if (response.status >= 300 && response.status < 400) {
+    const location = response.headers.get('location') || '';
+    const signInRedirect = /(?:^|\/)login(?:\/|\?|$)/i.test(location);
+    throw new SoftaculousRequestError(tokenMode
+      ? 'Softaculous redirected this cPanel API-token request to sign-in.'
+      : 'Softaculous redirected this management request to cPanel sign-in.', {
+      safeToRetry: isWrite && signInRedirect,
+      responseWasAmbiguous: isWrite && !signInRedirect,
+    });
+  }
+  if (response.status === 401 || response.status === 403) throw new SoftaculousRequestError(tokenMode
+    ? 'This cPanel API token is not permitted to run this Softaculous action.'
+    : 'The saved cPanel management login was not permitted to run this Softaculous action.', {
+    safeToRetry: isWrite,
+  });
   if (!response.ok) throw new Error(`Softaculous returned ${response.status}.`);
   let text = await response.text();
-  if (!tokenMode && /^\s*</.test(text)) {
+  if (!isWrite && !tokenMode && /^\s*</.test(text)) {
     const session = await createCpanelSession(input.baseUrl, input.credential);
     response = await perform(session.securityToken, session.cookies, false);
     if (!response.ok || (response.status >= 300 && response.status < 400)) {
@@ -195,15 +228,42 @@ async function request(input: {
     }
     text = await response.text();
   }
-  if (/^\s*</.test(text)) throw new Error(tokenMode
-    ? 'Softaculous returned its sign-in page instead of accepting the connected cPanel token.'
-    : 'Softaculous returned a sign-in page. Check the operational credential and try again.');
+  if (/^\s*</.test(text)) {
+    const signInPage = /(?:login|sign[ -]?in|name=["']pass["'])/i.test(text.slice(0, 16_000));
+    throw new SoftaculousRequestError(signInPage
+      ? 'Softaculous returned its cPanel sign-in page instead of running the requested action.'
+      : 'Softaculous returned an unexpected web page instead of an API result.', {
+      safeToRetry: isWrite && signInPage,
+      responseWasAmbiguous: isWrite && !signInPage,
+    });
+  }
   let payload: unknown;
   try { payload = JSON.parse(text); } catch { throw new Error('Softaculous returned an unreadable response.'); }
   const record = payload && typeof payload === 'object' ? payload as Record<string, unknown> : {};
   const errors = errorText(record.error ?? record.errors);
   if (errors) throw new Error(errors);
   return payload;
+}
+
+export async function softaculousActionWithCredentialFallback(input: Parameters<typeof softaculousAction>[0] & {
+  fallbackCredentials?: OperationalCredential[];
+}) {
+  const { fallbackCredentials = [], ...actionInput } = input;
+  const credentials = [actionInput.credential, ...fallbackCredentials].filter((credential, index, all) =>
+    all.findIndex((candidate) => candidate.authMode === credential.authMode
+      && candidate.username === credential.username
+      && candidate.password === credential.password
+      && candidate.token === credential.token) === index);
+  let lastError: unknown;
+  for (let index = 0; index < credentials.length; index += 1) {
+    try {
+      return await softaculousAction({ ...actionInput, credential: credentials[index] });
+    } catch (error) {
+      lastError = error;
+      if (!canSafelyRetrySoftaculousRequest(error) || index === credentials.length - 1) throw error;
+    }
+  }
+  throw lastError;
 }
 
 export async function listSoftaculousInstallations(baseUrl: string, credential: OperationalCredential) {
