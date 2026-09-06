@@ -73,7 +73,7 @@ h2 { margin-bottom: 0; font-size: 21px; letter-spacing: -.025em; }
 .domain-top { display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; }.domain-icon { width: 30px; height: 30px; display: grid; place-items: center; border-radius: 9px; color: var(--mid-blue); background: #eaf2ff; }.more { color: #9aa4b5; letter-spacing: 1px; }
 .domain-card > strong { display: block; font-size: 11px; word-break: break-word; }.domain-card > p { margin: 5px 0 12px; color: var(--muted); font-size: 10px; line-height: 1.4; }
 .domain-stage-badges { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-bottom: 10px; }
-.stage-label, .inspection-label { display: inline-block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; border-radius: 6px; padding: 5px 7px; font-size: 8px; font-weight: 750; }
+.stage-label, .inspection-label { display: inline-block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; border-radius: 6px; padding: 5px 7px; font-size: 12px; line-height: 1.2; font-weight: 750; }
 .stage-label { color: var(--dark-purple); background: #f4ebff; }
 .inspection-label { color: #a22f47; background: #fde7ec; }
 .progress-track { height: 4px; border-radius: 99px; background: #e9edf4; overflow: hidden; }.progress-track span { display: block; height: 100%; border-radius: inherit; background: radial-gradient(circle at left, var(--dark-purple), var(--dark-blue) 50%, var(--mid-blue)); }
