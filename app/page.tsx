@@ -362,6 +362,7 @@ export default function Home() {
   const toastTimers = useRef(new Map<string, number>());
   const inventoryRequestCounter = useRef(0);
   const newestInventorySyncRef = useRef(0);
+  const automaticMemoryRepairs = useRef(new Set<string>());
 
   const copy = viewCopy[activeView];
   const selectedStageIndex = selectedProject
@@ -526,6 +527,38 @@ export default function Home() {
       document.removeEventListener('visibilitychange', refreshVisibleInventory);
     };
   }, [loadHostingInventory]);
+
+  useEffect(() => {
+    const candidates = managedDomains.filter((domain) =>
+      typeof domain.id === 'string'
+      && domain.wordpress.startsWith('Installed')
+      && domain.phpProfileStatus === 'wordpress_memory_pending'
+      && domain.operationalReady
+      && domain.connectionMode === 'managed_write'
+      && !automaticMemoryRepairs.current.has(String(domain.id)),
+    );
+    if (!candidates.length) return;
+    candidates.forEach((domain) => automaticMemoryRepairs.current.add(String(domain.id)));
+    void (async () => {
+      for (const domain of candidates) {
+        const response = await fetch(`/api/hosting/domains/${domain.id}/wordpress`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'apply_php_profile' }),
+        });
+        const result = await response.json() as { error?: string; message?: string };
+        if (!response.ok) {
+          showActionToast({
+            id: `automatic-memory-${domain.id}`,
+            status: 'warning',
+            title: 'Memory profile needs attention',
+            message: result.error || `SpyderWeb could not verify the memory profile for ${domain.domain}.`,
+          });
+        }
+      }
+      await loadHostingInventory();
+    })();
+  }, [loadHostingInventory, managedDomains, showActionToast]);
 
   useEffect(() => {
     let active = true;
