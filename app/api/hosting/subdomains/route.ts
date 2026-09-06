@@ -1,4 +1,4 @@
-import { createCpanelSubdomain, discoverCpanel } from '@/lib/cpanel';
+import { createCpanelSubdomain, discoverCpanel, inspectCpanelDnsRecords, removeExactCpanelDnsRecords } from '@/lib/cpanel';
 import { decryptHostingToken } from '@/lib/credential-crypto';
 import { ensureHostingSchema, stableId } from '@/lib/hosting-db';
 import { normalizeSubdomainLabel } from '@/lib/launch-project';
@@ -29,6 +29,7 @@ export async function POST(request: Request) {
     connectionId = requiredText(body.connectionId, 'cPanel account', 64);
     const parentDomain = requiredText(body.parentDomain, 'parent domain', 253).toLowerCase();
     const label = normalizeSubdomainLabel(requiredText(body.subdomainLabel, 'subdomain name', 63));
+    const confirmDnsReplacement = body.confirmDnsReplacement === true;
     targetDomain = `${label}.${parentDomain}`;
 
     const connection = await db.prepare(`SELECT id, base_url AS baseUrl, username,
@@ -52,6 +53,39 @@ export async function POST(request: Request) {
     const token = await decryptHostingToken(
       String(connection.encryptedToken), String(connection.encryptionIv), identity.userId, connectionId,
     );
+    let removedDnsRecords: Awaited<ReturnType<typeof removeExactCpanelDnsRecords>> = [];
+    let dnsSnapshot: Awaited<ReturnType<typeof inspectCpanelDnsRecords>> | null = null;
+    try {
+      dnsSnapshot = await inspectCpanelDnsRecords({
+        baseUrl: String(connection.baseUrl), username: String(connection.username), token, parentDomain, hostname: targetDomain,
+      });
+    } catch {
+      // Some cPanel plans do not expose DNS zone inspection. Creation still gets an authoritative response below.
+    }
+    const addressRecords = dnsSnapshot?.records.filter((record) => ['A', 'AAAA', 'CNAME'].includes(record.type)) ?? [];
+    if (addressRecords.length && !confirmDnsReplacement) {
+      await db.prepare(`INSERT INTO hosting_audit_events (
+        id, owner_user_id, connection_id, action, target, outcome, details_json, created_at
+      ) VALUES (?, ?, ?, 'cpanel.subdomain_create', ?, 'blocked', ?, ?)`)
+        .bind(crypto.randomUUID(), identity.userId, connectionId, targetDomain,
+          JSON.stringify({ reason: 'dns_only_conflict', dnsRecords: addressRecords }), new Date().toISOString()).run();
+      return json({
+        error: `${targetDomain} has DNS records but is not configured as a cPanel website. Confirm their removal to create the real subdomain.`,
+        requiresDnsCleanup: true,
+        dnsRecords: addressRecords.map((record) => ({ type: record.type, value: record.value })),
+      }, 409);
+    }
+    if (addressRecords.length && confirmDnsReplacement) {
+      removedDnsRecords = await removeExactCpanelDnsRecords({
+        baseUrl: String(connection.baseUrl), username: String(connection.username), token, parentDomain, hostname: targetDomain,
+      });
+      const remaining = await inspectCpanelDnsRecords({
+        baseUrl: String(connection.baseUrl), username: String(connection.username), token, parentDomain, hostname: targetDomain,
+      });
+      if (remaining.records.some((record) => ['A', 'AAAA', 'CNAME'].includes(record.type))) {
+        throw new Error(`The DNS record for ${targetDomain} could not be removed and verified. The subdomain was not created.`);
+      }
+    }
     await createCpanelSubdomain({
       baseUrl: String(connection.baseUrl), username: String(connection.username), token, label, parentDomain,
     });
@@ -86,7 +120,7 @@ export async function POST(request: Request) {
         id, owner_user_id, connection_id, action, target, outcome, details_json, created_at
       ) VALUES (?, ?, ?, 'cpanel.subdomain_create', ?, 'success', ?, ?)`)
         .bind(crypto.randomUUID(), identity.userId, connectionId, targetDomain,
-          JSON.stringify({ parentDomain, label, documentRoot: created.documentRoot }), now),
+          JSON.stringify({ parentDomain, label, documentRoot: created.documentRoot, removedDnsRecords }), now),
     ]);
 
     return json({ domainId, domain: targetDomain, message: `${targetDomain} was created and added as an available domain.` }, 201);

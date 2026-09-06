@@ -1,4 +1,5 @@
 import { ensureWordPressMemoryConstants, inspectWordPressMemory } from './wordpress-memory';
+import { parseCpanelDnsZone, type CpanelDnsRecord } from './cpanel-dns';
 
 export type CpanelDomain = {
   domain: string;
@@ -180,6 +181,43 @@ export async function createCpanelSubdomain(input: {
     if (error instanceof CpanelAuthenticationError) throw error;
     return cpanelJsonUapi(input.baseUrl, input.username, input.token, 'SubDomain', 'addsubdomain', query);
   }
+}
+
+export async function inspectCpanelDnsRecords(input: {
+  baseUrl: string;
+  username: string;
+  token: string;
+  parentDomain: string;
+  hostname: string;
+}) {
+  const data = await cpanelUapi(input.baseUrl, input.username, input.token, 'DNS', 'parse_zone', {
+    zone: validateCredentialPart(input.parentDomain, 'parent domain', 253),
+  });
+  return parseCpanelDnsZone(data, input.hostname);
+}
+
+export async function removeExactCpanelDnsRecords(input: {
+  baseUrl: string;
+  username: string;
+  token: string;
+  parentDomain: string;
+  hostname: string;
+}) {
+  const removed: CpanelDnsRecord[] = [];
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    const snapshot = await inspectCpanelDnsRecords(input);
+    const removable = snapshot.records.filter((record) => ['A', 'AAAA', 'CNAME'].includes(record.type));
+    if (!removable.length) return removed;
+    if (snapshot.serial === null) throw new Error('cPanel returned the DNS record without the zone serial required for safe removal.');
+    const record = removable[0];
+    await cpanelUapi(input.baseUrl, input.username, input.token, 'DNS', 'mass_edit_zone', {
+      zone: input.parentDomain,
+      serial: String(snapshot.serial),
+      remove: String(record.lineIndex),
+    });
+    removed.push(record);
+  }
+  throw new Error(`Too many DNS records exist for ${input.hostname}. Remove the remaining records in cPanel DNS Zone Editor.`);
 }
 
 const recommendedPhpDirectives = {
