@@ -794,6 +794,7 @@ export default function Home() {
           baseUrl: formData.get('baseUrl'),
           username: formData.get('username'),
           token: formData.get('token'),
+          password: formData.get('password'),
           primaryDomain: formData.get('primaryDomain'),
         }),
       });
@@ -808,6 +809,8 @@ export default function Home() {
       if (!response.ok) throw new Error(result.error || 'The cPanel connection failed.');
       const tokenInput = form.elements.namedItem('token') as HTMLInputElement | null;
       if (tokenInput) tokenInput.value = '';
+      const passwordInput = form.elements.namedItem('password') as HTMLInputElement | null;
+      if (passwordInput) passwordInput.value = '';
       if (result.connection && result.domains) {
         const connection = result.connection;
         newestInventorySyncRef.current = Math.max(
@@ -1092,7 +1095,7 @@ export default function Home() {
         </header>
 
         {activeView === 'Dashboard' && <Dashboard domains={projectAwareDomains} onDomain={openDomain} onLaunch={openLaunch} onMoveToFinalStages={moveProjectToFinalStages} inventoryIsLive={inventoryIsLive} inventoryRefreshing={inventoryRefreshing} inventoryLastRefreshedAt={inventoryLastRefreshedAt} />}
-        {activeView === 'New Project' && <LaunchProjectView connections={hostingConnections} domains={projectAwareDomains} templates={templateSlots} busy={launchBusy} onSaveTemplate={saveTemplateSlot} onLaunch={launchNewProject} />}
+        {activeView === 'New Project' && <LaunchProjectView connections={hostingConnections} domains={projectAwareDomains} templates={templateSlots} busy={launchBusy} onSaveTemplate={saveTemplateSlot} onLaunch={launchNewProject} onActivateWordPress={setWordpressActivationConnection} />}
         {activeView === 'Domains' && <DomainsView domains={projectAwareDomains} onDomain={openDomain} onNotice={setNotice} notice={notice} inventoryIsLive={inventoryIsLive} />}
         {activeView === 'Projects' && <ProjectsView domains={projectAwareDomains} projects={projectRecords} activityRefreshing={projectActivityRefreshing} activityCheckedAt={projectActivityCheckedAt} onRefreshActivity={() => void refreshProjectActivity(true)} onProject={setSelectedProject} onManageDomains={() => changeView('Domains')} onReorder={reorderProjects} />}
         {activeView === 'Agent Activity' && <AgentActivity auditEvents={auditEvents} projects={projectRecords} projectEvents={projectEvents} filter={activityFilter} onFilter={setActivityFilter} />}
@@ -1116,8 +1119,8 @@ export default function Home() {
                   {(hostingProvider === 'cPanel' ? [
                     ['Open cPanel', 'Sign in to the cPanel account that owns your development subdomains.'],
                     ['Create an API token', 'Open Security → Manage API Tokens and create one named “SpyderWeb Local Connector”.'],
-                    ['Copy the account details', 'Keep the secure cPanel URL, username and new token ready. Do not use your normal password.'],
-                    ['Start managing', 'A successful connection activates domain and PHP controls. WordPress Management is then activated once from the saved account in Settings.'],
+                    ['Copy both credentials', 'Keep the secure cPanel URL, username, API token and normal cPanel account password ready.'],
+                    ['Connect everything once', 'One submission imports domains and activates PHP and Softaculous WordPress management.'],
                   ] : [
                     ['Open hPanel', 'Sign in to the Hostinger account that owns your development websites.'],
                     ['Create an API token', 'Open Account settings → API and create a token named “SpyderWeb Local Connector”.'],
@@ -1135,10 +1138,11 @@ export default function Home() {
                 <label>Connection name<input name="name" required placeholder={hostingProvider === 'cPanel' ? 'Main DEV cPanel' : 'Hostinger DEV account'} /></label>
                 {hostingProvider === 'cPanel' && <><label>Secure cPanel URL<input name="baseUrl" required type="url" placeholder="https://server.example.com:2083" /></label><label>cPanel username<input name="username" required autoComplete="username" placeholder="Account username" /></label></>}
                 <label>{hostingProvider === 'cPanel' ? 'cPanel API token' : 'Hostinger API token'}<input name="token" required type="password" autoComplete="new-password" placeholder="Paste the API token" /></label>
+                {hostingProvider === 'cPanel' && <label>cPanel account password<input name="password" required type="password" autoComplete="current-password" placeholder="Normal cPanel login password" /></label>}
                 <label>Primary development domain<input name="primaryDomain" required placeholder="dev.example.co.za" /></label>
-                <div className="read-only-option"><span aria-hidden="true">✓</span><span><strong>Connection confirms cPanel access</strong><small>The encrypted token stays connected for domain inventory and PHP controls. Softaculous WordPress access is activated separately from the saved account.</small></span></div>
+                <div className="read-only-option"><span aria-hidden="true">✓</span><span><strong>One complete connection</strong><small>The API token handles inventory and PHP. The encrypted account password activates Softaculous WordPress controls in the same setup.</small></span></div>
                 {hostingNotice && <p className="notice">{hostingNotice}</p>}
-                <div className="hosting-form-actions"><button className="text-button" type="button" onClick={() => setHostingProvider(null)}>Close</button><button className="primary-button" type="submit" disabled={hostingBusy}>{hostingBusy ? 'Connecting…' : 'Save connection & scan'}</button></div>
+                <div className="hosting-form-actions"><button className="text-button" type="button" onClick={() => setHostingProvider(null)}>Close</button><button className="primary-button" type="submit" disabled={hostingBusy}>{hostingBusy ? 'Connecting everything…' : 'Connect cPanel & activate'}</button></div>
               </form>
             </div>
           </section>
@@ -1172,8 +1176,8 @@ export default function Home() {
                 <div><p className="eyebrow">WordPress access</p><h3>Confirm Softaculous access</h3><p>The password is only stored after the read-only installation check succeeds.</p></div>
                 <label>cPanel username<input value={wordpressActivationConnection.username} readOnly aria-readonly="true" /></label>
                 <label>cPanel account password<input name="password" required type="password" autoComplete="current-password" placeholder="Enter the normal cPanel login password" /></label>
-                <label>Default template domain<select name="defaultTemplateDomain" required defaultValue={wordpressActivationConnection.defaultTemplateDomain || managedDomains.find((domain) => domain.connectionId === wordpressActivationConnection.id && /template/i.test(domain.domain))?.domain || ''}>
-                  <option value="" disabled>Choose the template source</option>
+                <label>Default template domain (optional)<select name="defaultTemplateDomain" defaultValue={wordpressActivationConnection.defaultTemplateDomain || managedDomains.find((domain) => domain.connectionId === wordpressActivationConnection.id && /template/i.test(domain.domain))?.domain || ''}>
+                  <option value="">Choose later</option>
                   {managedDomains.filter((domain) => domain.connectionId === wordpressActivationConnection.id).map((domain) => <option value={domain.domain} key={String(domain.id)}>{domain.domain}{/template/i.test(domain.domain) ? ' · detected template' : ''}</option>)}
                 </select></label>
                 <div className="read-only-option"><span aria-hidden="true">✓</span><span><strong>Verification is read-only</strong><small>Activation only checks the Softaculous installation list. WordPress actions still respect each domain’s soft lock and confirmation prompt.</small></span></div>
@@ -1625,17 +1629,20 @@ function TemplatePreviewCard({ slot, domains, onSave }: { slot: TemplateSlot; do
   </article>;
 }
 
-function LaunchProjectView({ connections, domains, templates, busy, onSaveTemplate, onLaunch }: {
+function LaunchProjectView({ connections, domains, templates, busy, onSaveTemplate, onLaunch, onActivateWordPress }: {
   connections: HostingConnection[]; domains: Domain[]; templates: TemplateSlot[]; busy: boolean;
   onSaveTemplate: (slotNumber: number, name: string, sourceDomainId: string | null) => Promise<void>;
   onLaunch: (event: FormEvent<HTMLFormElement>) => Promise<void>;
+  onActivateWordPress: (connection: HostingConnection) => void;
 }) {
-  const operational = connections.filter((connection) => connection.mode === 'managed_write' && connection.operationalCredentialStatus === 'verified');
-  const [connectionId, setConnectionId] = useState(operational[0]?.id ?? '');
+  const connected = connections.filter((connection) => connection.mode === 'managed_write');
+  const [connectionId, setConnectionId] = useState(connected[0]?.id ?? '');
   const [projectName, setProjectName] = useState('');
   const [subdomain, setSubdomain] = useState('');
   const [targetMode, setTargetMode] = useState<'existing' | 'new'>('existing');
-  const effectiveConnectionId = connectionId || operational[0]?.id || '';
+  const effectiveConnectionId = connectionId || connected[0]?.id || '';
+  const selectedConnection = connected.find((connection) => connection.id === effectiveConnectionId) ?? null;
+  const managementReady = selectedConnection?.operationalCredentialStatus === 'verified';
   const parents = domains.filter((domain) => domain.connectionId === effectiveConnectionId && (domain.domainType === 'main' || domain.domainType === 'addon'));
   const compatibleTemplates = templates.filter((template) => template.connectionId === effectiveConnectionId && template.sourceDomainId);
   const templateDomainIds = new Set(compatibleTemplates.map((template) => String(template.sourceDomainId)));
@@ -1647,7 +1654,7 @@ function LaunchProjectView({ connections, domains, templates, busy, onSaveTempla
       <div className="section-heading"><div><p className="eyebrow">Create and deploy</p><h2>Launch a new project</h2><p>Use an available development domain or create a new subdomain, then load the selected template at its root.</p></div><span className="root-install-pill">Root install · no /wp folder</span></div>
       <form className="new-project-form" onSubmit={(event) => void onLaunch(event)}>
         <label>Project name<input name="projectName" required value={projectName} onChange={(event) => { const value = event.target.value; setProjectName(value); setSubdomain((current) => current && current !== suggestedSubdomainLabel(projectName) ? current : suggestedSubdomainLabel(value)); }} placeholder="Jamie's Plumbing" /></label>
-        <label>cPanel account<select name="connectionId" required value={effectiveConnectionId} onChange={(event) => setConnectionId(event.target.value)}><option value="" disabled>Choose cPanel</option>{operational.map((connection) => <option key={connection.id} value={connection.id}>{connection.name}</option>)}</select></label>
+        <label>cPanel account<select name="connectionId" required value={effectiveConnectionId} onChange={(event) => setConnectionId(event.target.value)}><option value="" disabled>Choose cPanel</option>{connected.map((connection) => <option key={connection.id} value={connection.id}>{connection.name}{connection.operationalCredentialStatus === 'verified' ? '' : ' · activation needed'}</option>)}</select></label>
         <fieldset className="launch-target-switch"><legend>Website address</legend><div>
           <label className={targetMode === 'existing' ? 'active' : ''}><input type="radio" name="targetMode" value="existing" checked={targetMode === 'existing'} onChange={() => setTargetMode('existing')} /><span>Existing domain</span></label>
           <label className={targetMode === 'new' ? 'active' : ''}><input type="radio" name="targetMode" value="new" checked={targetMode === 'new'} onChange={() => setTargetMode('new')} /><span>Create new</span></label>
@@ -1661,9 +1668,9 @@ function LaunchProjectView({ connections, domains, templates, busy, onSaveTempla
         {targetMode === 'existing' && <label className="launch-overwrite-confirm"><input type="checkbox" name="confirmExistingOverwrite" value="true" required /><span><strong>Confirm template replacement</strong><small>This deletes any WordPress installation on the selected domain before loading the template.</small></span></label>}
         <label className="full-field">Project notes<textarea name="notes" rows={3} placeholder="Optional client brief or launch notes" /></label>
         <div className="full-field"><ClientIntakeForm projectName={projectName} /></div>
-        {!operational.length && <p className="launch-readiness-warning full-field">Activate WordPress Management for a cPanel account in Settings before launching.</p>}
+        {selectedConnection && !managementReady && <div className="launch-readiness-warning full-field"><span>WordPress Management needs the cPanel account password once before this account can launch projects.</span><button type="button" className="outline-button" onClick={() => onActivateWordPress(selectedConnection)}>Activate here</button></div>}
         <div className="launch-summary full-field"><span>1</span><p><strong>{targetMode === 'existing' ? 'Prepare the selected domain' : 'Create the new subdomain'}</strong><small>{targetMode === 'existing' ? 'Any existing WordPress installation is removed only after confirmation.' : 'The launch stops if the address already exists.'}</small></p><span>2</span><p><strong>Clone the selected template</strong><small>Softaculous installs it directly at the domain root with an empty directory field.</small></p><span>3</span><p><strong>Verify and track</strong><small>The project is assigned, soft locked, and moved to Template Loaded.</small></p></div>
-        <button className="primary-button launch-project-submit full-field" disabled={busy || !operational.length || !compatibleTemplates.length || (targetMode === 'existing' && !existingTargets.length)}>{busy ? 'Preparing domain & loading template…' : 'Launch New Project'}</button>
+        <button className="primary-button launch-project-submit full-field" disabled={busy || !managementReady || !compatibleTemplates.length || (targetMode === 'existing' && !existingTargets.length)}>{busy ? 'Preparing domain & loading template…' : 'Launch New Project'}</button>
       </form>
     </section>
     <section className="panel template-library-panel">

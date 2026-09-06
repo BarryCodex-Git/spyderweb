@@ -15,6 +15,13 @@ function field(value: unknown, label: string, max: number) {
   return result;
 }
 
+function optionalField(value: unknown, max: number) {
+  if (value === null || value === undefined || value === '') return null;
+  const result = typeof value === 'string' ? value.trim() : '';
+  if (!result || result.length > max || /[\r\n\0]/.test(result)) throw new Error('Choose a valid template domain.');
+  return result;
+}
+
 export async function POST(request: Request, { params }: { params: Promise<{ connectionId: string }> }) {
   const identity = getRequestIdentity(request);
   if (!identity) return json({ error: 'Sign in as the SpyderWeb owner.' }, 401);
@@ -35,17 +42,21 @@ export async function POST(request: Request, { params }: { params: Promise<{ con
       password: field(body.password, 'cPanel account password', 4096),
       authMode: 'cpanel_basic' as const,
     };
-    const defaultTemplateDomain = field(body.defaultTemplateDomain, 'default template domain', 253).toLowerCase();
-    const templateRecord = await db.prepare(`SELECT id FROM hosting_domains WHERE connection_id = ?
-      AND owner_user_id = ? AND domain = ? AND active = 1 LIMIT 1`)
-      .bind(connectionId, identity.userId, defaultTemplateDomain).first();
-    if (!templateRecord) throw new Error('Choose a template domain from this connected cPanel account.');
-
     // Read-only verification: no installation is changed during activation.
     const installations = await listSoftaculousInstallations(String(connection.baseUrl), credential);
-    const template = installations.find((installation) => installation.domain === defaultTemplateDomain);
-    if (!template?.id) {
-      throw new Error(`Softaculous connected, but ${defaultTemplateDomain} is not registered as a WordPress installation. Open WordPress Manager by Softaculous, run Scan, then try again.`);
+    const requestedTemplate = optionalField(body.defaultTemplateDomain, 253)?.toLowerCase() ?? null;
+    const defaultTemplateDomain = requestedTemplate
+      ?? installations.find((installation) => /template/i.test(`${installation.domain} ${installation.siteName ?? ''}`))?.domain
+      ?? null;
+    if (defaultTemplateDomain) {
+      const templateRecord = await db.prepare(`SELECT id FROM hosting_domains WHERE connection_id = ?
+        AND owner_user_id = ? AND domain = ? AND active = 1 LIMIT 1`)
+        .bind(connectionId, identity.userId, defaultTemplateDomain).first();
+      if (!templateRecord) throw new Error('Choose a template domain from this connected cPanel account.');
+      const template = installations.find((installation) => installation.domain === defaultTemplateDomain);
+      if (!template?.id) {
+        throw new Error(`Softaculous connected, but ${defaultTemplateDomain} is not registered as a WordPress installation. Open WordPress Manager by Softaculous, run Scan, then try again.`);
+      }
     }
 
     const encrypted = await encryptSecret(JSON.stringify({
@@ -81,7 +92,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ con
     return json({
       verified: true,
       installationCount: installations.length,
-      message: `WordPress Management is active for ${String(connection.name)}. Softaculous reported ${installations.length} installation${installations.length === 1 ? '' : 's'} and ${defaultTemplateDomain} is the default template source.`,
+      message: `WordPress Management is active for ${String(connection.name)}. Softaculous reported ${installations.length} installation${installations.length === 1 ? '' : 's'}${defaultTemplateDomain ? ` and ${defaultTemplateDomain} is the default template source` : ''}.`,
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : 'WordPress Management could not be activated.';

@@ -1,7 +1,8 @@
 import { discoverCpanel } from '@/lib/cpanel';
-import { encryptHostingToken } from '@/lib/credential-crypto';
+import { encryptHostingToken, encryptSecret } from '@/lib/credential-crypto';
 import { ensureHostingSchema, getDatabase, stableId } from '@/lib/hosting-db';
 import { getRequestIdentity, isSameOrigin } from '@/lib/request-auth';
+import { listSoftaculousInstallations } from '@/lib/softaculous';
 
 export const dynamic = 'force-dynamic';
 
@@ -97,6 +98,7 @@ export async function POST(request: Request) {
     const body = (await request.json()) as Record<string, unknown>;
     const name = cleanText(body.name, 'connection name', 100);
     const primaryDomain = cleanText(body.primaryDomain, 'primary development domain', 253).toLowerCase();
+    const password = cleanText(body.password, 'cPanel account password', 4096);
     const discovered = await discoverCpanel({
       baseUrl: cleanText(body.baseUrl, 'secure cPanel URL', 500),
       username: cleanText(body.username, 'cPanel username', 128),
@@ -115,11 +117,38 @@ export async function POST(request: Request) {
       identity.userId,
       connectionId,
     );
+    const operationalCredential = {
+      username: discovered.username,
+      password,
+      authMode: 'cpanel_basic' as const,
+    };
+    const installations = await listSoftaculousInstallations(discovered.baseUrl, operationalCredential);
+    const installationsByDomain = new Map(installations.map((installation) => [installation.domain, installation]));
+    for (const domain of discovered.domains) {
+      const installation = installationsByDomain.get(domain.domain);
+      if (!installation) continue;
+      domain.wordpressStatus = 'installed';
+      domain.wordpressInstallationId = installation.id;
+      domain.wordpressSiteName = installation.siteName;
+      domain.wordpressUrl = installation.url;
+      domain.wordpressVersion = installation.version;
+      domain.wordpressSource = 'Softaculous WordPress Management';
+    }
+    discovered.wordpressInstallationCount = installations.length;
+    discovered.wordpressScanStatus = 'complete';
+    discovered.capabilities.wordpressInventory = true;
+    discovered.capabilities.wordpressManagement = true;
+    const operationalSecret = await encryptSecret(JSON.stringify({
+      ...operationalCredential,
+      adminUsername: 'admin',
+      adminPassword: 'admin',
+      adminEmail: identity.email || `admin@${primaryDomain}`,
+    }), identity.userId, `operational:${connectionId}`);
     const db = await ensureHostingSchema(getDatabase());
     const connectionStatus = discovered.scanStatus === 'complete' ? 'connected_managed' : 'connected_scan_issue';
-    const defaultTemplateDomain = discovered.domains
-      .filter((domain) => /template/i.test(domain.domain))
-      .sort((a, b) => Number(b.wordpressStatus === 'installed') - Number(a.wordpressStatus === 'installed'))[0]?.domain ?? null;
+    const defaultTemplateDomain = installations
+      .filter((installation) => /template/i.test(`${installation.domain} ${installation.siteName ?? ''}`))
+      .sort((a, b) => a.domain.localeCompare(b.domain))[0]?.domain ?? null;
     const persistedDomains = await Promise.all(discovered.domains.map(async (domain) => ({
       ...domain,
       id: await stableId(connectionId, domain.domain),
@@ -138,10 +167,11 @@ export async function POST(request: Request) {
           id, owner_user_id, owner_email, provider, name, base_url, username, primary_domain,
           status, mode, credential_storage, encrypted_token, encryption_iv, credential_version,
           capabilities_json, write_actions_enabled, destructive_actions_enabled,
-          operational_auth_type, operational_credential_status, default_template_domain,
+          operational_auth_type, encrypted_operational_secret, operational_secret_iv,
+          operational_credential_status, default_template_domain,
           confirmation_policy, last_sync_at, created_at, updated_at
-        ) VALUES (?, ?, ?, 'cpanel', ?, ?, ?, ?, ?, 'managed_write', 'encrypted_cloud', ?, ?, ?, ?, 1, 0,
-          NULL, 'not_configured', ?, 'soft_lock+clear_confirmation', ?, ?, ?)
+        ) VALUES (?, ?, ?, 'cpanel', ?, ?, ?, ?, ?, 'managed_write', 'encrypted_cloud', ?, ?, ?, ?, 1, 1,
+          'cpanel_basic', ?, ?, 'verified', ?, 'soft_lock+clear_confirmation', ?, ?, ?)
         ON CONFLICT(owner_user_id, provider, base_url, username) DO UPDATE SET
           owner_email = excluded.owner_email, name = excluded.name,
           primary_domain = excluded.primary_domain,
@@ -151,7 +181,11 @@ export async function POST(request: Request) {
           credential_version = excluded.credential_version,
           capabilities_json = excluded.capabilities_json,
           write_actions_enabled = 1,
-          destructive_actions_enabled = CASE WHEN hosting_connections.operational_credential_status = 'verified' THEN 1 ELSE 0 END,
+          destructive_actions_enabled = 1,
+          operational_auth_type = excluded.operational_auth_type,
+          encrypted_operational_secret = excluded.encrypted_operational_secret,
+          operational_secret_iv = excluded.operational_secret_iv,
+          operational_credential_status = 'verified',
           default_template_domain = COALESCE(excluded.default_template_domain, hosting_connections.default_template_domain),
           last_sync_at = excluded.last_sync_at,
           updated_at = excluded.updated_at`)
@@ -168,6 +202,8 @@ export async function POST(request: Request) {
           credential.encryptionIv,
           credential.credentialVersion,
           JSON.stringify(discovered.capabilities),
+          operationalSecret.encrypted,
+          operationalSecret.iv,
           defaultTemplateDomain,
           now,
           now,
@@ -260,8 +296,8 @@ export async function POST(request: Request) {
         credentialStorage: 'encrypted_cloud',
         capabilities: discovered.capabilities,
         writeActionsEnabled: 1,
-        destructiveActionsEnabled: 0,
-        operationalCredentialStatus: 'not_configured',
+        destructiveActionsEnabled: 1,
+        operationalCredentialStatus: 'verified',
         defaultTemplateDomain,
         confirmationPolicy: 'soft_lock+clear_confirmation',
         lastSyncAt: now,
@@ -271,9 +307,9 @@ export async function POST(request: Request) {
       wordpressScanStatus: discovered.wordpressScanStatus,
       message: discovered.scanStatus === 'complete'
         ? discovered.wordpressScanStatus === 'complete'
-          ? `${discovered.domains.length} domains discovered and ${discovered.wordpressInstallationCount} WordPress installations identified. Domain and PHP management are connected. Activate WordPress Management in Settings to enable Softaculous actions.`
-          : `${discovered.domains.length} domains discovered. Domain and PHP management are connected; activate WordPress Management in Settings for installs, deletion and template cloning.`
-        : 'cPanel connected. The live domain scan needs another attempt; use Retry scan from Settings, then activate WordPress Management.',
+          ? `${discovered.domains.length} domains discovered and ${discovered.wordpressInstallationCount} WordPress installations identified. WordPress Management is active.`
+          : `${discovered.domains.length} domains discovered. WordPress Management is active and ready.`
+        : 'cPanel authentication succeeded, but the live domain scan needs another attempt from Settings.',
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : 'The cPanel connection could not be completed.';
