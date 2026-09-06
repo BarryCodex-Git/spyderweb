@@ -620,11 +620,6 @@ export async function ensureWordPressMemoryProfile(input: {
   password?: string | null;
   session?: CpanelSession | null;
 }) {
-  const normalizedRoot = input.documentRoot.replace(/\\/g, '/').replace(/\/+$/, '');
-  if (/(^|\/)public_html$/i.test(normalizedRoot)) {
-    throw new Error('The primary public_html installation is intentionally excluded from this action.');
-  }
-
   const callers: CpanelUapiCaller[] = [
     (module, fn, query = {}) => cpanelJsonUapi(input.baseUrl, input.username, input.token, module, fn, query),
     (module, fn, query = {}) => cpanelUapi(input.baseUrl, input.username, input.token, module, fn, query),

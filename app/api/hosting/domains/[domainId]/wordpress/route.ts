@@ -179,10 +179,6 @@ export async function POST(request: Request, { params }: { params: Promise<{ dom
       .bind(record.connectionId, identity.userId).first<Record<string, unknown>>();
     if (!connection) throw new Error('The hosting connection for this domain was not found.');
     if (action === 'apply_php_profile') {
-      const normalizedRoot = record.documentRoot?.replace(/\\/g, '/').replace(/\/+$/, '') ?? '';
-      if (record.domainType === 'main' || /(^|\/)public_html$/i.test(normalizedRoot)) {
-        throw new Error('The primary public_html installation is intentionally excluded. Select a WordPress subdomain instead.');
-      }
       const cpanelToken = await decryptHostingToken(String(connection.encryptedToken), String(connection.encryptionIv), identity.userId, record.connectionId);
       let managementPassword: string | null = null;
       if (connection.encryptedOperationalSecret && connection.operationalSecretIv) {
