@@ -368,6 +368,8 @@ export default function Home() {
   const toastTimers = useRef(new Map<string, number>());
   const inventoryRequestCounter = useRef(0);
   const newestInventorySyncRef = useRef(0);
+  const projectOrderSavingRef = useRef(false);
+  const projectOrderRevisionRef = useRef(0);
 
   const copy = viewCopy[activeView];
   const selectedStageIndex = selectedProject
@@ -475,11 +477,14 @@ export default function Home() {
   }, [showActionToast]);
 
   const loadProjectData = useCallback(async () => {
+    const orderRevision = projectOrderRevisionRef.current;
     try {
       const response = await fetch('/api/projects', { cache: 'no-store' });
       if (!response.ok) return null;
       const data = await response.json() as { projects: Project[]; events: ProjectEvent[] };
-      setProjectRecords((current) => JSON.stringify(current) === JSON.stringify(data.projects) ? current : data.projects);
+      if (!projectOrderSavingRef.current && orderRevision === projectOrderRevisionRef.current) {
+        setProjectRecords((current) => JSON.stringify(current) === JSON.stringify(data.projects) ? current : data.projects);
+      }
       setProjectEvents((current) => JSON.stringify(current) === JSON.stringify(data.events) ? current : data.events);
       setSelectedProject((current) => current
         ? data.projects.find((project) => project.id === current.id) ?? current
@@ -689,14 +694,25 @@ export default function Home() {
   async function reorderProjects(projectIds: string[]) {
     const previous = projectRecords;
     const byId = new Map(previous.map((project) => [project.id, project]));
+    projectOrderRevisionRef.current += 1;
+    projectOrderSavingRef.current = true;
     setProjectRecords(projectIds.map((id) => byId.get(id)).filter((item): item is Project => Boolean(item)));
     try {
       const response = await fetch('/api/projects/reorder', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ projectIds }) });
       const result = await response.json() as { error?: string };
       if (!response.ok) throw new Error(result.error || 'The project order could not be saved.');
+      projectOrderSavingRef.current = false;
+      const confirmed = await loadProjectData();
+      const confirmedIds = confirmed?.projects.map((project) => project.id) ?? [];
+      if (confirmedIds.length && confirmedIds.some((id, index) => id !== projectIds[index])) {
+        throw new Error('The saved order could not be confirmed.');
+      }
+      showActionToast({ id: 'project-order', status: 'success', title: 'Project position saved', message: 'The card will stay in this manual position.' });
     } catch (error) {
       setProjectRecords(previous);
       showActionToast({ id: 'project-order', status: 'error', title: 'Order not saved', message: error instanceof Error ? error.message : 'Refresh and try again.' });
+    } finally {
+      projectOrderSavingRef.current = false;
     }
   }
 
@@ -1945,6 +1961,7 @@ function relativeActivity(value: string) {
 
 function ProjectsView({ domains, projects, activityRefreshing, activityCheckedAt, onRefreshActivity, onProject, onManageDomains, onReorder, onPriority }: { domains: Domain[]; projects: Project[]; activityRefreshing: boolean; activityCheckedAt: string | null; onRefreshActivity: () => void; onProject: (project: Project) => void; onManageDomains: () => void; onReorder: (projectIds: string[]) => Promise<void>; onPriority: (project: Project, priority: ProjectPriority) => Promise<void> }) {
   const [draggingId, setDraggingId] = useState<string | null>(null);
+  const [dropTargetId, setDropTargetId] = useState<string | null>(null);
   const visibleProjects = sortProjectsByPriority(projects);
   const operationalDomains = domains.filter((domain) => domain.connectionMode === 'managed_write' && domain.operationalReady).length;
   const lockedDomains = domains.filter((domain) => domain.softLocked).length;
@@ -1968,19 +1985,28 @@ function ProjectsView({ domains, projects, activityRefreshing, activityCheckedAt
         <div className="section-heading"><div><p className="eyebrow">Current work</p><h2>Manual project pipeline</h2></div><div className="board-heading-actions"><span className="manual-mode-pill">Manual stages</span><span className="auto-project-pill">WordPress activity monitored</span><button className="outline-button compact-button" disabled={activityRefreshing} onClick={onRefreshActivity}>{activityRefreshing ? 'Checking…' : 'Refresh activity'}</button>{activityCheckedAt && <small className="activity-checked-time">Checked {new Date(activityCheckedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</small>}</div></div>
         <div className="project-card-row">
           {visibleProjects.map((project) => (
-            <article className={`project-board-card ${projectActivityClass(project)} ${project.priority ? `priority-${project.priority.toLowerCase()}` : ''} ${draggingId === project.id ? 'dragging' : ''}`} key={project.id} draggable={!project.priority}
-              onDragStart={(event) => { setDraggingId(project.id); event.dataTransfer.effectAllowed = 'move'; }} onDragEnd={() => setDraggingId(null)}
-              onDragOver={(event) => { if (!project.priority && draggingId && draggingId !== project.id) event.preventDefault(); }}
-              onDrop={(event) => { event.preventDefault(); if (project.priority || !draggingId || draggingId === project.id) return; const ids = projects.map((item) => item.id); const from = ids.indexOf(draggingId); const to = ids.indexOf(project.id); ids.splice(to, 0, ids.splice(from, 1)[0]); setDraggingId(null); void onReorder(ids); }}>
-              <label className={`project-priority-control ${project.priority ? project.priority.toLowerCase() : ''}`}>
-                <span className="sr-only">Priority for {project.client}</span>
-                <select aria-label={`Priority for ${project.client}`} value={project.priority} onClick={(event) => event.stopPropagation()} onChange={(event) => void onPriority(project, event.target.value as ProjectPriority)}>
-                  <option value="">Priority</option>
-                  {PROJECT_PRIORITIES.map((priority) => <option value={priority} key={priority}>{priority}</option>)}
-                </select>
-              </label>
+            <article className={`project-board-card ${projectActivityClass(project)} ${project.priority ? `priority-${project.priority.toLowerCase()}` : ''} ${draggingId === project.id ? 'dragging' : ''} ${dropTargetId === project.id ? 'drop-target' : ''}`} key={project.id}
+              onDragOver={(event) => { if (!project.priority && draggingId && draggingId !== project.id) { event.preventDefault(); event.dataTransfer.dropEffect = 'move'; if (dropTargetId !== project.id) setDropTargetId(project.id); } }}
+              onDrop={(event) => { event.preventDefault(); setDropTargetId(null); if (project.priority || !draggingId || draggingId === project.id) return; const ids = projects.map((item) => item.id); const from = ids.indexOf(draggingId); const to = ids.indexOf(project.id); ids.splice(to, 0, ids.splice(from, 1)[0]); setDraggingId(null); void onReorder(ids); }}>
+              <div className="project-card-header">
+                <button className="project-card-heading" onClick={() => onProject(project)}>
+                  <span className={`project-avatar small ${project.developer.toLowerCase()}`}>{project.client.slice(0, 1)}</span>
+                  <span><b>{project.stage}</b><small>{project.stageStatus.replaceAll('_', ' ')}</small></span>
+                </button>
+                <div className="project-card-controls">
+                  <label className={`project-priority-control ${project.priority ? project.priority.toLowerCase() : ''}`}>
+                    <span className="sr-only">Priority for {project.client}</span>
+                    <select aria-label={`Priority for ${project.client}`} value={project.priority} onClick={(event) => event.stopPropagation()} onChange={(event) => void onPriority(project, event.target.value as ProjectPriority)}>
+                      <option value="">Priority</option>
+                      {PROJECT_PRIORITIES.map((priority) => <option value={priority} key={priority}>{priority}</option>)}
+                    </select>
+                  </label>
+                  <button className="project-drag-handle" type="button" draggable={!project.priority} disabled={Boolean(project.priority)} aria-label={`Drag ${project.client} to arrange`} title={project.priority ? 'Clear priority to arrange manually' : 'Drag to arrange'}
+                    onDragStart={(event) => { setDraggingId(project.id); setDropTargetId(null); event.dataTransfer.effectAllowed = 'move'; event.dataTransfer.setData('text/plain', project.id); }}
+                    onDragEnd={() => { setDraggingId(null); setDropTargetId(null); }}>⋮⋮</button>
+                </div>
+              </div>
               <button className="project-card-open" onClick={() => onProject(project)}>
-                <div className="project-card-top"><span className={`project-avatar small ${project.developer.toLowerCase()}`}>{project.client.slice(0, 1)}</span><span><b>{project.stage}</b><small>{project.stageStatus.replaceAll('_', ' ')}</small></span>{!project.priority && <i title="Drag to arrange">⋮⋮</i>}</div>
                 <h3>{project.client}</h3><p>{project.domain}</p>
                 <div className="project-card-meta"><span><small>Started</small><strong>{new Date(project.createdAt).toLocaleDateString('en-ZA', { day: 'numeric', month: 'short', year: 'numeric' })}</strong></span><span><small>Assigned</small><strong>{project.developer}</strong></span></div>
                 <div className="project-progress"><b>{project.progress}%</b><span className="progress-track"><i style={{ width: `${project.progress}%` }} /></span></div>

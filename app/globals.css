@@ -368,21 +368,29 @@ body { font-size: 16px; line-height: 1.45; }
 .project-card-row { display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); gap: 16px; padding: 4px 3px 14px; }
 .project-board-card { position: relative; min-width: 0; border: 1px solid var(--line); border-radius: 16px; overflow: hidden; transition: opacity .15s, transform .15s; }
 .project-board-card.dragging { opacity: .45; transform: scale(.98); }
+.project-board-card.drop-target { outline: 3px solid rgba(53,105,224,.28); outline-offset: 2px; transform: translateY(-3px); }
 .project-board-card.activity-current { background: linear-gradient(160deg,#fff 68%,#edf9f3); border-color: #cfe9dc; }
 .project-board-card.activity-watch { background: linear-gradient(160deg,#fff 68%,#fff5e4); border-color: #f0d7ac; }
 .project-board-card.activity-stale { background: linear-gradient(160deg,#fff 68%,#fff0f1); border-color: #edc6cb; }
-.project-card-open { display: block; width: 100%; padding: 62px 18px 18px; border: 0; background: transparent; text-align: left; color: var(--ink); cursor: pointer; }
-.project-priority-control { position: absolute; z-index: 2; top: 14px; right: 14px; }
+.project-card-header { display: grid; grid-template-columns: minmax(0,1fr) auto; gap: 10px; align-items: center; padding: 16px 16px 0; }
+.project-card-heading { display: grid; grid-template-columns: auto minmax(0,1fr); gap: 10px; align-items: center; min-width: 0; padding: 0; border: 0; background: transparent; color: var(--ink); text-align: left; cursor: pointer; }
+.project-card-heading > span:last-child { display: grid; gap: 2px; min-width: 0; }
+.project-card-heading b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.project-card-heading small { color: var(--muted); text-transform: capitalize; }
+.project-card-controls { display: flex; align-items: center; gap: 7px; }
+.project-card-open { display: block; width: 100%; padding: 0 18px 18px; border: 0; background: transparent; text-align: left; color: var(--ink); cursor: pointer; }
+.project-priority-control { display: block; }
 .project-priority-control select { min-width: 92px; height: 34px; padding: 0 26px 0 10px; border: 1px solid #d8e0ef; border-radius: 9px; background: #fff; color: #66738e; font: inherit; font-size: 11px; font-weight: 800; cursor: pointer; }
+.project-drag-handle { width: 34px; height: 34px; display: grid; place-items: center; border: 1px solid #d8e0ef; border-radius: 9px; background: #fff; color: #7785a1; font-size: 14px; font-weight: 900; cursor: grab; }
+.project-drag-handle:active { cursor: grabbing; }
+.project-drag-handle:disabled { opacity: .38; cursor: not-allowed; }
 .project-priority-control.urgent select { color: #aa3344; border-color: #efbec6; background: #fff0f2; }
 .project-priority-control.busy select { color: #976017; border-color: #efd39f; background: #fff7e7; }
 .project-priority-control.idle select { color: #52617f; border-color: #d4dceb; background: #f1f4f9; }
 .project-board-card.priority-urgent { border-color: #e9aeb8; }
 .project-board-card.priority-busy { border-color: #e8c98c; }
 .project-board-card.priority-idle { border-color: #cbd5e6; }
-.project-card-top { display: grid; grid-template-columns: auto 1fr auto; gap: 10px; align-items: center; }
-.project-card-top > span { display: grid; gap: 2px; }.project-card-top small { color: var(--muted); text-transform: capitalize; }.project-card-top i { color: #8d98b0; font-style: normal; cursor: grab; }
-.project-card-open h3 { margin: 17px 0 4px; font-size: 18px; }.project-card-open > p { margin: 0 0 18px; color: var(--muted); }
+.project-card-open h3 { margin: 14px 0 4px; font-size: 18px; }.project-card-open > p { margin: 0 0 18px; color: var(--muted); }
 .project-card-meta { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; padding: 13px 0; border-block: 1px solid rgba(215,223,239,.8); }
 .project-card-meta span { display: grid; gap: 3px; }.project-card-meta small { color: var(--muted); }.project-card-meta strong { font-size: 13px; }
 .project-card-open .project-progress { margin-top: 15px; display: grid; grid-template-columns: 38px 1fr; align-items: center; gap: 8px; }
