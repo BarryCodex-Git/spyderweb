@@ -355,7 +355,12 @@ body { font-size: 16px; line-height: 1.45; }
 .repeatable-intake-field > div { display: grid; grid-template-columns: 1fr 34px; gap: 7px; }
 .repeatable-intake-field > div button { border: 1px solid #e2e7f1; border-radius: 9px; background: #fff; color: #9b4855; cursor: pointer; }.repeatable-intake-field > div button:disabled { opacity: .35; }
 .add-intake-field { justify-self: start; border: 0; background: transparent; color: var(--blue); font-weight: 800; cursor: pointer; padding: 5px 0; }
-.project-details-download { display: inline-flex; align-items: center; justify-content: center; padding: 10px 13px; border: 1px solid var(--line); border-radius: 10px; color: var(--ink); text-decoration: none; background: #fff; font-size: 12px; font-weight: 800; }
+.project-details-download { display: inline-flex; align-items: center; justify-content: center; padding: 10px 13px; border: 1px solid var(--line); border-radius: 10px; color: var(--ink); text-decoration: none; background: #fff; font-size: 12px; font-weight: 800; cursor: pointer; }
+.project-details-download:disabled { cursor: wait; opacity: .65; }
+.intake-editor-backdrop { z-index: 40; }
+.intake-editor-modal { display: grid; grid-template-columns: 1fr; gap: 16px; padding: 26px; background: #fff; }
+.intake-editor-header { padding-right: 45px; }.intake-editor-header h2 { margin: 4px 0 6px; font-size: 26px; }.intake-editor-header p:last-child { margin: 0; color: var(--muted); }
+.intake-editor-actions { display: flex; justify-content: flex-end; align-items: center; gap: 12px; }
 .project-board-panel { overflow: hidden; }
 .project-card-row { display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); gap: 16px; padding: 4px 3px 14px; }
 .project-board-card { min-width: 0; border: 1px solid var(--line); border-radius: 16px; overflow: hidden; transition: opacity .15s, transform .15s; }

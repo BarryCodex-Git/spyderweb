@@ -241,6 +241,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ dom
         wordpressResult = await ensureWordPressMemoryProfile({
           baseUrl: String(connection.baseUrl), username: String(connection.username), token: cpanelToken,
           domain: record.domain, documentRoot, password: managementPassword, session,
+          siteUrl: `https://${record.domain}`,
         });
       }
       await db.prepare(`UPDATE hosting_domains SET php_profile_status = ?, php_version = ?,
@@ -334,6 +335,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ dom
       const wordpressResult = await ensureWordPressMemoryProfile({
         baseUrl, username: cpanelUsername, token: cpanelToken,
         domain: record.domain, documentRoot, password: secrets.password, session,
+        siteUrl: `https://${record.domain}`,
       });
       await db.prepare(`UPDATE hosting_domains SET php_profile_status = 'wordpress_memory_verified', php_version = ?,
         document_root = ? WHERE id = ? AND owner_user_id = ?`)

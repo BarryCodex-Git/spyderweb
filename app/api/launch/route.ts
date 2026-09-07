@@ -324,26 +324,34 @@ export async function POST(request: Request) {
         publicInfo ??= await publicWordPressInfo(targetDomain);
         if (publicInfo.detected && rootInstallationUrl(publicInfo.url, targetDomain)) {
           verifiedUrl = publicInfo.url || ''; siteName = publicInfo.siteName ?? siteName; version = publicInfo.version || '';
-        } else if (installation?.url && !rootInstallationUrl(installation.url, targetDomain)) {
-          throw new Error(`Softaculous reported ${installation.url}. SpyderWeb requires WordPress at the domain root and will not accept a /wp installation.`);
         } else {
-          // The password-authenticated clone call already returned a successful
-          // Softaculous API result. Some shared hosts do not expose that new
-          // installation through their read-only inventory endpoint immediately.
-          // Do not turn an accepted root clone into a false launch failure.
+          // The clone may be present before Softaculous refreshes its inventory.
+          // Treat this as provisional only; the live canonical URL is verified
+          // below after wp-config.php is corrected for the destination domain.
           verifiedUrl = `https://${targetDomain}`;
           siteName = String(template!.name);
-          memoryWarning = ' The WordPress inventory will refresh during the next cPanel scan.';
         }
       }
       const documentRoot = verifiedDocumentRoot;
       if (!documentRoot) {
-        memoryProfileStatus = 'failed';
-        memoryWarning = ' The project is live, but its memory profile needs inspection because cPanel did not return its document root.';
+        throw new Error(`The template was copied, but cPanel did not return the document root for ${targetDomain}. SpyderWeb did not mark the project as launched because it could not verify the WordPress address.`);
       } else {
+        cpanelSession = cpanelSession ?? await createCpanelSession(String(connection.baseUrl), credential!).catch(() => null);
+        const session = cpanelSession;
         try {
-          cpanelSession = cpanelSession ?? await createCpanelSession(String(connection.baseUrl), credential!).catch(() => null);
-          const session = cpanelSession;
+          // Cloning copies the source database's home/siteurl values. Pin both
+          // WordPress constants to the destination before accepting the launch.
+          await ensureWordPressMemoryProfile({
+            baseUrl: String(connection.baseUrl), username: String(connection.username), token,
+            domain: targetDomain, documentRoot, password: credential!.password, session,
+            siteUrl: `https://${targetDomain}`,
+          });
+          memoryProfileStatus = 'wordpress_memory_verified';
+        } catch (error) {
+          const detail = error instanceof Error ? error.message : 'The WordPress address could not be verified.';
+          throw new Error(`The template was copied, but SpyderWeb could not safely change its WordPress address to ${targetDomain}. ${detail}`);
+        }
+        try {
           let phpVersionResult: Awaited<ReturnType<typeof ensureRecommendedPhpVersion>>;
           let selectorMode: 'cloudlinux' | 'multiphp' = 'cloudlinux';
           try {
@@ -372,11 +380,6 @@ export async function POST(request: Request) {
             baseUrl: String(connection.baseUrl), username: String(connection.username), token,
             domain: targetDomain, documentRoot, password: credential!.password, session,
           });
-          await ensureWordPressMemoryProfile({
-            baseUrl: String(connection.baseUrl), username: String(connection.username), token,
-            domain: targetDomain, documentRoot, password: credential!.password, session,
-          });
-          memoryProfileStatus = 'wordpress_memory_verified';
           phpRuntimeVersion = phpVersionResult.version;
         } catch (error) {
           memoryProfileStatus = 'failed';
@@ -384,6 +387,18 @@ export async function POST(request: Request) {
           memoryWarning = ` The project is live, but its PHP and WordPress memory profile needs inspection. ${detail}`;
         }
       }
+      let canonicalInfo: Awaited<ReturnType<typeof publicWordPressInfo>> | null = null;
+      for (const delay of [0, 1000, 2000, 4000]) {
+        if (delay) await new Promise((resolve) => setTimeout(resolve, delay));
+        canonicalInfo = await publicWordPressInfo(targetDomain);
+        if (canonicalInfo.detected && rootInstallationUrl(canonicalInfo.url, targetDomain)) break;
+      }
+      if (!canonicalInfo?.detected || !rootInstallationUrl(canonicalInfo.url, targetDomain)) {
+        throw new Error(`The template was copied, but WordPress still redirects away from ${targetDomain}. SpyderWeb did not mark the project as launched.`);
+      }
+      verifiedUrl = `https://${targetDomain}`;
+      siteName = canonicalInfo.siteName ?? siteName;
+      version = canonicalInfo.version || version;
     }
     const templateName = keepExistingTemplate ? siteName : String(template!.name);
     const templateDomain = keepExistingTemplate ? targetDomain : String(template!.domain);

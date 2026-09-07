@@ -355,6 +355,8 @@ export default function Home() {
   const [projectRecords, setProjectRecords] = useState<Project[]>([]);
   const [projectEvents, setProjectEvents] = useState<ProjectEvent[]>([]);
   const [projectBusy, setProjectBusy] = useState(false);
+  const [projectIntakeEditor, setProjectIntakeEditor] = useState<{ project: Project; intake: ClientIntake } | null>(null);
+  const [projectIntakeBusy, setProjectIntakeBusy] = useState(false);
   const [projectActivityRefreshing, setProjectActivityRefreshing] = useState(false);
   const [projectActivityCheckedAt, setProjectActivityCheckedAt] = useState<string | null>(null);
   const [templateSlots, setTemplateSlots] = useState<TemplateSlot[]>([]);
@@ -584,6 +586,46 @@ export default function Home() {
     if (!response.ok) throw new Error(result.error || 'The template could not be saved.');
     if (result.templates) setTemplateSlots(result.templates);
     showActionToast({ id: `template-slot-${slotNumber}`, status: 'success', title: 'Template saved', message: result.message || 'Template updated.' });
+  }
+
+  async function openProjectIntakeEditor(project: Project) {
+    setProjectIntakeBusy(true);
+    try {
+      const response = await fetch(`/api/projects/${project.id}/intake`, { cache: 'no-store' });
+      const result = await response.json() as { intake?: ClientIntake; error?: string };
+      if (!response.ok || !result.intake) throw new Error(result.error || 'The saved client information could not be loaded.');
+      setProjectIntakeEditor({ project, intake: { ...emptyClientIntake, ...result.intake } });
+    } catch (error) {
+      showActionToast({ id: 'project-intake', status: 'error', title: 'Client information unavailable',
+        message: error instanceof Error ? error.message : 'The saved client information could not be loaded.' });
+    } finally { setProjectIntakeBusy(false); }
+  }
+
+  async function saveProjectIntake(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!projectIntakeEditor) return;
+    const { project, intake } = projectIntakeEditor;
+    setProjectIntakeBusy(true);
+    try {
+      const response = await fetch(`/api/projects/${project.id}/intake`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ intake }),
+      });
+      const result = await response.json() as { intake?: ClientIntake; error?: string; message?: string };
+      if (!response.ok) throw new Error(result.error || 'The client information could not be saved.');
+      await loadProjectData();
+      setProjectIntakeEditor(null);
+      const download = document.createElement('a');
+      download.href = `/api/projects/${project.id}/intake?download=1`;
+      download.download = '';
+      document.body.appendChild(download);
+      download.click();
+      download.remove();
+      showActionToast({ id: 'project-intake', status: 'success', title: 'Client information saved',
+        message: `${result.message || 'The project details were updated.'} A refreshed Word document is downloading.` });
+    } catch (error) {
+      showActionToast({ id: 'project-intake', status: 'error', title: 'Client information not saved',
+        message: error instanceof Error ? error.message : 'The client information could not be saved.' });
+    } finally { setProjectIntakeBusy(false); }
   }
 
   async function launchNewProject(event: FormEvent<HTMLFormElement>) {
@@ -1397,6 +1439,7 @@ export default function Home() {
               </div>
               <div className="modal-header-tools">
                 <SiteQuickLinks domainOrUrl={selectedProject.domain} label={selectedProject.client} />
+                <button className="project-details-download" type="button" disabled={projectIntakeBusy} onClick={() => void openProjectIntakeEditor(selectedProject)}>✎ Edit client info</button>
                 <a className="project-details-download" href={`/api/projects/${selectedProject.id}/intake?download=1`}>↓ Project Details</a>
               </div>
             </header>
@@ -1477,6 +1520,21 @@ export default function Home() {
               </aside>
             </div>
           </section>
+        </div>
+      )}
+
+      {projectIntakeEditor && (
+        <div className="project-modal-backdrop intake-editor-backdrop" onClick={() => !projectIntakeBusy && setProjectIntakeEditor(null)}>
+          <form className="project-control-modal intake-editor-modal new-project-form" onSubmit={saveProjectIntake} onClick={(event) => event.stopPropagation()}>
+            <button className="close-button" type="button" disabled={projectIntakeBusy} onClick={() => setProjectIntakeEditor(null)}>×</button>
+            <header className="intake-editor-header full-field">
+              <p className="eyebrow">Client information</p>
+              <h2>Edit {projectIntakeEditor.project.client}</h2>
+              <p>Update the saved intake details without reinstalling WordPress or changing the selected template.</p>
+            </header>
+            <div className="full-field"><ClientIntakeForm projectName={projectIntakeEditor.project.client} intake={projectIntakeEditor.intake} expanded onChange={(update) => setProjectIntakeEditor((current) => current ? { ...current, intake: update(current.intake) } : current)} /></div>
+            <div className="intake-editor-actions full-field"><button className="text-button" type="button" disabled={projectIntakeBusy} onClick={() => setProjectIntakeEditor(null)}>Cancel</button><button className="primary-button" disabled={projectIntakeBusy}>{projectIntakeBusy ? 'Saving…' : 'Save & Download Updated Document'}</button></div>
+          </form>
         </div>
       )}
 
@@ -1686,7 +1744,7 @@ function RepeatableIntakeField({ label, values, onChange }: { label: string; val
   return <fieldset className="repeatable-intake-field"><legend>{label}</legend>{values.map((value, index) => <div key={`${label}-${index}`}><input value={value} onChange={(event) => onChange(values.map((item, itemIndex) => itemIndex === index ? event.target.value : item))} /><button type="button" aria-label={`Remove ${label} item`} disabled={values.length === 1} onClick={() => onChange(values.filter((_, itemIndex) => itemIndex !== index))}>×</button></div>)}<button type="button" className="add-intake-field" onClick={() => onChange([...values, ''])}>＋ Add another</button></fieldset>;
 }
 
-function ClientIntakeForm({ projectName, intake, onChange }: { projectName: string; intake: ClientIntake; onChange: (update: (current: ClientIntake) => ClientIntake) => void }) {
+function ClientIntakeForm({ projectName, intake, onChange, expanded = false }: { projectName: string; intake: ClientIntake; onChange: (update: (current: ClientIntake) => ClientIntake) => void; expanded?: boolean }) {
   const update = (key: keyof ClientIntake, value: string | string[]) => onChange((current) => ({ ...current, [key]: value }));
   const textFields: Array<{ key: keyof ClientIntake; label: string; type?: string }> = [
     { key: 'industry', label: 'Industry' }, { key: 'primaryRegion', label: 'Primary location or region' },
@@ -1697,7 +1755,7 @@ function ClientIntakeForm({ projectName, intake, onChange }: { projectName: stri
     { key: 'colorsToAvoid', label: 'Colours or styles to avoid' },
   ];
   const finalIntake = { ...intake, clientName: projectName };
-  return <details className="client-intake-details">
+  return <details className="client-intake-details" open={expanded || undefined}>
     <summary><span><b>Submit Project Details</b><small>Client information for the website build and AI handover</small></span><i>⌄</i></summary>
     <div className="client-intake-body">
       <input type="hidden" name="intakeJson" value={JSON.stringify(finalIntake)} />
