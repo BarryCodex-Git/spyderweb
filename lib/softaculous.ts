@@ -312,7 +312,7 @@ export async function listSoftaculousBackups(baseUrl: string, credential: Operat
 export async function softaculousAction(input: {
   baseUrl: string;
   credential: OperationalCredential;
-  action: 'install' | 'clone' | 'backup' | 'remove' | 'delete_backup';
+  action: 'install' | 'clone' | 'wordpress_url' | 'backup' | 'remove' | 'delete_backup';
   domain: string;
   installationId?: string | null;
   sourceInstallationId?: string | null;
@@ -344,6 +344,19 @@ export async function softaculousAction(input: {
       baseUrl: input.baseUrl, credential: input.credential,
       query: { act: 'sclone', insid: input.sourceInstallationId || '' },
       form: { softsubmit: '1', softdomain: input.domain, softdirectory: '', softproto: '3', softdb: input.databaseName },
+    });
+  }
+  if (input.action === 'wordpress_url') {
+    if (!input.installationId) throw new Error('Softaculous did not provide the cloned WordPress installation ID.');
+    return request({
+      baseUrl: input.baseUrl, credential: input.credential,
+      query: { act: 'wordpress' },
+      form: {
+        insid: input.installationId,
+        softurl: `https://${input.domain}`,
+        site_name: input.siteName || 'New Client Website',
+        save_info: '1',
+      },
     });
   }
   if (input.action === 'backup') {

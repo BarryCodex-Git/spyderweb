@@ -291,16 +291,9 @@ export async function POST(request: Request) {
       verifiedDocumentRoot = await resolveCpanelDocumentRoot(
         String(connection.baseUrl), String(connection.username), token, targetDomain,
       ).catch(() => null) || storedDocumentRoot;
-      if (verifiedDocumentRoot) {
-        cpanelSession = await createCpanelSession(String(connection.baseUrl), credential!).catch(() => null);
-        await ensureWordPressMemoryProfile({
-          baseUrl: String(connection.baseUrl), username: String(connection.username), token,
-          domain: targetDomain, documentRoot: verifiedDocumentRoot, password: credential!.password,
-          session: cpanelSession, siteUrl: `https://${targetDomain}`,
-        });
-      }
       let installation: Awaited<ReturnType<typeof listSoftaculousInstallations>>[number] | undefined;
       let publicInfo: Awaited<ReturnType<typeof publicWordPressInfo>> | null = null;
+      let correctedSiteUrl = false;
       // A successful Softaculous clone can take several seconds to appear in its
       // installation inventory. Poll the inventory and the live WordPress endpoint
       // before reporting a failure; never repeat the clone itself.
@@ -309,6 +302,14 @@ export async function POST(request: Request) {
         const refreshed = await listSoftaculousInstallations(String(connection.baseUrl), credential!);
         installation = refreshed.find((item) => item.domain === targetDomain);
         if (installation && rootInstallationUrl(installation.url, targetDomain)) break;
+        if (installation?.id && !correctedSiteUrl) {
+          await softaculousAction({
+            baseUrl: String(connection.baseUrl), credential: credential!, action: 'wordpress_url',
+            domain: targetDomain, installationId: installation.id, siteName: String(template!.name),
+          });
+          correctedSiteUrl = true;
+          continue;
+        }
         publicInfo = await publicWordPressInfo(targetDomain);
         if (publicInfo.detected && rootInstallationUrl(publicInfo.url, targetDomain)) break;
       }
@@ -332,7 +333,8 @@ export async function POST(request: Request) {
         memoryWarning = ' The project is live, but its memory profile needs inspection because cPanel did not return its document root.';
       } else {
         try {
-          const session = cpanelSession ?? await createCpanelSession(String(connection.baseUrl), credential!).catch(() => null);
+          cpanelSession = cpanelSession ?? await createCpanelSession(String(connection.baseUrl), credential!).catch(() => null);
+          const session = cpanelSession;
           let phpVersionResult: Awaited<ReturnType<typeof ensureRecommendedPhpVersion>>;
           let selectorMode: 'cloudlinux' | 'multiphp' = 'cloudlinux';
           try {

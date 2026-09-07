@@ -64,6 +64,31 @@ test('definite direct-auth redirect retries through a real cPanel session, never
   }
 });
 
+test('WordPress URL correction uses the authenticated Softaculous manager', async () => {
+  const originalFetch = globalThis.fetch;
+  const calls = [];
+  globalThis.fetch = async (url, init) => {
+    calls.push({ url: String(url), init });
+    return Response.json({ done: 1 });
+  };
+  try {
+    await softaculousManagedAction({
+      baseUrl: 'https://cpanel.example:2083', credential: passwordCredential,
+      action: 'wordpress_url', domain: 'dev4.testwebsitebuild.com',
+      installationId: '26_12345', siteName: 'Full Template Ready',
+    });
+    assert.equal(calls.length, 1);
+    assert.equal(new URL(calls[0].url).searchParams.get('act'), 'wordpress');
+    const form = new URLSearchParams(calls[0].init.body);
+    assert.equal(form.get('insid'), '26_12345');
+    assert.equal(form.get('softurl'), 'https://dev4.testwebsitebuild.com');
+    assert.equal(form.get('site_name'), 'Full Template Ready');
+    assert.equal(form.get('save_info'), '1');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test('install never uses a cPanel API token as a Softaculous write fallback', async () => {
   const originalFetch = globalThis.fetch;
   let calls = 0;
