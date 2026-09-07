@@ -1,7 +1,8 @@
 import { ensureWordPressMemoryConstants, inspectWordPressMemory } from './wordpress-memory';
 import { isCpanelSuccessStatus, issueSubdomainCreate } from './cpanel-subdomain';
 import {
-  collectPhpPackages, currentPhpPackage, phpPackageLabel, selectRecommendedPhpPackage,
+  collectPhpPackages, currentPhpPackage, ensureCpanelPhpHandler,
+  phpPackageLabel, selectRecommendedPhpPackage,
 } from './php-version';
 
 export type CpanelDomain = {
@@ -444,6 +445,69 @@ export async function ensureRecommendedPhpVersion(input: {
     ? ` Available runtimes: ${availableVersions.map((item) => phpPackageLabel(item) ?? item).join(', ')}.`
     : '';
   throw new Error(`SpyderWeb could not select and verify a recommended PHP runtime for ${input.domain}. ${detail}${available}`);
+}
+
+export async function ensurePhpRuntimeHandlerProfile(input: {
+  baseUrl: string;
+  username: string;
+  token: string;
+  domain: string;
+  documentRoot: string;
+  phpPackage: string;
+  password?: string | null;
+  session?: CpanelSession | null;
+}) {
+  const callers: CpanelUapiCaller[] = [
+    (module, fn, query = {}) => cpanelJsonUapi(input.baseUrl, input.username, input.token, module, fn, query),
+    (module, fn, query = {}) => cpanelUapi(input.baseUrl, input.username, input.token, module, fn, query),
+    ...(input.password ? [(module: string, fn: string, query: Record<string, string> = {}) =>
+      cpanelPasswordUapi(input.baseUrl, input.username, input.password!, module, fn, query)] : []),
+    ...(input.session ? [(module: string, fn: string, query: Record<string, string> = {}) =>
+      cpanelSessionUapi(input.baseUrl, input.session!, module, fn, query)] : []),
+  ];
+  const roots = filemanRootCandidates(input.documentRoot, input.username);
+  let lastError: unknown = null;
+  for (const root of roots) {
+    for (const call of callers) {
+      try {
+        const files = await call('Fileman', 'list_files', { dir: root, types: 'file', show_hidden: '1' });
+        let existing = '';
+        if (containsNamedFile(files, '.htaccess')) {
+          const data = await call('Fileman', 'get_file_content', {
+            dir: root, file: '.htaccess', to_charset: 'UTF-8', update_html_document_encoding: '0',
+          });
+          existing = fileContent(data) ?? '';
+        }
+        const repaired = ensureCpanelPhpHandler(existing, input.phpPackage);
+        if (!repaired.changed) {
+          return { status: 'already_correct' as const, previousPackages: repaired.previousPackages, backupFile: null };
+        }
+        let backupFile: string | null = null;
+        if (existing) {
+          const stamp = new Date().toISOString().replace(/[-:.TZ]/g, '').slice(0, 14);
+          backupFile = `.htaccess.spyderweb-php-${stamp}.bak`;
+          await call('Fileman', 'save_file_content', {
+            dir: root, file: backupFile, content: existing,
+            from_charset: 'UTF-8', to_charset: 'UTF-8', fallback: '0',
+          });
+        }
+        await call('Fileman', 'save_file_content', {
+          dir: root, file: '.htaccess', content: repaired.content,
+          from_charset: 'UTF-8', to_charset: 'UTF-8', fallback: '0',
+        });
+        const saved = await call('Fileman', 'get_file_content', {
+          dir: root, file: '.htaccess', to_charset: 'UTF-8', update_html_document_encoding: '0',
+        });
+        const verified = ensureCpanelPhpHandler(fileContent(saved) ?? '', input.phpPackage);
+        if (verified.changed) throw new Error(`cPanel saved .htaccess for ${input.domain}, but the ${input.phpPackage} handler did not read back.`);
+        return { status: 'updated' as const, previousPackages: repaired.previousPackages, backupFile };
+      } catch (error) {
+        lastError = error;
+      }
+    }
+  }
+  const detail = lastError instanceof Error ? lastError.message : 'File Manager did not expose the document root.';
+  throw new Error(`SpyderWeb could not verify the PHP handler inside ${input.domain}'s document root. ${detail}`);
 }
 
 async function inspectRecommendedPhpProfileWith(

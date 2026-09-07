@@ -1,5 +1,6 @@
 import {
-  createCpanelSubdomain, discoverCpanel, ensureRecommendedPhpProfile, ensureRecommendedPhpVersion,
+  createCpanelSubdomain, discoverCpanel, ensurePhpRuntimeHandlerProfile,
+  ensureRecommendedPhpProfile, ensureRecommendedPhpVersion,
   ensureWordPressMemoryProfile, publicWordPressInfo,
 } from '@/lib/cpanel';
 import { effectiveDocumentRoot, reconcileCreatedSubdomain } from '@/lib/cpanel-subdomain';
@@ -303,6 +304,11 @@ export async function POST(request: Request) {
           const phpVersionResult = await ensureRecommendedPhpVersion({
             baseUrl: String(connection.baseUrl), username: String(connection.username), token,
             domain: targetDomain, password: credential!.password, session,
+          });
+          await ensurePhpRuntimeHandlerProfile({
+            baseUrl: String(connection.baseUrl), username: String(connection.username), token,
+            domain: targetDomain, documentRoot, phpPackage: phpVersionResult.version,
+            password: credential!.password, session,
           });
           await ensureRecommendedPhpProfile({
             baseUrl: String(connection.baseUrl), username: String(connection.username), token,

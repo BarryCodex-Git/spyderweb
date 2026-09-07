@@ -1,5 +1,5 @@
 import {
-  ensureRecommendedPhpProfile, ensureRecommendedPhpVersion,
+  ensurePhpRuntimeHandlerProfile, ensureRecommendedPhpProfile, ensureRecommendedPhpVersion,
   ensureWordPressMemoryProfile, publicWordPressInfo,
 } from '@/lib/cpanel';
 import { effectiveDocumentRoot } from '@/lib/cpanel-subdomain';
@@ -205,6 +205,12 @@ export async function POST(request: Request, { params }: { params: Promise<{ dom
         baseUrl: String(connection.baseUrl), username: String(connection.username), token: cpanelToken,
         domain: record.domain, password: managementPassword, session,
       });
+      if (!documentRoot) throw new Error(`The document root for ${record.domain} could not be determined safely.`);
+      const phpHandlerResult = await ensurePhpRuntimeHandlerProfile({
+        baseUrl: String(connection.baseUrl), username: String(connection.username), token: cpanelToken,
+        domain: record.domain, documentRoot, phpPackage: phpVersionResult.version,
+        password: managementPassword, session,
+      });
       const phpResult = await ensureRecommendedPhpProfile({
         baseUrl: String(connection.baseUrl), username: String(connection.username), token: cpanelToken,
         domain: record.domain, documentRoot, password: managementPassword, session,
@@ -227,6 +233,9 @@ export async function POST(request: Request, { params }: { params: Promise<{ dom
         phpRuntimePrevious: phpVersionResult.previousVersion,
         phpRuntimeVersion: phpVersionResult.version,
         phpRuntimeMethod: phpVersionResult.method,
+        phpHandlerStatus: phpHandlerResult.status,
+        phpHandlerPrevious: phpHandlerResult.previousPackages,
+        phpHandlerRollbackCopy: phpHandlerResult.backupFile,
         wordpressStatus: wordpressResult?.status ?? 'not_installed',
         wordpressMemoryLimit: wordpressResult?.values.WP_MEMORY_LIMIT ?? null,
         wordpressMaxMemoryLimit: wordpressResult?.values.WP_MAX_MEMORY_LIMIT ?? null,
@@ -235,6 +244,9 @@ export async function POST(request: Request, { params }: { params: Promise<{ dom
       const runtimeSummary = phpVersionResult.status === 'already_correct'
         ? `${phpVersionResult.label} was already selected.`
         : `${phpVersionResult.label} was selected and verified.`;
+      const handlerSummary = phpHandlerResult.status === 'already_correct'
+        ? 'The document-root PHP handler was already aligned.'
+        : `The document-root PHP handler was aligned and verified${phpHandlerResult.backupFile ? `; ${phpHandlerResult.backupFile} is the rollback copy` : ''}.`;
       const phpSummary = phpResult.status === 'already_correct' ? 'The cPanel PHP limits were already correct.' : 'The cPanel PHP limits were updated and verified.';
       const wordpressSummary = wordpressResult
         ? wordpressResult.status === 'already_correct'
@@ -242,7 +254,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ dom
           : `wp-config.php now requests ${wordpressResult.values.WP_MEMORY_LIMIT} normally and ${wordpressResult.values.WP_MAX_MEMORY_LIMIT} for administration; ${wordpressResult.backupFile} is the rollback copy.`
         : 'No WordPress installation is present, so there was no wp-config.php to change.';
       return json({
-        message: `${runtimeSummary} ${phpSummary} ${wordpressSummary}`,
+        message: `${runtimeSummary} ${handlerSummary} ${phpSummary} ${wordpressSummary}`,
         warning: false,
       });
     }
@@ -270,6 +282,11 @@ export async function POST(request: Request, { params }: { params: Promise<{ dom
         baseUrl, username: cpanelUsername, token: cpanelToken,
         domain: record.domain, password: secrets.password, session,
       });
+      const phpHandlerResult = await ensurePhpRuntimeHandlerProfile({
+        baseUrl, username: cpanelUsername, token: cpanelToken,
+        domain: record.domain, documentRoot, phpPackage: phpVersionResult.version,
+        password: secrets.password, session,
+      });
       const phpResult = await ensureRecommendedPhpProfile({
         baseUrl, username: cpanelUsername, token: cpanelToken,
         domain: record.domain, documentRoot, password: secrets.password, session,
@@ -292,6 +309,9 @@ export async function POST(request: Request, { params }: { params: Promise<{ dom
           phpRuntimeStatus: phpVersionResult.status,
           phpRuntimePrevious: phpVersionResult.previousVersion,
           phpRuntimeVersion: phpVersionResult.version,
+          phpHandlerStatus: phpHandlerResult.status,
+          phpHandlerPrevious: phpHandlerResult.previousPackages,
+          phpHandlerRollbackCopy: phpHandlerResult.backupFile,
           wordpressStatus: wordpressResult.status,
           wordpressMemoryLimit: wordpressResult.values.WP_MEMORY_LIMIT,
           wordpressMaxMemoryLimit: wordpressResult.values.WP_MAX_MEMORY_LIMIT,

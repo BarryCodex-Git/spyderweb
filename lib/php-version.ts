@@ -89,3 +89,34 @@ export function currentPhpPackage(value: unknown, domain: string) {
   };
   return inspect(value);
 }
+
+const cpanelHandlerBlockPattern = /(?:\r?\n)?# php -- BEGIN cPanel-generated handler[^\r\n]*[\s\S]*?# php -- END cPanel-generated handler[^\r\n]*(?:\r?\n)?/gi;
+const standalonePhpHandlerPattern = /^\s*AddHandler\s+application\/x-httpd-(?:ea|alt)-php\d{2,3}[^\r\n]*\r?\n?/gim;
+
+export function ensureCpanelPhpHandler(content: string, phpPackage: string) {
+  const normalizedPackage = phpPackage.toLowerCase();
+  const previousPackages = collectPhpPackages(content);
+  const alreadyManaged = previousPackages.includes(normalizedPackage)
+    && !previousPackages.some((item) => item !== normalizedPackage);
+  if (alreadyManaged) return { content, changed: false, previousPackages };
+
+  const newline = content.includes('\r\n') ? '\r\n' : '\n';
+  const base = content
+    .replace(cpanelHandlerBlockPattern, newline)
+    .replace(standalonePhpHandlerPattern, '')
+    .trimEnd();
+  const major = phpPackageNumber(normalizedPackage)?.toFixed(1).split('.')[0] ?? '8';
+  const block = [
+    '# php -- BEGIN cPanel-generated handler, do not edit',
+    `# Set the “${normalizedPackage}” package as the default “PHP” programming language.`,
+    '<IfModule mime_module>',
+    `  AddHandler application/x-httpd-${normalizedPackage} .php .php${major} .phtml`,
+    '</IfModule>',
+    '# php -- END cPanel-generated handler, do not edit',
+  ].join(newline);
+  return {
+    content: `${base ? `${base}${newline}${newline}` : ''}${block}${newline}`,
+    changed: true,
+    previousPackages,
+  };
+}
