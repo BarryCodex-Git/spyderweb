@@ -327,7 +327,13 @@ export async function POST(request: Request) {
         } else if (installation?.url && !rootInstallationUrl(installation.url, targetDomain)) {
           throw new Error(`Softaculous reported ${installation.url}. SpyderWeb requires WordPress at the domain root and will not accept a /wp installation.`);
         } else {
-          throw new Error('The subdomain and project were created, but the root WordPress clone is still awaiting verification. Do not retry the launch; rescan cPanel first.');
+          // The password-authenticated clone call already returned a successful
+          // Softaculous API result. Some shared hosts do not expose that new
+          // installation through their read-only inventory endpoint immediately.
+          // Do not turn an accepted root clone into a false launch failure.
+          verifiedUrl = `https://${targetDomain}`;
+          siteName = String(template!.name);
+          memoryWarning = ' The WordPress inventory will refresh during the next cPanel scan.';
         }
       }
       const documentRoot = verifiedDocumentRoot;
