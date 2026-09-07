@@ -272,6 +272,7 @@ export async function POST(request: Request) {
     let phpRuntimeVersion = keepExistingTemplate ? String(existingDomain?.phpVersion || '') : '';
     let memoryProfileStatus = keepExistingTemplate ? 'wordpress_memory_pending' : 'not_checked';
     let memoryWarning = '';
+    let cpanelSession: Awaited<ReturnType<typeof createCpanelSession>> | null = null;
     let verifiedDocumentRoot = keepExistingTemplate
       ? effectiveDocumentRoot({
           domain: targetDomain,
@@ -291,10 +292,11 @@ export async function POST(request: Request) {
         String(connection.baseUrl), String(connection.username), token, targetDomain,
       ).catch(() => null) || storedDocumentRoot;
       if (verifiedDocumentRoot) {
+        cpanelSession = await createCpanelSession(String(connection.baseUrl), credential!).catch(() => null);
         await ensureWordPressMemoryProfile({
           baseUrl: String(connection.baseUrl), username: String(connection.username), token,
           domain: targetDomain, documentRoot: verifiedDocumentRoot, password: credential!.password,
-          siteUrl: `https://${targetDomain}`,
+          session: cpanelSession, siteUrl: `https://${targetDomain}`,
         });
       }
       let installation: Awaited<ReturnType<typeof listSoftaculousInstallations>>[number] | undefined;
@@ -330,7 +332,7 @@ export async function POST(request: Request) {
         memoryWarning = ' The project is live, but its memory profile needs inspection because cPanel did not return its document root.';
       } else {
         try {
-          const session = await createCpanelSession(String(connection.baseUrl), credential!).catch(() => null);
+          const session = cpanelSession ?? await createCpanelSession(String(connection.baseUrl), credential!).catch(() => null);
           let phpVersionResult: Awaited<ReturnType<typeof ensureRecommendedPhpVersion>>;
           let selectorMode: 'cloudlinux' | 'multiphp' = 'cloudlinux';
           try {
