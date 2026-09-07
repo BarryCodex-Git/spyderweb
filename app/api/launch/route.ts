@@ -282,7 +282,8 @@ export async function POST(request: Request) {
       : null;
     if (!keepExistingTemplate) {
       await softaculousAction({ baseUrl: String(connection.baseUrl), credential: credential!, action: 'clone', domain: targetDomain,
-        sourceInstallationId, databaseName: softaculousDatabaseName() });
+        sourceInstallationId, databaseName: softaculousDatabaseName(),
+        overwriteExisting: body.confirmExistingOverwrite === true || body.confirmExistingOverwrite === 'true' });
       const storedDocumentRoot = effectiveDocumentRoot({
         domain: targetDomain,
         domainType: created?.domainType ?? String(existingDomain?.domainType || 'subdomain'),

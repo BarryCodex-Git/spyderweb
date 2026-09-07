@@ -321,6 +321,7 @@ export async function softaculousAction(input: {
   adminEmail?: string;
   siteName?: string;
   databaseName?: string;
+  overwriteExisting?: boolean;
   backupFileName?: string;
 }) {
   if (input.action === 'install') {
@@ -343,7 +344,10 @@ export async function softaculousAction(input: {
     return request({
       baseUrl: input.baseUrl, credential: input.credential,
       query: { act: 'sclone', insid: input.sourceInstallationId || '' },
-      form: { softsubmit: '1', softdomain: input.domain, softdirectory: '', softproto: '3', softdb: input.databaseName },
+      form: {
+        softsubmit: '1', softdomain: input.domain, softdirectory: '', softproto: '3', softdb: input.databaseName,
+        ...(input.overwriteExisting ? { overwrite_existing: '1' } : {}),
+      },
     });
   }
   if (input.action === 'wordpress_url') {

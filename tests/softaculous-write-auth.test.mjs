@@ -89,6 +89,27 @@ test('WordPress URL correction uses the authenticated Softaculous manager', asyn
   }
 });
 
+test('confirmed clone replacement sends Softaculous overwrite protection explicitly', async () => {
+  const originalFetch = globalThis.fetch;
+  let request;
+  globalThis.fetch = async (url, init) => {
+    request = { url: String(url), init };
+    return Response.json({ done: 1 });
+  };
+  try {
+    await softaculousManagedAction({
+      baseUrl: 'https://cpanel.example:2083', credential: passwordCredential,
+      action: 'clone', domain: 'dev4.testwebsitebuild.com',
+      sourceInstallationId: '26_template', databaseName: 'sw123', overwriteExisting: true,
+    });
+    const form = new URLSearchParams(request.init.body);
+    assert.equal(form.get('softdirectory'), '');
+    assert.equal(form.get('overwrite_existing'), '1');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test('install never uses a cPanel API token as a Softaculous write fallback', async () => {
   const originalFetch = globalThis.fetch;
   let calls = 0;
