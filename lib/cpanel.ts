@@ -384,6 +384,7 @@ export async function ensureRecommendedPhpVersion(input: {
         cpanelSessionUapi(input.baseUrl, input.session!, module, fn, query),
     }] : []),
   ];
+  let firstError: unknown = null;
   let lastError: unknown = null;
   let availableVersions: string[] = [];
   for (const caller of callers) {
@@ -430,10 +431,15 @@ export async function ensureRecommendedPhpVersion(input: {
         method: caller.method,
       };
     } catch (error) {
+      firstError ??= error;
       lastError = error;
     }
   }
-  const detail = lastError instanceof Error ? lastError.message : 'cPanel did not permit the version change.';
+  // The API-token/compatibility calls are the proven cPanel channel for this
+  // account. Preserve their first failure instead of masking it with a later,
+  // less-capable password fallback error.
+  const primaryError = firstError ?? lastError;
+  const detail = primaryError instanceof Error ? primaryError.message : 'cPanel did not permit the version change.';
   const available = availableVersions.length
     ? ` Available runtimes: ${availableVersions.map((item) => phpPackageLabel(item) ?? item).join(', ')}.`
     : '';

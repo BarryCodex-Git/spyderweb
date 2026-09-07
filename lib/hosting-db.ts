@@ -194,13 +194,6 @@ export async function ensureHostingSchema(db = getDatabase()) {
   // verification must therefore be followed by a WordPress memory check.
   await db.prepare(`UPDATE hosting_domains SET php_profile_status = 'wordpress_memory_pending'
     WHERE wordpress_status = 'installed' AND php_profile_status = 'recommended_applied'`).run();
-  // Older scans recorded the memory profile but did not enforce or reliably
-  // store the domain's PHP runtime. Queue those installations for the same
-  // verified repair path so PHP 7.x cannot remain hidden behind a green state.
-  await db.prepare(`UPDATE hosting_domains SET php_profile_status = 'php_runtime_pending'
-    WHERE wordpress_status = 'installed'
-      AND (php_version IS NULL OR php_version LIKE '%php7%' OR php_version LIKE '7.%')
-      AND php_profile_status != 'php_runtime_pending'`).run();
   return db;
 }
 

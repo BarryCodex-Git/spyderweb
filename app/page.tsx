@@ -226,7 +226,9 @@ function mapHostingDomains(records: HostingDomain[], connections: HostingConnect
     const workflowOverride = workflowStatuses.includes(rawWorkflowOverride as DomainStatus)
       ? rawWorkflowOverride
       : null;
-    const status: DomainStatus = workflowOverride
+    const status: DomainStatus = workflowOverride === 'Needs Inspection'
+      ? 'Available'
+      : workflowOverride
       ? workflowOverride
       : isTemplate
         ? 'Template Loaded'
@@ -362,7 +364,6 @@ export default function Home() {
   const toastTimers = useRef(new Map<string, number>());
   const inventoryRequestCounter = useRef(0);
   const newestInventorySyncRef = useRef(0);
-  const automaticMemoryRepairs = useRef(new Set<string>());
 
   const copy = viewCopy[activeView];
   const selectedStageIndex = selectedProject
@@ -376,7 +377,7 @@ export default function Home() {
     const projectWorkflow = project ? domainWorkflowForStage(project.stage as ProjectStage) : null;
     return project
       ? { ...domain, client: project.client, developer: project.developer, stage: project.stage,
-          progress: project.progress, status: domain.needsInspection ? 'Needs Inspection' : projectWorkflow ?? domain.status }
+          progress: project.progress, status: projectWorkflow ?? domain.status }
       : domain;
   });
   const selectedDomainProject = selectedDomain
@@ -527,38 +528,6 @@ export default function Home() {
       document.removeEventListener('visibilitychange', refreshVisibleInventory);
     };
   }, [loadHostingInventory]);
-
-  useEffect(() => {
-    const candidates = managedDomains.filter((domain) =>
-      typeof domain.id === 'string'
-      && domain.wordpress.startsWith('Installed')
-      && ['wordpress_memory_pending', 'php_runtime_pending'].includes(domain.phpProfileStatus ?? '')
-      && domain.operationalReady
-      && domain.connectionMode === 'managed_write'
-      && !automaticMemoryRepairs.current.has(String(domain.id)),
-    );
-    if (!candidates.length) return;
-    candidates.forEach((domain) => automaticMemoryRepairs.current.add(String(domain.id)));
-    void (async () => {
-      for (const domain of candidates) {
-        const response = await fetch(`/api/hosting/domains/${domain.id}/wordpress`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ action: 'apply_php_profile' }),
-        });
-        const result = await response.json() as { error?: string; message?: string };
-        if (!response.ok) {
-          showActionToast({
-            id: `automatic-memory-${domain.id}`,
-            status: 'warning',
-            title: 'Memory profile needs attention',
-            message: result.error || `SpyderWeb could not verify the memory profile for ${domain.domain}.`,
-          });
-        }
-      }
-      await loadHostingInventory();
-    })();
-  }, [loadHostingInventory, managedDomains, showActionToast]);
 
   useEffect(() => {
     let active = true;
@@ -1574,8 +1543,7 @@ function Dashboard({ domains, onDomain, onLaunch, onMoveToFinalStages, inventory
         <div className="section-heading"><div><p className="eyebrow">Domain board</p><h2>Website workspace</h2></div><div className="board-heading-actions"><span className={`live-refresh-pill ${inventoryRefreshing ? 'refreshing' : ''}`}><i />{inventoryRefreshing ? 'Refreshing live data…' : refreshTime ? `Live · updated ${refreshTime}` : 'Connecting to live data…'}</span><div className="board-tools"><button>All developers⌄</button><button>Filter</button></div></div></div>
         <div className="kanban-board">
           {columns.map((column) => {
-            const items = domains.filter((domain) => domain.status === column
-              || (column === 'Available' && domain.needsInspection))
+            const items = domains.filter((domain) => domain.status === column)
               .sort((left, right) => column === 'Available'
                 ? Number(Boolean(left.needsInspection)) - Number(Boolean(right.needsInspection))
                 : 0);
