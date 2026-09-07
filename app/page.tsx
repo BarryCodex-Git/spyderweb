@@ -5,6 +5,7 @@ import { type DragEvent, type FormEvent, useCallback, useEffect, useRef, useStat
 import { PROJECT_STAGES, domainWorkflowForStage, suggestedProgress, type ProjectStage } from '@/lib/project-workflow';
 import { isSelectableExistingDomain, suggestedSubdomainLabel } from '@/lib/launch-project';
 import { emptyClientIntake, type ClientIntake } from '@/lib/client-intake';
+import { PROJECT_PRIORITIES, sortProjectsByPriority, type ProjectPriority } from '@/lib/project-priority';
 
 type View = 'Dashboard' | 'New Project' | 'Domains' | 'Projects' | 'Agent Activity' | 'Settings';
 type Developer = 'Barry' | 'Clive' | 'Owner Account';
@@ -123,6 +124,7 @@ type Project = {
   lastReportedBy: string;
   createdAt: string;
   updatedAt: string;
+  priority: ProjectPriority;
   sortOrder: number;
   wordpressActivityAt: string | null;
   latestActivityAt: string;
@@ -698,6 +700,28 @@ export default function Home() {
     }
   }
 
+  async function setProjectPriority(project: Project, priority: ProjectPriority) {
+    const previous = projectRecords;
+    const applyPriority = (item: Project) => item.id === project.id ? { ...item, priority } : item;
+    setProjectRecords((current) => current.map(applyPriority));
+    setSelectedProject((current) => current?.id === project.id ? applyPriority(current) : current);
+    try {
+      const response = await fetch(`/api/projects/${project.id}`, {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'set_priority', priority }),
+      });
+      const result = await response.json() as { error?: string; message?: string };
+      if (!response.ok) throw new Error(result.error || 'The priority could not be saved.');
+      showActionToast({ id: `project-priority-${project.id}`, status: 'success', title: priority ? `${priority} priority saved` : 'Automatic order restored',
+        message: result.message || (priority ? `${project.client} now follows the manual priority order.` : `${project.client} now follows the automatic order.`) });
+    } catch (error) {
+      setProjectRecords(previous);
+      setSelectedProject((current) => current?.id === project.id ? project : current);
+      showActionToast({ id: `project-priority-${project.id}`, status: 'error', title: 'Priority not saved',
+        message: error instanceof Error ? error.message : 'Refresh and try again.' });
+    }
+  }
+
   function openDomain(domain: Domain) {
     setNotice('');
     setSelectedProject(null);
@@ -1182,7 +1206,7 @@ export default function Home() {
         {activeView === 'Dashboard' && <Dashboard domains={projectAwareDomains} onDomain={openDomain} onLaunch={openLaunch} onMoveToFinalStages={moveProjectToFinalStages} inventoryIsLive={inventoryIsLive} inventoryRefreshing={inventoryRefreshing} inventoryLastRefreshedAt={inventoryLastRefreshedAt} />}
         {activeView === 'New Project' && <LaunchProjectView connections={hostingConnections} domains={projectAwareDomains} templates={templateSlots} busy={launchBusy} onSaveTemplate={saveTemplateSlot} onLaunch={launchNewProject} onActivateWordPress={setWordpressActivationConnection} />}
         {activeView === 'Domains' && <DomainsView connections={hostingConnections} domains={projectAwareDomains} onDomain={openDomain} onNotice={setNotice} notice={notice} inventoryIsLive={inventoryIsLive} onCreateSubdomain={createStandaloneSubdomain} />}
-        {activeView === 'Projects' && <ProjectsView domains={projectAwareDomains} projects={projectRecords} activityRefreshing={projectActivityRefreshing} activityCheckedAt={projectActivityCheckedAt} onRefreshActivity={() => void refreshProjectActivity(true)} onProject={setSelectedProject} onManageDomains={() => changeView('Domains')} onReorder={reorderProjects} />}
+        {activeView === 'Projects' && <ProjectsView domains={projectAwareDomains} projects={projectRecords} activityRefreshing={projectActivityRefreshing} activityCheckedAt={projectActivityCheckedAt} onRefreshActivity={() => void refreshProjectActivity(true)} onProject={setSelectedProject} onManageDomains={() => changeView('Domains')} onReorder={reorderProjects} onPriority={setProjectPriority} />}
         {activeView === 'Agent Activity' && <AgentActivity auditEvents={auditEvents} projects={projectRecords} projectEvents={projectEvents} filter={activityFilter} onFilter={setActivityFilter} />}
         {activeView === 'Settings' && <SettingsView connections={hostingConnections} syncingId={hostingSyncingId} modeChangingId={hostingModeChangingId} notice={settingsHostingNotice} onSync={syncHostingConnection} onModeChange={changeHostingMode} onActivateWordPress={setWordpressActivationConnection} onConnect={(provider) => { setHostingNotice(''); setHostingProvider(provider); }} />}
       </section>
@@ -1919,8 +1943,9 @@ function relativeActivity(value: string) {
   return days === 0 ? 'Today' : days === 1 ? 'Yesterday' : `${days} days ago`;
 }
 
-function ProjectsView({ domains, projects, activityRefreshing, activityCheckedAt, onRefreshActivity, onProject, onManageDomains, onReorder }: { domains: Domain[]; projects: Project[]; activityRefreshing: boolean; activityCheckedAt: string | null; onRefreshActivity: () => void; onProject: (project: Project) => void; onManageDomains: () => void; onReorder: (projectIds: string[]) => Promise<void> }) {
+function ProjectsView({ domains, projects, activityRefreshing, activityCheckedAt, onRefreshActivity, onProject, onManageDomains, onReorder, onPriority }: { domains: Domain[]; projects: Project[]; activityRefreshing: boolean; activityCheckedAt: string | null; onRefreshActivity: () => void; onProject: (project: Project) => void; onManageDomains: () => void; onReorder: (projectIds: string[]) => Promise<void>; onPriority: (project: Project, priority: ProjectPriority) => Promise<void> }) {
   const [draggingId, setDraggingId] = useState<string | null>(null);
+  const visibleProjects = sortProjectsByPriority(projects);
   const operationalDomains = domains.filter((domain) => domain.connectionMode === 'managed_write' && domain.operationalReady).length;
   const lockedDomains = domains.filter((domain) => domain.softLocked).length;
   const barryProjects = projects.filter((project) => project.developer === 'Barry').length;
@@ -1942,13 +1967,20 @@ function ProjectsView({ domains, projects, activityRefreshing, activityCheckedAt
       <section className="panel project-board-panel">
         <div className="section-heading"><div><p className="eyebrow">Current work</p><h2>Manual project pipeline</h2></div><div className="board-heading-actions"><span className="manual-mode-pill">Manual stages</span><span className="auto-project-pill">WordPress activity monitored</span><button className="outline-button compact-button" disabled={activityRefreshing} onClick={onRefreshActivity}>{activityRefreshing ? 'Checking…' : 'Refresh activity'}</button>{activityCheckedAt && <small className="activity-checked-time">Checked {new Date(activityCheckedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</small>}</div></div>
         <div className="project-card-row">
-          {projects.map((project) => (
-            <article className={`project-board-card ${projectActivityClass(project)} ${draggingId === project.id ? 'dragging' : ''}`} key={project.id} draggable
+          {visibleProjects.map((project) => (
+            <article className={`project-board-card ${projectActivityClass(project)} ${project.priority ? `priority-${project.priority.toLowerCase()}` : ''} ${draggingId === project.id ? 'dragging' : ''}`} key={project.id} draggable={!project.priority}
               onDragStart={(event) => { setDraggingId(project.id); event.dataTransfer.effectAllowed = 'move'; }} onDragEnd={() => setDraggingId(null)}
-              onDragOver={(event) => { if (draggingId && draggingId !== project.id) event.preventDefault(); }}
-              onDrop={(event) => { event.preventDefault(); if (!draggingId || draggingId === project.id) return; const ids = projects.map((item) => item.id); const from = ids.indexOf(draggingId); const to = ids.indexOf(project.id); ids.splice(to, 0, ids.splice(from, 1)[0]); setDraggingId(null); void onReorder(ids); }}>
+              onDragOver={(event) => { if (!project.priority && draggingId && draggingId !== project.id) event.preventDefault(); }}
+              onDrop={(event) => { event.preventDefault(); if (project.priority || !draggingId || draggingId === project.id) return; const ids = projects.map((item) => item.id); const from = ids.indexOf(draggingId); const to = ids.indexOf(project.id); ids.splice(to, 0, ids.splice(from, 1)[0]); setDraggingId(null); void onReorder(ids); }}>
+              <label className={`project-priority-control ${project.priority ? project.priority.toLowerCase() : ''}`}>
+                <span className="sr-only">Priority for {project.client}</span>
+                <select aria-label={`Priority for ${project.client}`} value={project.priority} onClick={(event) => event.stopPropagation()} onChange={(event) => void onPriority(project, event.target.value as ProjectPriority)}>
+                  <option value="">Priority</option>
+                  {PROJECT_PRIORITIES.map((priority) => <option value={priority} key={priority}>{priority}</option>)}
+                </select>
+              </label>
               <button className="project-card-open" onClick={() => onProject(project)}>
-                <div className="project-card-top"><span className={`project-avatar small ${project.developer.toLowerCase()}`}>{project.client.slice(0, 1)}</span><span><b>{project.stage}</b><small>{project.stageStatus.replaceAll('_', ' ')}</small></span><i title="Drag to arrange">⋮⋮</i></div>
+                <div className="project-card-top"><span className={`project-avatar small ${project.developer.toLowerCase()}`}>{project.client.slice(0, 1)}</span><span><b>{project.stage}</b><small>{project.stageStatus.replaceAll('_', ' ')}</small></span>{!project.priority && <i title="Drag to arrange">⋮⋮</i>}</div>
                 <h3>{project.client}</h3><p>{project.domain}</p>
                 <div className="project-card-meta"><span><small>Started</small><strong>{new Date(project.createdAt).toLocaleDateString('en-ZA', { day: 'numeric', month: 'short', year: 'numeric' })}</strong></span><span><small>Assigned</small><strong>{project.developer}</strong></span></div>
                 <div className="project-progress"><b>{project.progress}%</b><span className="progress-track"><i style={{ width: `${project.progress}%` }} /></span></div>

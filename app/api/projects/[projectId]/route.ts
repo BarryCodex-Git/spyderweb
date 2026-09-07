@@ -53,12 +53,19 @@ export async function PATCH(
     const db = await ensureHostingSchema();
     const current = await db.prepare(`SELECT id, domain_id AS domainId, domain, client_name AS client,
       assigned_developer AS developer, current_stage AS stage, stage_status AS stageStatus,
-      progress, target_date AS due, next_action AS nextAction
+      progress, target_date AS due, next_action AS nextAction, priority
       FROM projects WHERE id = ? AND owner_user_id = ? AND lifecycle_status != 'archived'`)
       .bind(projectId, identity.userId).first<Record<string, unknown>>();
     if (!current) return json({ error: 'This project was not found.' }, 404);
 
     const action = String(body.action || 'save');
+    if (action === 'set_priority') {
+      const priority = String(body.priority || '');
+      if (!['', 'Urgent', 'Busy', 'Idle'].includes(priority)) return json({ error: 'Choose a valid project priority.' }, 400);
+      await db.prepare(`UPDATE projects SET priority = ? WHERE id = ? AND owner_user_id = ?`)
+        .bind(priority || null, projectId, identity.userId).run();
+      return json({ message: priority ? `${String(current.client)} is now ${priority}.` : `${String(current.client)} returned to the default project order.` });
+    }
     let stage = enumValue(body.stage, String(current.stage) as ProjectStage, PROJECT_STAGES, 'project stage');
     let stageStatus = enumValue(body.stageStatus, String(current.stageStatus) as ProjectStageStatus, PROJECT_STAGE_STATUSES, 'stage status');
     let progress = progressValue(body.progress, Number(current.progress));

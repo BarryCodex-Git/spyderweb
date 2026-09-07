@@ -67,6 +67,7 @@ function mapProject(row: Record<string, unknown>) {
     lastReportedBy: String(row.lastReportedBy),
     createdAt: String(row.createdAt),
     updatedAt,
+    priority: ['Urgent', 'Busy', 'Idle'].includes(String(row.priority)) ? String(row.priority) : '',
     sortOrder: Number(row.sortOrder || 0),
     wordpressActivityAt,
     latestActivityAt: latestActivity.at,
@@ -177,7 +178,7 @@ export async function GET(request: Request) {
         p.stage_status AS stageStatus, p.progress, p.target_date AS due, p.next_action AS nextAction,
         p.intake_notes AS intakeNotes, p.lifecycle_status AS lifecycleStatus,
         p.last_reported_by AS lastReportedBy, p.created_at AS createdAt, p.updated_at AS updatedAt,
-        sort_order AS sortOrder, d.wordpress_activity_at AS wordpressActivityAt
+        p.priority, sort_order AS sortOrder, d.wordpress_activity_at AS wordpressActivityAt
         FROM projects p LEFT JOIN hosting_domains d ON d.id = p.domain_id
         WHERE p.owner_user_id = ? AND p.lifecycle_status != 'archived'
         ORDER BY CASE WHEN p.sort_order > 0 THEN 0 ELSE 1 END, p.sort_order, p.created_at ASC`)

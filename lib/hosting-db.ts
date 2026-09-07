@@ -97,6 +97,7 @@ const schemaStatements = [
     last_reported_by TEXT NOT NULL DEFAULT 'Owner Account',
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
+    priority TEXT,
     sort_order INTEGER NOT NULL DEFAULT 0
   )`,
   `CREATE INDEX IF NOT EXISTS idx_projects_owner_updated
@@ -159,6 +160,7 @@ const hostingDomainColumnMigrations = [
 const projectColumnMigrations = [
   ['sort_order', 'ALTER TABLE projects ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0'],
   ['intake_json', "ALTER TABLE projects ADD COLUMN intake_json TEXT NOT NULL DEFAULT '{}'"],
+  ['priority', 'ALTER TABLE projects ADD COLUMN priority TEXT'],
 ] as const;
 
 const hostingConnectionColumnMigrations = [
