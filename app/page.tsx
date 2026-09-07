@@ -1439,8 +1439,10 @@ export default function Home() {
               </div>
               <div className="modal-header-tools">
                 <SiteQuickLinks domainOrUrl={selectedProject.domain} label={selectedProject.client} />
-                <button className="project-details-download" type="button" disabled={projectIntakeBusy} onClick={() => void openProjectIntakeEditor(selectedProject)}>✎ Edit client info</button>
-                <a className="project-details-download" href={`/api/projects/${selectedProject.id}/intake?download=1`}>↓ Project Details</a>
+                <div className="project-detail-actions">
+                  <button className="project-details-download" type="button" disabled={projectIntakeBusy} onClick={() => void openProjectIntakeEditor(selectedProject)}>✎ Edit client info</button>
+                  <a className="project-details-download" href={`/api/projects/${selectedProject.id}/intake?download=1`}>↓ Project Details</a>
+                </div>
               </div>
             </header>
 
