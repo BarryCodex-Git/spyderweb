@@ -1222,7 +1222,7 @@ export default function Home() {
         {activeView === 'Dashboard' && <Dashboard domains={projectAwareDomains} onDomain={openDomain} onLaunch={openLaunch} onMoveToFinalStages={moveProjectToFinalStages} inventoryIsLive={inventoryIsLive} inventoryRefreshing={inventoryRefreshing} inventoryLastRefreshedAt={inventoryLastRefreshedAt} />}
         {activeView === 'New Project' && <LaunchProjectView connections={hostingConnections} domains={projectAwareDomains} templates={templateSlots} busy={launchBusy} onSaveTemplate={saveTemplateSlot} onLaunch={launchNewProject} onActivateWordPress={setWordpressActivationConnection} />}
         {activeView === 'Domains' && <DomainsView connections={hostingConnections} domains={projectAwareDomains} onDomain={openDomain} onNotice={setNotice} notice={notice} inventoryIsLive={inventoryIsLive} onCreateSubdomain={createStandaloneSubdomain} />}
-        {activeView === 'Projects' && <ProjectsView domains={projectAwareDomains} projects={projectRecords} activityRefreshing={projectActivityRefreshing} activityCheckedAt={projectActivityCheckedAt} onRefreshActivity={() => void refreshProjectActivity(true)} onProject={setSelectedProject} onManageDomains={() => changeView('Domains')} onReorder={reorderProjects} onPriority={setProjectPriority} />}
+        {activeView === 'Projects' && <ProjectsView projects={projectRecords} activityRefreshing={projectActivityRefreshing} activityCheckedAt={projectActivityCheckedAt} onRefreshActivity={() => void refreshProjectActivity(true)} onProject={setSelectedProject} onReorder={reorderProjects} onPriority={setProjectPriority} />}
         {activeView === 'Agent Activity' && <AgentActivity auditEvents={auditEvents} projects={projectRecords} projectEvents={projectEvents} filter={activityFilter} onFilter={setActivityFilter} />}
         {activeView === 'Settings' && <SettingsView connections={hostingConnections} syncingId={hostingSyncingId} modeChangingId={hostingModeChangingId} notice={settingsHostingNotice} onSync={syncHostingConnection} onModeChange={changeHostingMode} onActivateWordPress={setWordpressActivationConnection} onConnect={(provider) => { setHostingNotice(''); setHostingProvider(provider); }} />}
       </section>
@@ -1959,23 +1959,16 @@ function relativeActivity(value: string) {
   return days === 0 ? 'Today' : days === 1 ? 'Yesterday' : `${days} days ago`;
 }
 
-function ProjectsView({ domains, projects, activityRefreshing, activityCheckedAt, onRefreshActivity, onProject, onManageDomains, onReorder, onPriority }: { domains: Domain[]; projects: Project[]; activityRefreshing: boolean; activityCheckedAt: string | null; onRefreshActivity: () => void; onProject: (project: Project) => void; onManageDomains: () => void; onReorder: (projectIds: string[]) => Promise<void>; onPriority: (project: Project, priority: ProjectPriority) => Promise<void> }) {
+function ProjectsView({ projects, activityRefreshing, activityCheckedAt, onRefreshActivity, onProject, onReorder, onPriority }: { projects: Project[]; activityRefreshing: boolean; activityCheckedAt: string | null; onRefreshActivity: () => void; onProject: (project: Project) => void; onReorder: (projectIds: string[]) => Promise<void>; onPriority: (project: Project, priority: ProjectPriority) => Promise<void> }) {
   const [draggingId, setDraggingId] = useState<string | null>(null);
   const [dropTargetId, setDropTargetId] = useState<string | null>(null);
   const visibleProjects = sortProjectsByPriority(projects);
-  const operationalDomains = domains.filter((domain) => domain.connectionMode === 'managed_write' && domain.operationalReady).length;
-  const lockedDomains = domains.filter((domain) => domain.softLocked).length;
   const barryProjects = projects.filter((project) => project.developer === 'Barry').length;
   const cliveProjects = projects.filter((project) => project.developer === 'Clive').length;
   const templateProjects = projects.filter((project) => project.buildType === 'Template').length;
   const customProjects = projects.filter((project) => project.buildType === 'Custom').length;
   return (
     <div className="view-stack">
-      <section className="hosting-project-strip">
-        <div><p className="eyebrow">Hosting workspace</p><h2>{operationalDomains} operational domain{operationalDomains === 1 ? '' : 's'}</h2><span>{lockedDomains} currently protected by soft lock</span></div>
-        <p>Project stages remain separate from cPanel. Use Domain Management for WordPress, template, restore-point and PHP actions.</p>
-        <button className="outline-button" onClick={onManageDomains}>Open Domain Management</button>
-      </section>
       <section className="project-overview-strip">
         <div><span className="large-number">{projects.length}</span><span><strong>Tracked projects</strong><small>{templateProjects} template · {customProjects} custom</small></span></div>
         <div className="agent-load"><span><b>Barry</b><small>{barryProjects} project{barryProjects === 1 ? '' : 's'}</small></span><div><i style={{ width: `${Math.min(barryProjects * 20, 100)}%` }} /></div></div>
