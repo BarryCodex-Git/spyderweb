@@ -312,6 +312,54 @@ async function cpanelJsonUapi(
   return compatibilityResult.data;
 }
 
+async function cpanelApi2(
+  baseUrl: string,
+  username: string,
+  token: string,
+  module: string,
+  fn: string,
+  query: Record<string, string> = {},
+) {
+  const url = new URL(`${baseUrl}/json-api/cpanel`);
+  url.searchParams.set('cpanel_jsonapi_user', username);
+  url.searchParams.set('cpanel_jsonapi_apiversion', '2');
+  url.searchParams.set('cpanel_jsonapi_module', module);
+  url.searchParams.set('cpanel_jsonapi_func', fn);
+  Object.entries(query).forEach(([key, value]) => url.searchParams.set(key, value));
+  const response = await fetch(url, {
+    method: 'GET',
+    headers: { Accept: 'application/json', Authorization: `cpanel ${username}:${token}` },
+    redirect: 'manual',
+    signal: AbortSignal.timeout(20_000),
+  });
+  if (response.status === 401 || response.status === 403) {
+    throw new CpanelAuthenticationError('cPanel rejected the username or API token.');
+  }
+  if (!response.ok || (response.status >= 300 && response.status < 400)) {
+    throw new CpanelFunctionError(`The cPanel compatibility gateway could not run ${module}/${fn}.`);
+  }
+  const payload = await response.json() as Api2Envelope;
+  const result = payload.cpanelresult;
+  if (!result || result.event?.result !== 1) {
+    throw new CpanelFunctionError(result?.reason || result?.error || `cPanel could not run ${module}/${fn}.`);
+  }
+  return result.data;
+}
+
+export async function setCloudLinuxPhpSelectorVersion(input: {
+  baseUrl: string;
+  username: string;
+  token: string;
+  version?: string;
+}) {
+  const version = input.version ?? '8.3';
+  const data = await cpanelApi2(
+    input.baseUrl, input.username, input.token,
+    'LVEInfo', 'processPHPVersionSelect', { lveversion: version },
+  );
+  return { status: 'updated' as const, version, data };
+}
+
 function directiveValue(value: unknown, name: RecommendedPhpDirective): string | null {
   if (typeof value === 'string') {
     const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -843,7 +891,22 @@ export async function ensureWordPressMemoryProfile(input: {
   throw new Error(`SpyderWeb could not safely read wp-config.php for ${input.domain}. ${detail}`);
 }
 
-async function resolveSubdomainDocumentRoot(baseUrl: string, username: string, token: string, domain: string) {
+export async function resolveCpanelDocumentRoot(baseUrl: string, username: string, token: string, domain: string) {
+  const normalizedDomain = domain.trim().toLowerCase();
+  const attempts = [
+    () => uapi(baseUrl, username, token, 'DomainInfo', 'single_domain_data', { domain }),
+    () => uapi(baseUrl, username, token, 'DomainInfo', 'domains_data', { format: 'list' }),
+    () => uapi(baseUrl, username, token, 'WebVhosts', 'list_domains'),
+  ];
+  for (const attempt of attempts) {
+    try {
+      const details = collectDetails(await attempt());
+      const root = details.get(normalizedDomain)?.documentRoot;
+      if (root?.trim()) return root.trim();
+    } catch {
+      // Continue through the host's available inventory channels.
+    }
+  }
   try {
     const data = await api2ListSubdomains(baseUrl, username, token);
     const records = Array.isArray(data) ? data : [];
@@ -853,13 +916,17 @@ async function resolveSubdomainDocumentRoot(baseUrl: string, username: string, t
       const fullDomain = String(record.domain || '').trim().toLowerCase();
       const combinedDomain = `${String(record.subdomain || '').trim()}.${String(record.rootdomain || '').trim()}`
         .replace(/^\.|\.$/g, '').toLowerCase();
-      return fullDomain === domain.toLowerCase() || combinedDomain === domain.toLowerCase();
+      return fullDomain === normalizedDomain || combinedDomain === normalizedDomain;
     }) as Record<string, unknown> | undefined;
     const root = match?.dir ?? match?.documentroot ?? match?.document_root;
     return typeof root === 'string' && root.trim() ? root.trim() : null;
   } catch {
     return null;
   }
+}
+
+async function resolveSubdomainDocumentRoot(baseUrl: string, username: string, token: string, domain: string) {
+  return resolveCpanelDocumentRoot(baseUrl, username, token, domain);
 }
 
 function mergeRecommendedPhpDirectives(content: string) {
@@ -883,39 +950,9 @@ function mergeRecommendedPhpDirectives(content: string) {
 }
 
 async function api2ListSubdomains(baseUrl: string, username: string, token: string) {
-  const url = new URL(`${baseUrl}/json-api/cpanel`);
-  url.searchParams.set('cpanel_jsonapi_user', username);
-  url.searchParams.set('cpanel_jsonapi_apiversion', '2');
-  url.searchParams.set('cpanel_jsonapi_module', 'SubDomain');
-  url.searchParams.set('cpanel_jsonapi_func', 'listsubdomains');
-  url.searchParams.set('return_https_redirect_status', '1');
-
-  const response = await fetch(url, {
-    method: 'GET',
-    headers: {
-      Accept: 'application/json',
-      Authorization: `cpanel ${username}:${token}`,
-    },
-    redirect: 'manual',
-    signal: AbortSignal.timeout(20_000),
+  return cpanelApi2(baseUrl, username, token, 'SubDomain', 'listsubdomains', {
+    return_https_redirect_status: '1',
   });
-
-  if (response.status >= 300 && response.status < 400) {
-    throw new Error('The shared-host compatibility endpoint redirected the request.');
-  }
-  if (response.status === 401 || response.status === 403) {
-    throw new CpanelAuthenticationError('cPanel rejected the username or API token. Check both and try again.');
-  }
-  if (!response.ok) {
-    throw new Error(`The shared-host compatibility endpoint returned ${response.status}.`);
-  }
-
-  const payload = (await response.json()) as Api2Envelope;
-  const result = payload.cpanelresult;
-  if (!result || result.event?.result !== 1) {
-    throw new CpanelFunctionError(result?.reason || result?.error || 'The shared-host compatibility endpoint was unavailable.');
-  }
-  return result.data;
 }
 
 async function softaculousListInstallations(baseUrl: string, username: string, token: string) {

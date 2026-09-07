@@ -1,5 +1,6 @@
 import {
-  ensurePhpRuntimeHandlerProfile, ensureRecommendedPhpProfile, ensureRecommendedPhpVersion,
+  ensurePhpRuntimeHandlerProfile, ensureRecommendedPhpProfile, ensureRecommendedPhpVersion, resolveCpanelDocumentRoot,
+  setCloudLinuxPhpSelectorVersion,
   ensureWordPressMemoryProfile, publicWordPressInfo,
 } from '@/lib/cpanel';
 import { effectiveDocumentRoot } from '@/lib/cpanel-subdomain';
@@ -197,20 +198,39 @@ export async function POST(request: Request, { params }: { params: Promise<{ dom
         )) as OperationalCredential;
       }
       const managementPassword = managementCredential?.password ?? null;
-      const documentRoot = effectiveDocumentRoot(record);
+      const storedDocumentRoot = effectiveDocumentRoot(record);
       const session = managementCredential?.password
         ? await createCpanelSession(String(connection.baseUrl), managementCredential).catch(() => null)
         : null;
-      const phpVersionResult = await ensureRecommendedPhpVersion({
-        baseUrl: String(connection.baseUrl), username: String(connection.username), token: cpanelToken,
-        domain: record.domain, password: managementPassword, session,
-      });
+      let phpVersionResult: Awaited<ReturnType<typeof ensureRecommendedPhpVersion>>;
+      let selectorMode: 'cloudlinux' | 'multiphp' = 'cloudlinux';
+      try {
+        await setCloudLinuxPhpSelectorVersion({
+          baseUrl: String(connection.baseUrl), username: String(connection.username), token: cpanelToken,
+          version: '8.3',
+        });
+        phpVersionResult = {
+          status: 'updated', version: 'alt-php83', label: 'PHP 8.3', previousVersion: null,
+          method: 'cloudlinux_php_selector',
+        };
+      } catch {
+        selectorMode = 'multiphp';
+        phpVersionResult = await ensureRecommendedPhpVersion({
+          baseUrl: String(connection.baseUrl), username: String(connection.username), token: cpanelToken,
+          domain: record.domain, password: managementPassword, session,
+        });
+      }
+      const documentRoot = await resolveCpanelDocumentRoot(
+        String(connection.baseUrl), String(connection.username), cpanelToken, record.domain,
+      ) ?? storedDocumentRoot;
       if (!documentRoot) throw new Error(`The document root for ${record.domain} could not be determined safely.`);
-      const phpHandlerResult = await ensurePhpRuntimeHandlerProfile({
-        baseUrl: String(connection.baseUrl), username: String(connection.username), token: cpanelToken,
-        domain: record.domain, documentRoot, phpPackage: phpVersionResult.version,
-        password: managementPassword, session,
-      });
+      const phpHandlerResult = selectorMode === 'multiphp'
+        ? await ensurePhpRuntimeHandlerProfile({
+          baseUrl: String(connection.baseUrl), username: String(connection.username), token: cpanelToken,
+          domain: record.domain, documentRoot, phpPackage: phpVersionResult.version,
+          password: managementPassword, session,
+        })
+        : { status: 'already_correct' as const, previousPackages: [] as string[], backupFile: null };
       const phpResult = await ensureRecommendedPhpProfile({
         baseUrl: String(connection.baseUrl), username: String(connection.username), token: cpanelToken,
         domain: record.domain, documentRoot, password: managementPassword, session,
@@ -241,10 +261,12 @@ export async function POST(request: Request, { params }: { params: Promise<{ dom
         wordpressMaxMemoryLimit: wordpressResult?.values.WP_MAX_MEMORY_LIMIT ?? null,
         rollbackCopy: wordpressResult?.backupFile ?? null,
       } });
-      const runtimeSummary = phpVersionResult.status === 'already_correct'
+      const runtimeSummary = selectorMode === 'cloudlinux'
+        ? 'The CloudLinux account PHP Selector was set to PHP 8.3.'
+        : phpVersionResult.status === 'already_correct'
         ? `${phpVersionResult.label} was already selected.`
         : `${phpVersionResult.label} was selected and verified.`;
-      const handlerSummary = phpHandlerResult.status === 'already_correct'
+      const handlerSummary = selectorMode === 'cloudlinux' ? '' : phpHandlerResult.status === 'already_correct'
         ? 'The document-root PHP handler was already aligned.'
         : `The document-root PHP handler was aligned and verified${phpHandlerResult.backupFile ? `; ${phpHandlerResult.backupFile} is the rollback copy` : ''}.`;
       const phpSummary = phpResult.status === 'already_correct' ? 'The cPanel PHP limits were already correct.' : 'The cPanel PHP limits were updated and verified.';
@@ -254,7 +276,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ dom
           : `wp-config.php now requests ${wordpressResult.values.WP_MEMORY_LIMIT} normally and ${wordpressResult.values.WP_MAX_MEMORY_LIMIT} for administration; ${wordpressResult.backupFile} is the rollback copy.`
         : 'No WordPress installation is present, so there was no wp-config.php to change.';
       return json({
-        message: `${runtimeSummary} ${handlerSummary} ${phpSummary} ${wordpressSummary}`,
+        message: `${runtimeSummary} ${handlerSummary} ${phpSummary} ${wordpressSummary}`.replace(/\s+/g, ' ').trim(),
         warning: false,
       });
     }
@@ -272,8 +294,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ dom
 
     async function applyPostInstallMemoryProfile() {
       if (!record) return;
-      const documentRoot = effectiveDocumentRoot(record);
-      if (!documentRoot) throw new Error(`The document root for ${record.domain} could not be determined safely.`);
+      const storedDocumentRoot = effectiveDocumentRoot(record);
       const cpanelToken = await decryptHostingToken(
         encryptedToken, encryptionIv, identity!.userId, record.connectionId,
       );
@@ -282,6 +303,10 @@ export async function POST(request: Request, { params }: { params: Promise<{ dom
         baseUrl, username: cpanelUsername, token: cpanelToken,
         domain: record.domain, password: secrets.password, session,
       });
+      const documentRoot = await resolveCpanelDocumentRoot(
+        baseUrl, cpanelUsername, cpanelToken, record.domain,
+      ) ?? storedDocumentRoot;
+      if (!documentRoot) throw new Error(`The document root for ${record.domain} could not be determined safely.`);
       const phpHandlerResult = await ensurePhpRuntimeHandlerProfile({
         baseUrl, username: cpanelUsername, token: cpanelToken,
         domain: record.domain, documentRoot, phpPackage: phpVersionResult.version,
@@ -296,7 +321,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ dom
         domain: record.domain, documentRoot, password: secrets.password, session,
       });
       await db.prepare(`UPDATE hosting_domains SET php_profile_status = 'wordpress_memory_verified', php_version = ?,
-        document_root = COALESCE(document_root, ?) WHERE id = ? AND owner_user_id = ?`)
+        document_root = ? WHERE id = ? AND owner_user_id = ?`)
         .bind(phpVersionResult.version, documentRoot, record.id, identity!.userId).run();
       await audit(db, {
         ownerUserId: identity!.userId,
