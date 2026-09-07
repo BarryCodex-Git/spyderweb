@@ -6,7 +6,7 @@ import {
 import { effectiveDocumentRoot, reconcileCreatedSubdomain } from '@/lib/cpanel-subdomain';
 import { decryptHostingToken, decryptSecret } from '@/lib/credential-crypto';
 import { ensureHostingSchema, stableId } from '@/lib/hosting-db';
-import { normalizeSubdomainLabel, rootInstallationUrl } from '@/lib/launch-project';
+import { normalizeSubdomainLabel, rootInstallationUrl, softaculousDatabaseName } from '@/lib/launch-project';
 import { parseClientIntake } from '@/lib/client-intake';
 import { PROJECT_DEVELOPERS, type ProjectDeveloper } from '@/lib/project-workflow';
 import { getRequestIdentity, isSameOrigin } from '@/lib/request-auth';
@@ -273,7 +273,7 @@ export async function POST(request: Request) {
     let memoryWarning = '';
     if (!keepExistingTemplate) {
       await softaculousAction({ baseUrl: String(connection.baseUrl), credential: credential!, action: 'clone', domain: targetDomain,
-        sourceInstallationId, databaseName: `sw_${crypto.randomUUID().replaceAll('-', '').slice(0, 12)}` });
+        sourceInstallationId, databaseName: softaculousDatabaseName() });
       const refreshed = await listSoftaculousInstallations(String(connection.baseUrl), credential!);
       const installation = refreshed.find((item) => item.domain === targetDomain);
       installationId = installation?.id ?? '';

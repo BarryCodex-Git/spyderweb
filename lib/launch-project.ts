@@ -21,6 +21,10 @@ export function suggestedSubdomainLabel(projectName: string) {
   return projectName.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 63);
 }
 
+export function softaculousDatabaseName(id = crypto.randomUUID()) {
+  return `sw${id.replace(/[^a-z0-9]/gi, '').toLowerCase().slice(0, 10)}`;
+}
+
 export function isSelectableExistingDomain(
   domain: { id: string | number; source?: string; status: string },
   templateDomainIds: ReadonlySet<string>,

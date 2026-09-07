@@ -605,9 +605,11 @@ export default function Home() {
       showActionToast({ id: 'new-project-launch', status: 'success', title: 'Project launched', message: result.message || 'The new project is ready.' });
       form.reset();
       setActiveView('Projects');
+      return true;
     } catch (error) {
       showActionToast({ id: 'new-project-launch', status: 'error', title: 'Project launch stopped',
         message: error instanceof Error ? error.message : 'The project could not be launched.' });
+      return false;
     } finally { setLaunchBusy(false); }
   }
 
@@ -1675,9 +1677,8 @@ function RepeatableIntakeField({ label, values, onChange }: { label: string; val
   return <fieldset className="repeatable-intake-field"><legend>{label}</legend>{values.map((value, index) => <div key={`${label}-${index}`}><input value={value} onChange={(event) => onChange(values.map((item, itemIndex) => itemIndex === index ? event.target.value : item))} /><button type="button" aria-label={`Remove ${label} item`} disabled={values.length === 1} onClick={() => onChange(values.filter((_, itemIndex) => itemIndex !== index))}>×</button></div>)}<button type="button" className="add-intake-field" onClick={() => onChange([...values, ''])}>＋ Add another</button></fieldset>;
 }
 
-function ClientIntakeForm({ projectName }: { projectName: string }) {
-  const [intake, setIntake] = useState<ClientIntake>(emptyClientIntake);
-  const update = (key: keyof ClientIntake, value: string | string[]) => setIntake((current) => ({ ...current, [key]: value }));
+function ClientIntakeForm({ projectName, intake, onChange }: { projectName: string; intake: ClientIntake; onChange: (update: (current: ClientIntake) => ClientIntake) => void }) {
+  const update = (key: keyof ClientIntake, value: string | string[]) => onChange((current) => ({ ...current, [key]: value }));
   const textFields: Array<{ key: keyof ClientIntake; label: string; type?: string }> = [
     { key: 'industry', label: 'Industry' }, { key: 'primaryRegion', label: 'Primary location or region' },
     { key: 'phone', label: 'Phone', type: 'tel' }, { key: 'email', label: 'Email', type: 'email' },
@@ -1717,10 +1718,27 @@ function TemplatePreviewCard({ slot, domains, onSave }: { slot: TemplateSlot; do
   </article>;
 }
 
+const launchProjectDraftKey = 'spyderweb:new-project-draft:v1';
+
+type LaunchProjectDraft = {
+  projectName: string;
+  connectionId: string;
+  subdomain: string;
+  targetMode: 'existing' | 'new';
+  selectedExistingDomainId: string;
+  templateDecision: 'keep' | 'replace';
+  selectedTemplateSlotNumber: string;
+  parentDomain: string;
+  developer: Developer;
+  confirmExistingOverwrite: boolean;
+  notes: string;
+  intake: ClientIntake;
+};
+
 function LaunchProjectView({ connections, domains, templates, busy, onSaveTemplate, onLaunch, onActivateWordPress }: {
   connections: HostingConnection[]; domains: Domain[]; templates: TemplateSlot[]; busy: boolean;
   onSaveTemplate: (slotNumber: number, name: string, sourceDomainId: string | null) => Promise<void>;
-  onLaunch: (event: FormEvent<HTMLFormElement>) => Promise<void>;
+  onLaunch: (event: FormEvent<HTMLFormElement>) => Promise<boolean>;
   onActivateWordPress: (connection: HostingConnection) => void;
 }) {
   const connected = connections.filter((connection) => connection.mode === 'managed_write');
@@ -1731,6 +1749,12 @@ function LaunchProjectView({ connections, domains, templates, busy, onSaveTempla
   const [selectedExistingDomainId, setSelectedExistingDomainId] = useState('');
   const [templateDecision, setTemplateDecision] = useState<'keep' | 'replace'>('replace');
   const [selectedTemplateSlotNumber, setSelectedTemplateSlotNumber] = useState('');
+  const [parentDomain, setParentDomain] = useState('');
+  const [developer, setDeveloper] = useState<Developer>('Owner Account');
+  const [confirmExistingOverwrite, setConfirmExistingOverwrite] = useState(false);
+  const [notes, setNotes] = useState('');
+  const [intake, setIntake] = useState<ClientIntake>(emptyClientIntake);
+  const [draftReady, setDraftReady] = useState(false);
   const effectiveConnectionId = connectionId || connected[0]?.id || '';
   const selectedConnection = connected.find((connection) => connection.id === effectiveConnectionId) ?? null;
   const managementReady = selectedConnection?.operationalCredentialStatus === 'verified';
@@ -1742,10 +1766,46 @@ function LaunchProjectView({ connections, domains, templates, busy, onSaveTempla
   const canKeepLoadedTemplate = targetMode === 'existing' && selectedExistingDomain?.status === 'Template Loaded';
   const keepingLoadedTemplate = canKeepLoadedTemplate && templateDecision === 'keep';
   const requiresTemplateOperation = !keepingLoadedTemplate;
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      try {
+        const saved = window.localStorage.getItem(launchProjectDraftKey);
+        if (saved) {
+          const draft = JSON.parse(saved) as Partial<LaunchProjectDraft>;
+          if (typeof draft.projectName === 'string') setProjectName(draft.projectName);
+          if (typeof draft.connectionId === 'string') setConnectionId(draft.connectionId);
+          if (typeof draft.subdomain === 'string') setSubdomain(draft.subdomain);
+          if (draft.targetMode === 'existing' || draft.targetMode === 'new') setTargetMode(draft.targetMode);
+          if (typeof draft.selectedExistingDomainId === 'string') setSelectedExistingDomainId(draft.selectedExistingDomainId);
+          if (draft.templateDecision === 'keep' || draft.templateDecision === 'replace') setTemplateDecision(draft.templateDecision);
+          if (typeof draft.selectedTemplateSlotNumber === 'string') setSelectedTemplateSlotNumber(draft.selectedTemplateSlotNumber);
+          if (typeof draft.parentDomain === 'string') setParentDomain(draft.parentDomain);
+          if (assignableDevelopers.includes(draft.developer as Developer)) setDeveloper(draft.developer as Developer);
+          if (typeof draft.confirmExistingOverwrite === 'boolean') setConfirmExistingOverwrite(draft.confirmExistingOverwrite);
+          if (typeof draft.notes === 'string') setNotes(draft.notes);
+          if (draft.intake && typeof draft.intake === 'object') setIntake({ ...emptyClientIntake, ...draft.intake });
+        }
+      } catch {
+        window.localStorage.removeItem(launchProjectDraftKey);
+      } finally {
+        setDraftReady(true);
+      }
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, []);
+
+  useEffect(() => {
+    if (!draftReady) return;
+    const draft: LaunchProjectDraft = { projectName, connectionId: effectiveConnectionId, subdomain, targetMode, selectedExistingDomainId,
+      templateDecision, selectedTemplateSlotNumber, parentDomain, developer, confirmExistingOverwrite, notes, intake };
+    window.localStorage.setItem(launchProjectDraftKey, JSON.stringify(draft));
+  }, [confirmExistingOverwrite, developer, draftReady, effectiveConnectionId, intake, notes, parentDomain, projectName, selectedExistingDomainId, selectedTemplateSlotNumber, subdomain, targetMode, templateDecision]);
+
   return <div className="view-stack launch-project-view">
     <section className="panel new-project-panel">
       <div className="section-heading"><div><p className="eyebrow">Create and deploy</p><h2>Launch a new project</h2><p>Use an available development domain or create a new subdomain, then load the selected template at its root.</p></div><span className="root-install-pill">Root install · no /wp folder</span></div>
-      <form className="new-project-form" onSubmit={(event) => void onLaunch(event)}>
+      <form className="new-project-form" onSubmit={(event) => { void (async () => { const launched = await onLaunch(event); if (launched) window.localStorage.removeItem(launchProjectDraftKey); })(); }}>
         <label>Project name<input name="projectName" required value={projectName} onChange={(event) => { const value = event.target.value; setProjectName(value); setSubdomain((current) => current && current !== suggestedSubdomainLabel(projectName) ? current : suggestedSubdomainLabel(value)); }} placeholder="Jamie's Plumbing" /></label>
         <label>cPanel account<select name="connectionId" required value={effectiveConnectionId} onChange={(event) => { setConnectionId(event.target.value); setSelectedExistingDomainId(''); setTemplateDecision('replace'); setSelectedTemplateSlotNumber(''); }}><option value="" disabled>Choose cPanel</option>{connected.map((connection) => <option key={connection.id} value={connection.id}>{connection.name}{connection.operationalCredentialStatus === 'verified' ? '' : ' · activation needed'}</option>)}</select></label>
         <fieldset className="launch-target-switch"><legend>Website address</legend><div>
@@ -1756,18 +1816,19 @@ function LaunchProjectView({ connections, domains, templates, busy, onSaveTempla
           const connectionDomains = existingTargets.filter((domain) => domain.connectionId === connection.id);
           return connectionDomains.length ? <optgroup key={connection.id} label={connection.name}>{connectionDomains.map((domain) => <option key={domain.id} value={String(domain.id)}>{domain.domain}{domain.status === 'Template Loaded' ? ` · Template loaded: ${domain.template}` : domain.wordpress === 'Not installed' ? ' · No WordPress' : ' · Available WordPress'}{domain.softLocked ? ' · Soft locked' : ''}</option>)}</optgroup> : null;
         })}</select><small>Dashboard domains marked Available or Template Loaded are listed here. Choosing one automatically selects its cPanel account.</small></label> : <>
-          <label>Parent domain<select name="parentDomain" required defaultValue=""><option value="" disabled>Choose parent domain</option>{parents.map((domain) => <option key={domain.id} value={domain.domain}>{domain.domain}</option>)}</select></label>
+          <label>Parent domain<select name="parentDomain" required value={parentDomain} onChange={(event) => setParentDomain(event.target.value)}><option value="" disabled>Choose parent domain</option>{parents.map((domain) => <option key={domain.id} value={domain.domain}>{domain.domain}</option>)}</select></label>
           <label>New subdomain<input name="subdomainLabel" required value={subdomain} onChange={(event) => setSubdomain(event.target.value.toLowerCase())} pattern="[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?" placeholder="jamies-plumbing" /><small>The WordPress address will be the domain root, never /wp.</small></label>
         </>}
         {canKeepLoadedTemplate && <fieldset className="loaded-template-choice full-field"><legend>Template already loaded</legend><div className="loaded-template-summary"><span>✓</span><p><strong>{selectedExistingDomain?.template}</strong><small>{selectedExistingDomain?.domain} already has this template. Is it the right one for the new project?</small></p></div><div className="loaded-template-options"><label className={templateDecision === 'keep' ? 'active' : ''}><input type="radio" name="templateDecision" value="keep" checked={templateDecision === 'keep'} onChange={() => setTemplateDecision('keep')} /><span><strong>Yes, use this template</strong><small>Keep WordPress exactly as it is.</small></span></label><label className={templateDecision === 'replace' ? 'active' : ''}><input type="radio" name="templateDecision" value="replace" checked={templateDecision === 'replace'} onChange={() => setTemplateDecision('replace')} /><span><strong>No, replace it</strong><small>Delete it and load another template.</small></span></label></div></fieldset>}
         {!canKeepLoadedTemplate && <input type="hidden" name="templateDecision" value="replace" />}
         {requiresTemplateOperation && <label>Template<select name="templateSlotNumber" required value={selectedTemplateSlotNumber} onChange={(event) => setSelectedTemplateSlotNumber(event.target.value)}><option value="" disabled>Choose template</option>{compatibleTemplates.map((template) => <option key={template.id} value={template.slotNumber}>{template.name} · {template.sourceDomain}</option>)}</select></label>}
-        <label>Assign to<select name="developer" defaultValue="Owner Account">{assignableDevelopers.map((name) => <option key={name}>{name}</option>)}</select></label>
-        {targetMode === 'existing' && requiresTemplateOperation && <label className="launch-overwrite-confirm"><input type="checkbox" name="confirmExistingOverwrite" value="true" required /><span><strong>Confirm template replacement</strong><small>This deletes any WordPress installation on the selected domain before loading the template.</small></span></label>}
-        <label className="full-field">Project notes<textarea name="notes" rows={3} placeholder="Optional client brief or launch notes" /></label>
-        <div className="full-field"><ClientIntakeForm projectName={projectName} /></div>
+        <label>Assign to<select name="developer" value={developer} onChange={(event) => setDeveloper(event.target.value as Developer)}>{assignableDevelopers.map((name) => <option key={name}>{name}</option>)}</select></label>
+        {targetMode === 'existing' && requiresTemplateOperation && <label className="launch-overwrite-confirm"><input type="checkbox" name="confirmExistingOverwrite" value="true" required checked={confirmExistingOverwrite} onChange={(event) => setConfirmExistingOverwrite(event.target.checked)} /><span><strong>Confirm template replacement</strong><small>This deletes any WordPress installation on the selected domain before loading the template.</small></span></label>}
+        <label className="full-field">Project notes<textarea name="notes" rows={3} value={notes} onChange={(event) => setNotes(event.target.value)} placeholder="Optional client brief or launch notes" /></label>
+        <div className="full-field"><ClientIntakeForm projectName={projectName} intake={intake} onChange={setIntake} /></div>
         {selectedConnection && !managementReady && requiresTemplateOperation && <div className="launch-readiness-warning full-field"><span>WordPress Management needs the cPanel account password once before this account can install or replace a template.</span><button type="button" className="outline-button" onClick={() => onActivateWordPress(selectedConnection)}>Activate here</button></div>}
         <div className="launch-summary full-field"><span>1</span><p><strong>{targetMode === 'existing' ? keepingLoadedTemplate ? 'Keep the verified template' : 'Prepare the selected domain' : 'Create the new subdomain'}</strong><small>{targetMode === 'existing' ? keepingLoadedTemplate ? 'The existing WordPress installation is not deleted or changed.' : 'Any existing WordPress installation is removed only after confirmation.' : 'The launch stops if the address already exists.'}</small></p><span>2</span><p><strong>{keepingLoadedTemplate ? 'Create and assign the project' : 'Clone the selected template'}</strong><small>{keepingLoadedTemplate ? 'The loaded template becomes the starting point for the new project.' : 'Softaculous installs it directly at the domain root with an empty directory field.'}</small></p><span>3</span><p><strong>Verify and track</strong><small>The project is assigned, soft locked, and moved to Template Loaded.</small></p></div>
+        <div className="launch-draft-status full-field"><span>Draft saved automatically on this device</span><button type="button" className="text-button" onClick={() => { window.localStorage.removeItem(launchProjectDraftKey); setProjectName(''); setSubdomain(''); setSelectedExistingDomainId(''); setTemplateDecision('replace'); setSelectedTemplateSlotNumber(''); setParentDomain(''); setDeveloper('Owner Account'); setConfirmExistingOverwrite(false); setNotes(''); setIntake(emptyClientIntake); }}>Clear draft</button></div>
         <button className="primary-button launch-project-submit full-field" disabled={busy || (requiresTemplateOperation && (!managementReady || !compatibleTemplates.length || !selectedTemplateSlotNumber)) || (targetMode === 'existing' && !selectedExistingDomainId)}>{busy ? keepingLoadedTemplate ? 'Starting project…' : 'Preparing domain & loading template…' : 'Launch New Project'}</button>
       </form>
     </section>
