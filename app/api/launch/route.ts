@@ -309,13 +309,15 @@ export async function POST(request: Request) {
             domain: targetDomain, installationId: installation.id, siteName: String(template!.name),
           });
           correctedSiteUrl = true;
-          continue;
+          break;
         }
         publicInfo = await publicWordPressInfo(targetDomain);
         if (publicInfo.detected && rootInstallationUrl(publicInfo.url, targetDomain)) break;
       }
       installationId = installation?.id ?? '';
-      verifiedUrl = installation?.url ?? '';
+      verifiedUrl = correctedSiteUrl && installationId
+        ? `https://${targetDomain}`
+        : installation?.url ?? '';
       siteName = installation?.siteName ?? String(template!.name);
       version = installation?.version ?? '';
       if (!installation || !rootInstallationUrl(verifiedUrl, targetDomain)) {
