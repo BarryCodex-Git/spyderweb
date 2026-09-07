@@ -71,6 +71,13 @@
       "when": 1788759000000,
       "tag": "0009_undo_bulk_php_runtime_queue",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "6",
+      "when": 1788760800000,
+      "tag": "0010_clear_unverified_php_versions",
+      "breakpoints": true
     }
   ]
 }

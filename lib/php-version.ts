@@ -59,18 +59,20 @@ export function selectRecommendedPhpPackage(installed: string[], systemDefault: 
 
 export function currentPhpPackage(value: unknown, domain: string) {
   const normalizedDomain = domain.toLowerCase();
-  const inspect = (candidate: unknown): string | null => {
+  const inspect = (candidate: unknown, matchedDomain = false): string | null => {
     if (!candidate || typeof candidate !== 'object') return null;
     if (Array.isArray(candidate)) {
       for (const item of candidate) {
-        const found = inspect(item);
+        const found = inspect(item, matchedDomain);
         if (found) return found;
       }
       return null;
     }
     const record = candidate as Record<string, unknown>;
     const recordDomain = String(record.vhost ?? record.domain ?? record.hostname ?? '').toLowerCase();
-    if (!recordDomain || recordDomain === normalizedDomain) {
+    if (recordDomain && recordDomain !== normalizedDomain) return null;
+    const exactRecord = matchedDomain || recordDomain === normalizedDomain;
+    if (exactRecord) {
       for (const key of ['version', 'phpversion', 'php_version', 'package']) {
         const raw = record[key];
         if (typeof raw === 'string') {
@@ -79,8 +81,8 @@ export function currentPhpPackage(value: unknown, domain: string) {
         }
       }
     }
-    for (const nested of Object.values(record)) {
-      const found = inspect(nested);
+    for (const [key, nested] of Object.entries(record)) {
+      const found = inspect(nested, exactRecord || key.toLowerCase() === normalizedDomain);
       if (found) return found;
     }
     return null;
