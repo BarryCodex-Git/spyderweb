@@ -1,5 +1,8 @@
 import { ensureWordPressMemoryConstants, inspectWordPressMemory } from './wordpress-memory';
 import { isCpanelSuccessStatus, issueSubdomainCreate } from './cpanel-subdomain';
+import {
+  collectPhpPackages, currentPhpPackage, phpPackageLabel, selectRecommendedPhpPackage,
+} from './php-version';
 
 export type CpanelDomain = {
   domain: string;
@@ -352,6 +355,90 @@ function directiveMatches(name: RecommendedPhpDirective, current: string | null,
 }
 
 type CpanelUapiCaller = (module: string, fn: string, query?: Record<string, string>) => Promise<unknown>;
+
+export async function ensureRecommendedPhpVersion(input: {
+  baseUrl: string;
+  username: string;
+  token: string;
+  domain: string;
+  password?: string | null;
+  session?: CpanelSession | null;
+}) {
+  const callers: { method: string; call: CpanelUapiCaller }[] = [
+    {
+      method: 'api_token',
+      call: (module, fn, query = {}) => cpanelUapi(input.baseUrl, input.username, input.token, module, fn, query),
+    },
+    {
+      method: 'compatibility_gateway',
+      call: (module, fn, query = {}) => cpanelJsonUapi(input.baseUrl, input.username, input.token, module, fn, query),
+    },
+    ...(input.password ? [{
+      method: 'cpanel_password',
+      call: (module: string, fn: string, query: Record<string, string> = {}) =>
+        cpanelPasswordUapi(input.baseUrl, input.username, input.password!, module, fn, query),
+    }] : []),
+    ...(input.session ? [{
+      method: 'cpanel_session',
+      call: (module: string, fn: string, query: Record<string, string> = {}) =>
+        cpanelSessionUapi(input.baseUrl, input.session!, module, fn, query),
+    }] : []),
+  ];
+  let lastError: unknown = null;
+  let availableVersions: string[] = [];
+  for (const caller of callers) {
+    try {
+      const installedData = await caller.call('LangPHP', 'php_get_installed_versions');
+      availableVersions = collectPhpPackages(installedData);
+      let systemDefault: string | null = null;
+      try {
+        const defaultData = await caller.call('LangPHP', 'php_get_system_default_version');
+        systemDefault = collectPhpPackages(defaultData)[0] ?? null;
+      } catch {
+        // Some account-level credentials can list installed versions without
+        // seeing the server default. Selection remains deterministic below.
+      }
+      const recommended = selectRecommendedPhpPackage(availableVersions, systemDefault);
+      if (!recommended) {
+        throw new Error('This cPanel server does not offer a supported PHP 8.3 or 8.4 runtime. Ask the host to install PHP 8.3 before using this website.');
+      }
+      const beforeData = await caller.call('LangPHP', 'php_get_vhost_versions', { vhost: input.domain });
+      const beforeVersion = currentPhpPackage(beforeData, input.domain);
+      if (beforeVersion === recommended) {
+        return {
+          status: 'already_correct' as const,
+          version: recommended,
+          label: phpPackageLabel(recommended)!,
+          previousVersion: beforeVersion,
+          method: caller.method,
+        };
+      }
+      await caller.call('LangPHP', 'php_set_vhost_versions', {
+        version: recommended,
+        vhost: input.domain,
+      });
+      const afterData = await caller.call('LangPHP', 'php_get_vhost_versions', { vhost: input.domain });
+      const afterVersion = currentPhpPackage(afterData, input.domain);
+      if (afterVersion !== recommended) {
+        throw new Error(`cPanel accepted the PHP version change for ${input.domain}, but read-back reported ${phpPackageLabel(afterVersion) ?? 'an unknown version'}.`);
+      }
+      return {
+        status: 'updated' as const,
+        version: recommended,
+        label: phpPackageLabel(recommended)!,
+        previousVersion: beforeVersion,
+        method: caller.method,
+      };
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  const detail = lastError instanceof Error ? lastError.message : 'cPanel did not permit the version change.';
+  const available = availableVersions.length
+    ? ` Available runtimes: ${availableVersions.map((item) => phpPackageLabel(item) ?? item).join(', ')}.`
+    : '';
+  throw new Error(`SpyderWeb could not select and verify a recommended PHP runtime for ${input.domain}. ${detail}${available}`);
+}
 
 async function inspectRecommendedPhpProfileWith(
   call: CpanelUapiCaller,

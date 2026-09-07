@@ -1,5 +1,5 @@
 import {
-  createCpanelSubdomain, discoverCpanel, ensureRecommendedPhpProfile,
+  createCpanelSubdomain, discoverCpanel, ensureRecommendedPhpProfile, ensureRecommendedPhpVersion,
   ensureWordPressMemoryProfile, publicWordPressInfo,
 } from '@/lib/cpanel';
 import { effectiveDocumentRoot, reconcileCreatedSubdomain } from '@/lib/cpanel-subdomain';
@@ -267,6 +267,7 @@ export async function POST(request: Request) {
     let verifiedUrl = keepExistingTemplate ? String(existingDomain?.wordpressUrl || `https://${targetDomain}`) : '';
     let siteName = keepExistingTemplate ? String(existingDomain?.wordpressSiteName || 'Template loaded') : String(template!.name);
     let version = keepExistingTemplate ? String(existingDomain?.wordpressVersion || '') : '';
+    let phpRuntimeVersion = keepExistingTemplate ? String(existingDomain?.phpVersion || '') : '';
     let memoryProfileStatus = keepExistingTemplate ? 'wordpress_memory_pending' : 'not_checked';
     let memoryWarning = '';
     if (!keepExistingTemplate) {
@@ -299,6 +300,10 @@ export async function POST(request: Request) {
       } else {
         try {
           const session = await createCpanelSession(String(connection.baseUrl), credential!).catch(() => null);
+          const phpVersionResult = await ensureRecommendedPhpVersion({
+            baseUrl: String(connection.baseUrl), username: String(connection.username), token,
+            domain: targetDomain, password: credential!.password, session,
+          });
           await ensureRecommendedPhpProfile({
             baseUrl: String(connection.baseUrl), username: String(connection.username), token,
             domain: targetDomain, documentRoot, password: credential!.password, session,
@@ -308,6 +313,7 @@ export async function POST(request: Request) {
             domain: targetDomain, documentRoot, password: credential!.password, session,
           });
           memoryProfileStatus = 'wordpress_memory_verified';
+          phpRuntimeVersion = phpVersionResult.version;
         } catch (error) {
           memoryProfileStatus = 'failed';
           const detail = error instanceof Error ? error.message : 'The memory profile could not be verified.';
@@ -318,13 +324,13 @@ export async function POST(request: Request) {
     const templateName = keepExistingTemplate ? siteName : String(template!.name);
     const templateDomain = keepExistingTemplate ? targetDomain : String(template!.domain);
     await db.batch([
-      db.prepare(`UPDATE hosting_domains SET wordpress_status = 'installed', wordpress_version = ?,
+      db.prepare(`UPDATE hosting_domains SET wordpress_status = 'installed', wordpress_version = ?, php_version = ?,
         wordpress_site_name = ?, wordpress_url = ?, wordpress_installation_id = ?,
         wordpress_source = ?, workflow_status_override = 'Template Loaded',
         wordpress_soft_locked = 1,
         document_root = COALESCE(document_root, ?), php_profile_status = ?,
         last_seen_at = ? WHERE id = ? AND owner_user_id = ?`)
-        .bind(version || null, siteName, verifiedUrl || `https://${targetDomain}`, installationId || null,
+        .bind(version || null, phpRuntimeVersion || null, siteName, verifiedUrl || `https://${targetDomain}`, installationId || null,
           keepExistingTemplate ? 'Existing loaded template' : 'Softaculous project launch',
           effectiveDocumentRoot({
             domain: targetDomain,

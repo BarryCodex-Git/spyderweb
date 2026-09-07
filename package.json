@@ -11,6 +11,7 @@
     "start": "vinext start",
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next",
     "test:wordpress-memory": "node --experimental-strip-types tests/wordpress-memory.test.mjs",
+    "test:php-version": "node --experimental-strip-types tests/php-version.test.mjs",
     "test:cpanel-subdomain": "node --experimental-strip-types tests/cpanel-subdomain.test.mjs",
     "test:softaculous-write-auth": "node --experimental-strip-types tests/softaculous-write-auth.test.mjs",
     "test:launch-project": "node --experimental-strip-types tests/launch-project.test.mjs",

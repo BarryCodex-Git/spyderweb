@@ -1,4 +1,7 @@
-import { ensureRecommendedPhpProfile, ensureWordPressMemoryProfile, publicWordPressInfo } from '@/lib/cpanel';
+import {
+  ensureRecommendedPhpProfile, ensureRecommendedPhpVersion,
+  ensureWordPressMemoryProfile, publicWordPressInfo,
+} from '@/lib/cpanel';
 import { effectiveDocumentRoot } from '@/lib/cpanel-subdomain';
 import { decryptHostingToken, decryptSecret } from '@/lib/credential-crypto';
 import { ensureHostingSchema } from '@/lib/hosting-db';
@@ -198,6 +201,10 @@ export async function POST(request: Request, { params }: { params: Promise<{ dom
       const session = managementCredential?.password
         ? await createCpanelSession(String(connection.baseUrl), managementCredential).catch(() => null)
         : null;
+      const phpVersionResult = await ensureRecommendedPhpVersion({
+        baseUrl: String(connection.baseUrl), username: String(connection.username), token: cpanelToken,
+        domain: record.domain, password: managementPassword, session,
+      });
       const phpResult = await ensureRecommendedPhpProfile({
         baseUrl: String(connection.baseUrl), username: String(connection.username), token: cpanelToken,
         domain: record.domain, documentRoot, password: managementPassword, session,
@@ -210,16 +217,24 @@ export async function POST(request: Request, { params }: { params: Promise<{ dom
           domain: record.domain, documentRoot, password: managementPassword, session,
         });
       }
-      await db.prepare(`UPDATE hosting_domains SET php_profile_status = ?,
+      await db.prepare(`UPDATE hosting_domains SET php_profile_status = ?, php_version = ?,
         document_root = COALESCE(document_root, ?) WHERE id = ? AND owner_user_id = ?`)
-        .bind(wordpressResult ? 'wordpress_memory_verified' : 'recommended_applied', documentRoot, record.id, identity.userId).run();
+        .bind(wordpressResult ? 'wordpress_memory_verified' : 'recommended_applied', phpVersionResult.version,
+          documentRoot, record.id, identity.userId).run();
       await audit(db, { ownerUserId: identity.userId, connectionId: record.connectionId, action: 'wordpress.apply_php_profile', target: record.domain, outcome: 'success', details: {
         phpStatus: phpResult.status,
+        phpRuntimeStatus: phpVersionResult.status,
+        phpRuntimePrevious: phpVersionResult.previousVersion,
+        phpRuntimeVersion: phpVersionResult.version,
+        phpRuntimeMethod: phpVersionResult.method,
         wordpressStatus: wordpressResult?.status ?? 'not_installed',
         wordpressMemoryLimit: wordpressResult?.values.WP_MEMORY_LIMIT ?? null,
         wordpressMaxMemoryLimit: wordpressResult?.values.WP_MAX_MEMORY_LIMIT ?? null,
         rollbackCopy: wordpressResult?.backupFile ?? null,
       } });
+      const runtimeSummary = phpVersionResult.status === 'already_correct'
+        ? `${phpVersionResult.label} was already selected.`
+        : `${phpVersionResult.label} was selected and verified.`;
       const phpSummary = phpResult.status === 'already_correct' ? 'The cPanel PHP limits were already correct.' : 'The cPanel PHP limits were updated and verified.';
       const wordpressSummary = wordpressResult
         ? wordpressResult.status === 'already_correct'
@@ -227,7 +242,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ dom
           : `wp-config.php now requests ${wordpressResult.values.WP_MEMORY_LIMIT} normally and ${wordpressResult.values.WP_MAX_MEMORY_LIMIT} for administration; ${wordpressResult.backupFile} is the rollback copy.`
         : 'No WordPress installation is present, so there was no wp-config.php to change.';
       return json({
-        message: `${phpSummary} ${wordpressSummary}`,
+        message: `${runtimeSummary} ${phpSummary} ${wordpressSummary}`,
         warning: false,
       });
     }
@@ -251,6 +266,10 @@ export async function POST(request: Request, { params }: { params: Promise<{ dom
         encryptedToken, encryptionIv, identity!.userId, record.connectionId,
       );
       const session = await createCpanelSession(baseUrl, secrets).catch(() => null);
+      const phpVersionResult = await ensureRecommendedPhpVersion({
+        baseUrl, username: cpanelUsername, token: cpanelToken,
+        domain: record.domain, password: secrets.password, session,
+      });
       const phpResult = await ensureRecommendedPhpProfile({
         baseUrl, username: cpanelUsername, token: cpanelToken,
         domain: record.domain, documentRoot, password: secrets.password, session,
@@ -259,9 +278,9 @@ export async function POST(request: Request, { params }: { params: Promise<{ dom
         baseUrl, username: cpanelUsername, token: cpanelToken,
         domain: record.domain, documentRoot, password: secrets.password, session,
       });
-      await db.prepare(`UPDATE hosting_domains SET php_profile_status = 'wordpress_memory_verified',
+      await db.prepare(`UPDATE hosting_domains SET php_profile_status = 'wordpress_memory_verified', php_version = ?,
         document_root = COALESCE(document_root, ?) WHERE id = ? AND owner_user_id = ?`)
-        .bind(documentRoot, record.id, identity!.userId).run();
+        .bind(phpVersionResult.version, documentRoot, record.id, identity!.userId).run();
       await audit(db, {
         ownerUserId: identity!.userId,
         connectionId: record.connectionId,
@@ -270,6 +289,9 @@ export async function POST(request: Request, { params }: { params: Promise<{ dom
         outcome: 'success',
         details: {
           phpStatus: phpResult.status,
+          phpRuntimeStatus: phpVersionResult.status,
+          phpRuntimePrevious: phpVersionResult.previousVersion,
+          phpRuntimeVersion: phpVersionResult.version,
           wordpressStatus: wordpressResult.status,
           wordpressMemoryLimit: wordpressResult.values.WP_MEMORY_LIMIT,
           wordpressMaxMemoryLimit: wordpressResult.values.WP_MAX_MEMORY_LIMIT,

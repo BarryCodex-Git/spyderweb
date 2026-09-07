@@ -532,7 +532,7 @@ export default function Home() {
     const candidates = managedDomains.filter((domain) =>
       typeof domain.id === 'string'
       && domain.wordpress.startsWith('Installed')
-      && domain.phpProfileStatus === 'wordpress_memory_pending'
+      && ['wordpress_memory_pending', 'php_runtime_pending'].includes(domain.phpProfileStatus ?? '')
       && domain.operationalReady
       && domain.connectionMode === 'managed_write'
       && !automaticMemoryRepairs.current.has(String(domain.id)),
@@ -1272,7 +1272,7 @@ export default function Home() {
                 <section className="domain-facts-grid">
                   <div><span>WordPress</span><strong>{selectedDomain.wordpress}</strong></div>
                   <div><span>Template</span><strong>{selectedDomain.template}</strong></div>
-                  <div><span>PHP / WordPress memory</span><strong>{selectedDomain.phpProfileStatus === 'wordpress_memory_verified' ? '768 MB PHP · 512/768 MB WP' : ['recommended_applied', 'wordpress_memory_pending'].includes(selectedDomain.phpProfileStatus ?? '') ? '768 MB PHP · WP check needed' : selectedDomain.phpProfileStatus === 'failed' ? 'PHP / WP update failed' : selectedDomain.phpVersion ?? 'Not reported'}</strong></div>
+                  <div><span>PHP / WordPress profile</span><strong>{selectedDomain.phpProfileStatus === 'wordpress_memory_verified' ? `${selectedDomain.phpVersion?.replace(/^(?:ea|alt)-php(\d)(\d)$/i, 'PHP $1.$2') ?? 'PHP verified'} · 768 MB PHP · 512/768 MB WP` : ['recommended_applied', 'wordpress_memory_pending', 'php_runtime_pending'].includes(selectedDomain.phpProfileStatus ?? '') ? 'PHP runtime / memory check needed' : selectedDomain.phpProfileStatus === 'failed' ? 'PHP / WP update failed' : selectedDomain.phpVersion ?? 'Not reported'}</strong></div>
                   <div><span>Hosting</span><strong>{selectedDomain.host}</strong></div>
                 </section>
 
@@ -1398,7 +1398,7 @@ export default function Home() {
             {wordpressAction.action === 'delete_oldest_backup' && <div className="danger-callout"><strong>Delete the oldest saved restore point?</strong><span>This removes one old backup archive from the hosting account to recover server space. It does not change the live WordPress website, but the deleted restore point cannot be used again.</span></div>}
             {wordpressAction.action === 'install' && <div className="danger-callout"><strong>This will delete “{wordpressAction.detectedSiteName || wordpressAction.domain.client || wordpressAction.domain.domain}”.</strong><span>SpyderWeb will remove the current WordPress files, database and database user, verify that the installation is gone, and only then install clean WordPress. This cannot run while the domain is soft locked.</span></div>}
             {wordpressAction.action === 'clone_template' && <div className="danger-callout"><strong>This will delete “{wordpressAction.detectedSiteName || wordpressAction.domain.client || wordpressAction.domain.domain}”.</strong><span>SpyderWeb will remove the current WordPress files, database and database user, verify that the installation is gone, and then clone the default template directly onto the empty domain. This cannot run while the domain is soft locked.</span></div>}
-            {wordpressAction.action === 'apply_php_profile' && <div className="info-callout">Checks and verifies both layers for the domain you selected: cPanel PHP receives 768 MB memory, 512 MB post and upload sizes, 900-second execution and input times, and 5,000 input variables. When WordPress is installed, it receives at least 512 MB normal memory and 768 MB administrative memory in wp-config.php; higher existing values are preserved and a dated rollback copy is made before changes.</div>}
+            {wordpressAction.action === 'apply_php_profile' && <div className="info-callout">Checks and verifies the complete PHP profile for the selected domain. SpyderWeb first selects the host&apos;s recommended supported runtime (PHP 8.3 or 8.4), then verifies 768 MB PHP memory, 512 MB post and upload sizes, 900-second execution and input times, and 5,000 input variables. When WordPress is installed, it also receives at least 512 MB normal memory and 768 MB administrative memory in wp-config.php; higher existing values are preserved and a dated rollback copy is made before changes.</div>}
             <div className="operation-confirm-actions"><button className="text-button" type="button" disabled={wordpressActionBusy} onClick={() => setWordpressAction(null)}>Cancel</button><button className={`primary-button ${wordpressAction.action === 'delete_oldest_backup' || wordpressAction.action === 'clone_template' || wordpressAction.action === 'install' ? 'danger-button' : ''}`} type="submit" disabled={wordpressActionBusy}>{wordpressActionBusy ? 'Working…' : wordpressAction.action === 'delete_oldest_backup' ? 'Yes, delete oldest backup' : wordpressAction.action === 'install' ? 'Yes, delete it and install new WordPress' : wordpressAction.action === 'clone_template' ? 'Yes, delete it and load the template' : wordpressAction.action === 'create_restore_point' ? 'Create restore point' : 'Check and fix settings'}</button></div>
           </form>
         </div>
