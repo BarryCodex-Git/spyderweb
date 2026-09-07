@@ -93,3 +93,31 @@ export function ensureWordPressMemoryConstants(content: string) {
   if (unverified.length) throw new Error(`WordPress memory settings did not verify: ${unverified.join(', ')}.`);
   return { content: updated, changed, values: verified.values };
 }
+
+export function ensureWordPressSiteUrlConstants(content: string, siteUrl: string) {
+  if (!content.includes('<?php') || content.includes('\0')) {
+    throw new Error('wp-config.php is not a readable PHP configuration file. SpyderWeb left the file unchanged.');
+  }
+  const parsed = new URL(siteUrl);
+  if (parsed.protocol !== 'https:' || !parsed.hostname) throw new Error('SpyderWeb requires a valid HTTPS WordPress site address.');
+  const normalized = `${parsed.protocol}//${parsed.hostname}`;
+  let updated = content;
+  const changed: Array<'WP_HOME' | 'WP_SITEURL'> = [];
+  const missing: string[] = [];
+  for (const name of ['WP_HOME', 'WP_SITEURL'] as const) {
+    const pattern = new RegExp(`^(\\s*)define\\s*\\(\\s*(['"])${name}\\2\\s*,\\s*(['"])([^'"]*)\\3\\s*\\)\\s*;(\\s*(?://.*|#.*)?)$`, 'gmi');
+    const matches = [...updated.matchAll(pattern)];
+    if (!matches.length) {
+      missing.push(`define( '${name}', '${normalized}' );`);
+      changed.push(name);
+      continue;
+    }
+    if (matches.every((match) => match[4].replace(/\/$/, '') === normalized)) continue;
+    updated = updated.replace(pattern, (_full, indent: string, _nameQuote: string, _valueQuote: string, _value: string, suffix: string) =>
+      `${indent}define( '${name}', '${normalized}' );${suffix}`,
+    );
+    changed.push(name);
+  }
+  if (missing.length) updated = insertBeforeWordPressBootstrap(updated, missing);
+  return { content: updated, changed, siteUrl: normalized };
+}

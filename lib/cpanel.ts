@@ -1,4 +1,4 @@
-import { ensureWordPressMemoryConstants, inspectWordPressMemory } from './wordpress-memory';
+import { ensureWordPressMemoryConstants, ensureWordPressSiteUrlConstants, inspectWordPressMemory } from './wordpress-memory';
 import { isCpanelSuccessStatus, issueSubdomainCreate } from './cpanel-subdomain';
 import {
   collectPhpPackages, currentPhpPackage, ensureCpanelPhpHandler,
@@ -823,6 +823,7 @@ export async function ensureWordPressMemoryProfile(input: {
   documentRoot: string;
   password?: string | null;
   session?: CpanelSession | null;
+  siteUrl?: string | null;
 }) {
   const callers: CpanelUapiCaller[] = [
     (module, fn, query = {}) => cpanelJsonUapi(input.baseUrl, input.username, input.token, module, fn, query),
@@ -851,7 +852,13 @@ export async function ensureWordPressMemoryProfile(input: {
         continue;
       }
 
-      const prepared = ensureWordPressMemoryConstants(original);
+      const memoryPrepared = ensureWordPressMemoryConstants(original);
+      const urlPrepared = input.siteUrl ? ensureWordPressSiteUrlConstants(memoryPrepared.content, input.siteUrl) : null;
+      const prepared = {
+        content: urlPrepared?.content ?? memoryPrepared.content,
+        changed: [...memoryPrepared.changed, ...(urlPrepared?.changed ?? [])],
+        values: memoryPrepared.values,
+      };
       if (!prepared.changed.length) {
         return { status: 'already_correct' as const, changed: prepared.changed, values: prepared.values, backupFile: null };
       }
@@ -875,6 +882,9 @@ export async function ensureWordPressMemoryProfile(input: {
         const unverified = (Object.keys(verified.sufficient) as Array<keyof typeof verified.sufficient>)
           .filter((name) => !verified.sufficient[name]);
         if (unverified.length) throw new Error(`WordPress memory settings did not read back correctly: ${unverified.join(', ')}.`);
+        if (input.siteUrl && ensureWordPressSiteUrlConstants(savedContent, input.siteUrl).changed.length) {
+          throw new Error('The cloned WordPress site address did not read back correctly.');
+        }
         return { status: 'updated' as const, changed: prepared.changed, values: verified.values, backupFile };
       } catch (error) {
         try {

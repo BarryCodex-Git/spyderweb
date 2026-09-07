@@ -274,6 +274,18 @@ export async function POST(request: Request) {
     if (!keepExistingTemplate) {
       await softaculousAction({ baseUrl: String(connection.baseUrl), credential: credential!, action: 'clone', domain: targetDomain,
         sourceInstallationId, databaseName: softaculousDatabaseName() });
+      const clonedDocumentRoot = effectiveDocumentRoot({
+        domain: targetDomain,
+        domainType: created?.domainType ?? String(existingDomain?.domainType || 'subdomain'),
+        documentRoot: created?.documentRoot ?? (existingDomain?.documentRoot ? String(existingDomain.documentRoot) : null),
+      });
+      if (clonedDocumentRoot) {
+        await ensureWordPressMemoryProfile({
+          baseUrl: String(connection.baseUrl), username: String(connection.username), token,
+          domain: targetDomain, documentRoot: clonedDocumentRoot, password: credential!.password,
+          siteUrl: `https://${targetDomain}`,
+        });
+      }
       let installation: Awaited<ReturnType<typeof listSoftaculousInstallations>>[number] | undefined;
       let publicInfo: Awaited<ReturnType<typeof publicWordPressInfo>> | null = null;
       // A successful Softaculous clone can take several seconds to appear in its
