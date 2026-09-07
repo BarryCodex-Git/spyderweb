@@ -274,14 +274,25 @@ export async function POST(request: Request) {
     if (!keepExistingTemplate) {
       await softaculousAction({ baseUrl: String(connection.baseUrl), credential: credential!, action: 'clone', domain: targetDomain,
         sourceInstallationId, databaseName: softaculousDatabaseName() });
-      const refreshed = await listSoftaculousInstallations(String(connection.baseUrl), credential!);
-      const installation = refreshed.find((item) => item.domain === targetDomain);
+      let installation: Awaited<ReturnType<typeof listSoftaculousInstallations>>[number] | undefined;
+      let publicInfo: Awaited<ReturnType<typeof publicWordPressInfo>> | null = null;
+      // A successful Softaculous clone can take several seconds to appear in its
+      // installation inventory. Poll the inventory and the live WordPress endpoint
+      // before reporting a failure; never repeat the clone itself.
+      for (const delay of [0, 1000, 2000, 4000, 8000]) {
+        if (delay) await new Promise((resolve) => setTimeout(resolve, delay));
+        const refreshed = await listSoftaculousInstallations(String(connection.baseUrl), credential!);
+        installation = refreshed.find((item) => item.domain === targetDomain);
+        if (installation && rootInstallationUrl(installation.url, targetDomain)) break;
+        publicInfo = await publicWordPressInfo(targetDomain);
+        if (publicInfo.detected && rootInstallationUrl(publicInfo.url, targetDomain)) break;
+      }
       installationId = installation?.id ?? '';
       verifiedUrl = installation?.url ?? '';
       siteName = installation?.siteName ?? String(template!.name);
       version = installation?.version ?? '';
       if (!installation || !rootInstallationUrl(verifiedUrl, targetDomain)) {
-        const publicInfo = await publicWordPressInfo(targetDomain);
+        publicInfo ??= await publicWordPressInfo(targetDomain);
         if (publicInfo.detected && rootInstallationUrl(publicInfo.url, targetDomain)) {
           verifiedUrl = publicInfo.url || ''; siteName = publicInfo.siteName ?? siteName; version = publicInfo.version || '';
         } else if (installation?.url && !rootInstallationUrl(installation.url, targetDomain)) {
