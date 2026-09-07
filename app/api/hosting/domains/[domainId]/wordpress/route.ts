@@ -299,19 +299,34 @@ export async function POST(request: Request, { params }: { params: Promise<{ dom
         encryptedToken, encryptionIv, identity!.userId, record.connectionId,
       );
       const session = await createCpanelSession(baseUrl, secrets).catch(() => null);
-      const phpVersionResult = await ensureRecommendedPhpVersion({
-        baseUrl, username: cpanelUsername, token: cpanelToken,
-        domain: record.domain, password: secrets.password, session,
-      });
+      let phpVersionResult: Awaited<ReturnType<typeof ensureRecommendedPhpVersion>>;
+      let selectorMode: 'cloudlinux' | 'multiphp' = 'cloudlinux';
+      try {
+        await setCloudLinuxPhpSelectorVersion({
+          baseUrl, username: cpanelUsername, token: cpanelToken, version: '8.3',
+        });
+        phpVersionResult = {
+          status: 'updated', version: 'alt-php83', label: 'PHP 8.3', previousVersion: null,
+          method: 'cloudlinux_php_selector',
+        };
+      } catch {
+        selectorMode = 'multiphp';
+        phpVersionResult = await ensureRecommendedPhpVersion({
+          baseUrl, username: cpanelUsername, token: cpanelToken,
+          domain: record.domain, password: secrets.password, session,
+        });
+      }
       const documentRoot = await resolveCpanelDocumentRoot(
         baseUrl, cpanelUsername, cpanelToken, record.domain,
       ) ?? storedDocumentRoot;
       if (!documentRoot) throw new Error(`The document root for ${record.domain} could not be determined safely.`);
-      const phpHandlerResult = await ensurePhpRuntimeHandlerProfile({
-        baseUrl, username: cpanelUsername, token: cpanelToken,
-        domain: record.domain, documentRoot, phpPackage: phpVersionResult.version,
-        password: secrets.password, session,
-      });
+      const phpHandlerResult = selectorMode === 'multiphp'
+        ? await ensurePhpRuntimeHandlerProfile({
+          baseUrl, username: cpanelUsername, token: cpanelToken,
+          domain: record.domain, documentRoot, phpPackage: phpVersionResult.version,
+          password: secrets.password, session,
+        })
+        : { status: 'already_correct' as const, previousPackages: [] as string[], backupFile: null };
       const phpResult = await ensureRecommendedPhpProfile({
         baseUrl, username: cpanelUsername, token: cpanelToken,
         domain: record.domain, documentRoot, password: secrets.password, session,

@@ -1,7 +1,7 @@
 import {
   createCpanelSubdomain, discoverCpanel, ensurePhpRuntimeHandlerProfile,
   ensureRecommendedPhpProfile, ensureRecommendedPhpVersion,
-  ensureWordPressMemoryProfile, publicWordPressInfo,
+  ensureWordPressMemoryProfile, publicWordPressInfo, setCloudLinuxPhpSelectorVersion,
 } from '@/lib/cpanel';
 import { effectiveDocumentRoot, reconcileCreatedSubdomain } from '@/lib/cpanel-subdomain';
 import { decryptHostingToken, decryptSecret } from '@/lib/credential-crypto';
@@ -301,15 +301,30 @@ export async function POST(request: Request) {
       } else {
         try {
           const session = await createCpanelSession(String(connection.baseUrl), credential!).catch(() => null);
-          const phpVersionResult = await ensureRecommendedPhpVersion({
-            baseUrl: String(connection.baseUrl), username: String(connection.username), token,
-            domain: targetDomain, password: credential!.password, session,
-          });
-          await ensurePhpRuntimeHandlerProfile({
-            baseUrl: String(connection.baseUrl), username: String(connection.username), token,
-            domain: targetDomain, documentRoot, phpPackage: phpVersionResult.version,
-            password: credential!.password, session,
-          });
+          let phpVersionResult: Awaited<ReturnType<typeof ensureRecommendedPhpVersion>>;
+          let selectorMode: 'cloudlinux' | 'multiphp' = 'cloudlinux';
+          try {
+            await setCloudLinuxPhpSelectorVersion({
+              baseUrl: String(connection.baseUrl), username: String(connection.username), token, version: '8.3',
+            });
+            phpVersionResult = {
+              status: 'updated', version: 'alt-php83', label: 'PHP 8.3', previousVersion: null,
+              method: 'cloudlinux_php_selector',
+            };
+          } catch {
+            selectorMode = 'multiphp';
+            phpVersionResult = await ensureRecommendedPhpVersion({
+              baseUrl: String(connection.baseUrl), username: String(connection.username), token,
+              domain: targetDomain, password: credential!.password, session,
+            });
+          }
+          if (selectorMode === 'multiphp') {
+            await ensurePhpRuntimeHandlerProfile({
+              baseUrl: String(connection.baseUrl), username: String(connection.username), token,
+              domain: targetDomain, documentRoot, phpPackage: phpVersionResult.version,
+              password: credential!.password, session,
+            });
+          }
           await ensureRecommendedPhpProfile({
             baseUrl: String(connection.baseUrl), username: String(connection.username), token,
             domain: targetDomain, documentRoot, password: credential!.password, session,
