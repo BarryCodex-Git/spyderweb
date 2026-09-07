@@ -1,7 +1,8 @@
 import {
   createCpanelSubdomain, discoverCpanel, ensurePhpRuntimeHandlerProfile,
   ensureRecommendedPhpProfile, ensureRecommendedPhpVersion,
-  ensureWordPressMemoryProfile, publicWordPressInfo, setCloudLinuxPhpSelectorVersion,
+  ensureWordPressMemoryProfile, publicWordPressInfo, resolveCpanelDocumentRoot,
+  setCloudLinuxPhpSelectorVersion,
 } from '@/lib/cpanel';
 import { effectiveDocumentRoot, reconcileCreatedSubdomain } from '@/lib/cpanel-subdomain';
 import { decryptHostingToken, decryptSecret } from '@/lib/credential-crypto';
@@ -271,18 +272,28 @@ export async function POST(request: Request) {
     let phpRuntimeVersion = keepExistingTemplate ? String(existingDomain?.phpVersion || '') : '';
     let memoryProfileStatus = keepExistingTemplate ? 'wordpress_memory_pending' : 'not_checked';
     let memoryWarning = '';
+    let verifiedDocumentRoot = keepExistingTemplate
+      ? effectiveDocumentRoot({
+          domain: targetDomain,
+          domainType: String(existingDomain?.domainType || 'subdomain'),
+          documentRoot: existingDomain?.documentRoot ? String(existingDomain.documentRoot) : null,
+        })
+      : null;
     if (!keepExistingTemplate) {
       await softaculousAction({ baseUrl: String(connection.baseUrl), credential: credential!, action: 'clone', domain: targetDomain,
         sourceInstallationId, databaseName: softaculousDatabaseName() });
-      const clonedDocumentRoot = effectiveDocumentRoot({
+      const storedDocumentRoot = effectiveDocumentRoot({
         domain: targetDomain,
         domainType: created?.domainType ?? String(existingDomain?.domainType || 'subdomain'),
         documentRoot: created?.documentRoot ?? (existingDomain?.documentRoot ? String(existingDomain.documentRoot) : null),
       });
-      if (clonedDocumentRoot) {
+      verifiedDocumentRoot = await resolveCpanelDocumentRoot(
+        String(connection.baseUrl), String(connection.username), token, targetDomain,
+      ).catch(() => null) || storedDocumentRoot;
+      if (verifiedDocumentRoot) {
         await ensureWordPressMemoryProfile({
           baseUrl: String(connection.baseUrl), username: String(connection.username), token,
-          domain: targetDomain, documentRoot: clonedDocumentRoot, password: credential!.password,
+          domain: targetDomain, documentRoot: verifiedDocumentRoot, password: credential!.password,
           siteUrl: `https://${targetDomain}`,
         });
       }
@@ -313,11 +324,7 @@ export async function POST(request: Request) {
           throw new Error('The subdomain and project were created, but the root WordPress clone is still awaiting verification. Do not retry the launch; rescan cPanel first.');
         }
       }
-      const documentRoot = effectiveDocumentRoot({
-        domain: targetDomain,
-        domainType: created?.domainType ?? String(existingDomain?.domainType || 'subdomain'),
-        documentRoot: created?.documentRoot ?? (existingDomain?.documentRoot ? String(existingDomain.documentRoot) : null),
-      });
+      const documentRoot = verifiedDocumentRoot;
       if (!documentRoot) {
         memoryProfileStatus = 'failed';
         memoryWarning = ' The project is live, but its memory profile needs inspection because cPanel did not return its document root.';
@@ -372,15 +379,11 @@ export async function POST(request: Request) {
         wordpress_site_name = ?, wordpress_url = ?, wordpress_installation_id = ?,
         wordpress_source = ?, workflow_status_override = 'Template Loaded',
         wordpress_soft_locked = 1,
-        document_root = COALESCE(document_root, ?), php_profile_status = ?,
+        document_root = COALESCE(?, document_root), php_profile_status = ?,
         last_seen_at = ? WHERE id = ? AND owner_user_id = ?`)
         .bind(version || null, phpRuntimeVersion || null, siteName, verifiedUrl || `https://${targetDomain}`, installationId || null,
           keepExistingTemplate ? 'Existing loaded template' : 'Softaculous project launch',
-          effectiveDocumentRoot({
-            domain: targetDomain,
-            domainType: created?.domainType ?? String(existingDomain?.domainType || 'subdomain'),
-            documentRoot: created?.documentRoot ?? (existingDomain?.documentRoot ? String(existingDomain.documentRoot) : null),
-          }), memoryProfileStatus,
+          verifiedDocumentRoot, memoryProfileStatus,
           new Date().toISOString(), domainId, identity.userId),
       db.prepare(`INSERT INTO project_events (id, project_id, owner_user_id, event_type, source,
         stage, stage_status, note, details_json, created_at) VALUES (?, ?, ?, 'project.launched',

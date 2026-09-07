@@ -594,15 +594,24 @@ export default function Home() {
     setLaunchBusy(true);
     showActionToast({ id: 'new-project-launch', status: 'progress', title: 'Launching new project',
       message: keepingLoadedTemplate
-        ? 'Creating the project and keeping the domain’s loaded template unchanged.'
-        : 'Preparing the domain, cloning the selected template to its root, and verifying WordPress.' });
+        ? 'Saving the project, keeping the loaded template, and preparing the Word document.'
+        : 'Installing WordPress, applying the selected template, and preparing the project handover.' });
     try {
       const response = await fetch('/api/launch', { method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(Object.fromEntries(formData.entries())) });
-      const result = await response.json() as { error?: string; message?: string };
+      const result = await response.json() as { error?: string; message?: string; projectId?: string };
       if (!response.ok) throw new Error(result.error || 'The project could not be launched.');
       await Promise.all([loadHostingInventory(), loadProjectData(), loadTemplateSlots()]);
-      showActionToast({ id: 'new-project-launch', status: 'success', title: 'Project launched', message: result.message || 'The new project is ready.' });
+      if (result.projectId) {
+        const download = document.createElement('a');
+        download.href = `/api/projects/${result.projectId}/intake?download=1`;
+        download.download = '';
+        document.body.appendChild(download);
+        download.click();
+        download.remove();
+      }
+      showActionToast({ id: 'new-project-launch', status: 'success', title: 'Project launched',
+        message: `${result.message || 'The new project is ready.'} The Word project details are downloading for the manual agent handover.` });
       form.reset();
       setActiveView('Projects');
       return true;
@@ -1804,7 +1813,7 @@ function LaunchProjectView({ connections, domains, templates, busy, onSaveTempla
 
   return <div className="view-stack launch-project-view">
     <section className="panel new-project-panel">
-      <div className="section-heading"><div><p className="eyebrow">Create and deploy</p><h2>Launch a new project</h2><p>Use an available development domain or create a new subdomain, then load the selected template at its root.</p></div><span className="root-install-pill">Root install · no /wp folder</span></div>
+      <div className="section-heading"><div><p className="eyebrow">Create and deploy</p><h2>Launch a new project</h2><p>Install WordPress on the chosen development domain, apply the selected template, save the project, and prepare the manual handover document.</p></div><span className="root-install-pill">Root install · no /wp folder</span></div>
       <form className="new-project-form" onSubmit={(event) => { void (async () => { const launched = await onLaunch(event); if (launched) window.localStorage.removeItem(launchProjectDraftKey); })(); }}>
         <label>Project name<input name="projectName" required value={projectName} onChange={(event) => { const value = event.target.value; setProjectName(value); setSubdomain((current) => current && current !== suggestedSubdomainLabel(projectName) ? current : suggestedSubdomainLabel(value)); }} placeholder="Jamie's Plumbing" /></label>
         <label>cPanel account<select name="connectionId" required value={effectiveConnectionId} onChange={(event) => { setConnectionId(event.target.value); setSelectedExistingDomainId(''); setTemplateDecision('replace'); setSelectedTemplateSlotNumber(''); }}><option value="" disabled>Choose cPanel</option>{connected.map((connection) => <option key={connection.id} value={connection.id}>{connection.name}{connection.operationalCredentialStatus === 'verified' ? '' : ' · activation needed'}</option>)}</select></label>
@@ -1827,9 +1836,9 @@ function LaunchProjectView({ connections, domains, templates, busy, onSaveTempla
         <label className="full-field">Project notes<textarea name="notes" rows={3} value={notes} onChange={(event) => setNotes(event.target.value)} placeholder="Optional client brief or launch notes" /></label>
         <div className="full-field"><ClientIntakeForm projectName={projectName} intake={intake} onChange={setIntake} /></div>
         {selectedConnection && !managementReady && requiresTemplateOperation && <div className="launch-readiness-warning full-field"><span>WordPress Management needs the cPanel account password once before this account can install or replace a template.</span><button type="button" className="outline-button" onClick={() => onActivateWordPress(selectedConnection)}>Activate here</button></div>}
-        <div className="launch-summary full-field"><span>1</span><p><strong>{targetMode === 'existing' ? keepingLoadedTemplate ? 'Keep the verified template' : 'Prepare the selected domain' : 'Create the new subdomain'}</strong><small>{targetMode === 'existing' ? keepingLoadedTemplate ? 'The existing WordPress installation is not deleted or changed.' : 'Any existing WordPress installation is removed only after confirmation.' : 'The launch stops if the address already exists.'}</small></p><span>2</span><p><strong>{keepingLoadedTemplate ? 'Create and assign the project' : 'Clone the selected template'}</strong><small>{keepingLoadedTemplate ? 'The loaded template becomes the starting point for the new project.' : 'Softaculous installs it directly at the domain root with an empty directory field.'}</small></p><span>3</span><p><strong>Verify and track</strong><small>The project is assigned, soft locked, and moved to Template Loaded.</small></p></div>
+        <div className="launch-summary full-field"><span>1</span><p><strong>{targetMode === 'existing' ? keepingLoadedTemplate ? 'Keep the verified template' : 'Prepare the selected domain' : 'Create the new subdomain'}</strong><small>{targetMode === 'existing' ? keepingLoadedTemplate ? 'The existing WordPress installation is not deleted or changed.' : 'Any existing WordPress installation is removed only after confirmation.' : 'The launch stops if the address already exists.'}</small></p><span>2</span><p><strong>{keepingLoadedTemplate ? 'Create and assign the project' : 'Install WordPress and apply the selected template'}</strong><small>{keepingLoadedTemplate ? 'The loaded template becomes the starting point for the new project.' : 'Softaculous clones the chosen template directly to the domain root.'}</small></p><span>3</span><p><strong>Save, track and download</strong><small>The project is added to the pipeline and its Word details download for manual agent handover.</small></p></div>
         <div className="launch-draft-status full-field"><span>Draft saved automatically on this device</span><button type="button" className="text-button" onClick={() => { window.localStorage.removeItem(launchProjectDraftKey); setProjectName(''); setSubdomain(''); setSelectedExistingDomainId(''); setTemplateDecision('replace'); setSelectedTemplateSlotNumber(''); setParentDomain(''); setDeveloper('Owner Account'); setConfirmExistingOverwrite(false); setNotes(''); setIntake(emptyClientIntake); }}>Clear draft</button></div>
-        <button className="primary-button launch-project-submit full-field" disabled={busy || (requiresTemplateOperation && (!managementReady || !compatibleTemplates.length || !selectedTemplateSlotNumber)) || (targetMode === 'existing' && !selectedExistingDomainId)}>{busy ? keepingLoadedTemplate ? 'Starting project…' : 'Preparing domain & loading template…' : 'Launch New Project'}</button>
+        <button className="primary-button launch-project-submit full-field" disabled={busy || (requiresTemplateOperation && (!managementReady || !compatibleTemplates.length || !selectedTemplateSlotNumber)) || (targetMode === 'existing' && !selectedExistingDomainId)}>{busy ? keepingLoadedTemplate ? 'Saving project & preparing document…' : 'Installing WordPress & applying template…' : 'Launch Project & Download Details'}</button>
       </form>
     </section>
     <section className="panel template-library-panel">
