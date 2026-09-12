@@ -6,11 +6,11 @@ export const dynamic = 'force-dynamic';
 type VerificationEnv = { WORDPRESS_VERIFICATION_TOKEN?: string };
 
 const ownerUserId = 'yR3gsfamVje3SLlgSJ1HNb4OXlcSOOUYZ1tvh60BdR0D3yx7vW3MO0';
-const testDomainId = 'a31fbdd0e48e3f51d64d10e3611dcc35';
-const templateDomain = 'template.testwebsitebuild.com';
+const testDomainId = '95eeba732c7231b529bb4e88669e21cb';
+const templateDomain = 'template.mynewwebsite.co.za';
 
 // Temporary, narrowly-scoped production verification route. It permits one
-// known template clone onto the confirmed-empty dev3 test domain and is removed
+// known template clone onto the confirmed-empty dev9 test domain and is removed
 // immediately after the live check.
 export async function POST(request: Request) {
   const expectedToken = (env as unknown as VerificationEnv).WORDPRESS_VERIFICATION_TOKEN;

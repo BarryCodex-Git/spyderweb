@@ -241,6 +241,23 @@ test('an empty successful write response is ambiguous and is never repeated', as
   }
 });
 
+test('a broken host LIVEAPI is reported as a server capability failure', async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url) => String(url).includes('/login/')
+    ? new Response(JSON.stringify({ status: 1, security_token: '/cpsess1234567890' }), { status: 200, headers: { 'Set-Cookie': 'cpsession=cp123; Path=/; Secure' } })
+    : new Response('ERROR LOADING DATA Child failed to make LIVEAPI connection to cPanel.', { status: 200, headers: { 'Content-Type': 'text/html' } });
+  try {
+    await assert.rejects(
+      listSoftaculousInstallations('https://cpanel.example:2083', passwordCredential),
+      (error) => error instanceof SoftaculousRequestError
+        && error.diagnostics.hostFault === 'softaculous_liveapi_unavailable'
+        && /hosting provider/i.test(error.message),
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test('an unreadable inventory response retries safely through a cPanel session', async () => {
   const originalFetch = globalThis.fetch;
   const calls = [];

@@ -337,6 +337,17 @@ async function request(input: {
       }
     }
     if (payload === undefined) {
+      if (/child failed to make liveapi connection to cpanel/i.test(text)) {
+        throw new SoftaculousRequestError('This cPanel server cannot currently run Softaculous because its server-side LIVEAPI connection is broken. Contact the hosting provider to repair or reinstall Softaculous on this server; SpyderWeb did not run the WordPress action.', {
+          safeToRetry: false,
+          responseWasAmbiguous: false,
+          diagnostics: {
+            phase: 'host_capability', status: response.status, redirectPath: null,
+            authMode: sessionRetried ? 'cpanel_session' : tokenMode ? 'cpanel_token' : 'cpanel_basic',
+            hostFault: 'softaculous_liveapi_unavailable',
+          },
+        });
+      }
       throw new SoftaculousRequestError('Softaculous returned an unreadable response.', {
         safeToRetry: false,
         responseWasAmbiguous: isWrite,
