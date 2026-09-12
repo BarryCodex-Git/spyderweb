@@ -112,6 +112,32 @@ test('confirmed clone replacement sends Softaculous overwrite protection explici
   }
 });
 
+test('cross-account templates use Softaculous remote import into the domain root', async () => {
+  const originalFetch = globalThis.fetch;
+  let request;
+  globalThis.fetch = async (url, init) => {
+    request = { url: String(url), init };
+    return Response.json({ done: 1 });
+  };
+  try {
+    await softaculousManagedAction({
+      baseUrl: 'https://destination.example:2083', credential: passwordCredential,
+      action: 'remote_import', domain: 'dev4.testwebsitebuild.com', databaseName: 'sw123',
+      sourceDomain: 'template.mynewwebsite.co.za', sourceServerHost: 'source.example',
+      sourceFtpUsername: 'sourceuser', sourceFtpPassword: 'source-password', sourceFtpPath: '/template.mynewwebsite.co.za',
+    });
+    assert.equal(new URL(request.url).searchParams.get('act'), 'import');
+    const form = new URLSearchParams(request.init.body);
+    assert.equal(form.get('remote_submit'), '1');
+    assert.equal(form.get('domain'), 'template.mynewwebsite.co.za');
+    assert.equal(form.get('softdomain'), 'dev4.testwebsitebuild.com');
+    assert.equal(form.get('dest_directory'), '');
+    assert.equal(form.get('softdb'), 'sw123');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test('confirmed clean install sends Softaculous overwrite protection explicitly', async () => {
   const originalFetch = globalThis.fetch;
   let request;

@@ -176,20 +176,24 @@ export async function POST(request: Request) {
     if (!keepExistingTemplate) {
       if (![1, 2, 3, 4].includes(templateSlotNumber)) throw new Error('Choose a template.');
       template = await db.prepare(`SELECT s.name, d.id AS domainId, d.domain,
-        d.connection_id AS connectionId, d.wordpress_installation_id AS installationId
+        d.connection_id AS connectionId, d.wordpress_installation_id AS installationId,
+        d.domain_type AS domainType, d.document_root AS documentRoot,
+        sc.base_url AS sourceBaseUrl, sc.username AS sourceUsername,
+        sc.encrypted_operational_secret AS sourceEncryptedOperationalSecret,
+        sc.operational_secret_iv AS sourceOperationalSecretIv,
+        sc.operational_credential_status AS sourceOperationalStatus
         FROM template_slots s JOIN hosting_domains d ON d.id = s.source_domain_id
+        JOIN hosting_connections sc ON sc.id = d.connection_id AND sc.owner_user_id = s.owner_user_id
         WHERE s.owner_user_id = ? AND s.slot_number = ? AND d.wordpress_status = 'installed'`)
         .bind(identity.userId, templateSlotNumber).first<Record<string, unknown>>();
       if (!template) throw new Error('The selected template does not have a verified WordPress installation.');
-      if (String(template.connectionId) !== connectionId) {
-        throw new Error('Choose a template hosted in the same cPanel account as the destination domain.');
-      }
       if (String(template.domain).toLowerCase() === targetDomain) throw new Error('The template source cannot be used as its own destination.');
     }
 
     let token = '';
     let credential: OperationalCredential | null = null;
     let sourceInstallationId = '';
+    let remoteTemplateSource: { domain: string; serverHost: string; username: string; password: string; path: string } | null = null;
     if (!keepExistingTemplate) {
       token = await decryptHostingToken(String(connection.encryptedToken), String(connection.encryptionIv), identity.userId, connectionId);
       credential = JSON.parse(await decryptSecret(
@@ -199,9 +203,33 @@ export async function POST(request: Request) {
       const installations = await listSoftaculousInstallations(String(connection.baseUrl), credential);
       const destination = installations.find((item) => item.domain === targetDomain);
       if (targetMode === 'new' && destination) throw new Error(`${targetDomain} already has a Softaculous installation. Nothing was changed.`);
-      const source = installations.find((item) => item.domain === String(template!.domain));
-      if (!source?.id) throw new Error('Softaculous could not find the selected template installation.');
-      sourceInstallationId = source.id;
+      if (String(template!.connectionId) === connectionId) {
+        const source = installations.find((item) => item.domain === String(template!.domain));
+        if (!source?.id) throw new Error('Softaculous could not find the selected template installation.');
+        sourceInstallationId = source.id;
+      } else {
+        if (template!.sourceOperationalStatus !== 'verified' || !template!.sourceEncryptedOperationalSecret || !template!.sourceOperationalSecretIv) {
+          throw new Error('Activate WordPress Management for the selected template’s cPanel account before launching this project.');
+        }
+        const sourceCredential = JSON.parse(await decryptSecret(
+          String(template!.sourceEncryptedOperationalSecret), String(template!.sourceOperationalSecretIv),
+          identity.userId, `operational:${String(template!.connectionId)}`,
+        )) as OperationalCredential;
+        if (!sourceCredential.password) throw new Error('The selected template account does not have a saved management password.');
+        const sourceRoot = effectiveDocumentRoot({
+          domain: String(template!.domain), domainType: String(template!.domainType || 'subdomain'),
+          documentRoot: template!.documentRoot ? String(template!.documentRoot) : null,
+        });
+        if (!sourceRoot) throw new Error('The selected template’s document root could not be determined safely.');
+        const sourceUsername = String(template!.sourceUsername);
+        const homePrefix = `/home/${sourceUsername}`;
+        const relativeRoot = sourceRoot.startsWith(`${homePrefix}/`) ? sourceRoot.slice(homePrefix.length) : sourceRoot;
+        remoteTemplateSource = {
+          domain: String(template!.domain), serverHost: new URL(String(template!.sourceBaseUrl)).hostname,
+          username: sourceUsername, password: sourceCredential.password,
+          path: relativeRoot.startsWith('/') ? relativeRoot : `/${relativeRoot}`,
+        };
+      }
 
       if (destination) {
         if (Number(existingDomain?.softLocked || 0) === 1) throw new Error(`${targetDomain} is soft locked. Unlock it in Domains before replacing WordPress.`);
@@ -281,9 +309,18 @@ export async function POST(request: Request) {
         })
       : null;
     if (!keepExistingTemplate) {
-      await softaculousAction({ baseUrl: String(connection.baseUrl), credential: credential!, action: 'clone', domain: targetDomain,
-        sourceInstallationId, databaseName: softaculousDatabaseName(),
-        overwriteExisting: body.confirmExistingOverwrite === true || body.confirmExistingOverwrite === 'true' });
+      if (remoteTemplateSource) {
+        await softaculousAction({
+          baseUrl: String(connection.baseUrl), credential: credential!, action: 'remote_import', domain: targetDomain,
+          databaseName: softaculousDatabaseName(), sourceDomain: remoteTemplateSource.domain,
+          sourceServerHost: remoteTemplateSource.serverHost, sourceFtpUsername: remoteTemplateSource.username,
+          sourceFtpPassword: remoteTemplateSource.password, sourceFtpPath: remoteTemplateSource.path,
+        });
+      } else {
+        await softaculousAction({ baseUrl: String(connection.baseUrl), credential: credential!, action: 'clone', domain: targetDomain,
+          sourceInstallationId, databaseName: softaculousDatabaseName(),
+          overwriteExisting: body.confirmExistingOverwrite === true || body.confirmExistingOverwrite === 'true' });
+      }
       const storedDocumentRoot = effectiveDocumentRoot({
         domain: targetDomain,
         domainType: created?.domainType ?? String(existingDomain?.domainType || 'subdomain'),

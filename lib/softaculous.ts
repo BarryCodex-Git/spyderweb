@@ -332,7 +332,7 @@ export async function listSoftaculousBackups(baseUrl: string, credential: Operat
 export async function softaculousAction(input: {
   baseUrl: string;
   credential: OperationalCredential;
-  action: 'install' | 'clone' | 'wordpress_url' | 'backup' | 'remove' | 'delete_backup';
+  action: 'install' | 'clone' | 'remote_import' | 'wordpress_url' | 'backup' | 'remove' | 'delete_backup';
   domain: string;
   installationId?: string | null;
   sourceInstallationId?: string | null;
@@ -343,6 +343,11 @@ export async function softaculousAction(input: {
   databaseName?: string;
   overwriteExisting?: boolean;
   backupFileName?: string;
+  sourceDomain?: string;
+  sourceServerHost?: string;
+  sourceFtpUsername?: string;
+  sourceFtpPassword?: string;
+  sourceFtpPath?: string;
 }) {
   if (input.action === 'install') {
     if (!input.databaseName) throw new Error('SpyderWeb could not prepare a fresh WordPress database name.');
@@ -368,6 +373,23 @@ export async function softaculousAction(input: {
       form: {
         softsubmit: '1', softdomain: input.domain, softdirectory: '', softproto: '3', softdb: input.databaseName,
         ...(input.overwriteExisting ? { overwrite_existing: '1' } : {}),
+      },
+    });
+  }
+  if (input.action === 'remote_import') {
+    if (!input.databaseName) throw new Error('SpyderWeb could not prepare a fresh template database name.');
+    if (!input.sourceDomain || !input.sourceServerHost || !input.sourceFtpUsername || !input.sourceFtpPassword || !input.sourceFtpPath) {
+      throw new Error('The source template account is missing the details required for a cross-account transfer.');
+    }
+    return request({
+      baseUrl: input.baseUrl, credential: input.credential,
+      query: { act: 'import', soft: '26' },
+      form: {
+        remote_submit: '1', domain: input.sourceDomain, server_host: input.sourceServerHost,
+        protocol: 'ftp', port: '21', ftp_user: input.sourceFtpUsername,
+        ftp_pass: input.sourceFtpPassword, ftp_path: input.sourceFtpPath,
+        Installed_path: '', softdomain: input.domain, dest_directory: '', softproto: '3',
+        softdb: input.databaseName,
       },
     });
   }
