@@ -4,6 +4,7 @@ import test from 'node:test';
 import {
   SoftaculousRequestError,
   isSoftaculousExistingFilesError,
+  listSoftaculousInstallations,
   readableSoftaculousError,
   softaculousManagedAction,
 } from '../lib/softaculous.ts';
@@ -211,6 +212,33 @@ test('an unreadable write response is treated as ambiguous and is never repeated
       action: 'clone', domain: 'dev4.testwebsitebuild.com', sourceInstallationId: '26_template', databaseName: 'sw123',
     }), (error) => error instanceof SoftaculousRequestError && error.responseWasAmbiguous);
     assert.equal(calls, 1);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('an unreadable inventory response retries safely through a cPanel session', async () => {
+  const originalFetch = globalThis.fetch;
+  const calls = [];
+  globalThis.fetch = async (url, init) => {
+    calls.push({ url: String(url), init });
+    if (calls.length === 1) return new Response('temporary proxy response', { status: 200 });
+    if (calls.length === 2) return new Response(JSON.stringify({ status: 1, security_token: '/cpsess1234567890' }), {
+      status: 200, headers: { 'Set-Cookie': 'cpsession=cp123; Path=/; Secure' },
+    });
+    return Response.json({ installations: { '26_123': {
+      soft: '26', insid: '26_123', softdomain: 'dev2.testwebsitebuild.com',
+      softurl: 'https://dev2.testwebsitebuild.com', site_name: 'Client Template',
+    } } });
+  };
+  try {
+    const installations = await listSoftaculousInstallations('https://cpanel.example:2083', passwordCredential);
+    assert.equal(calls.length, 3);
+    assert.match(calls[1].url, /\/login\/\?login_only=1$/);
+    assert.match(calls[2].url, /\/cpsess1234567890\/frontend\/jupiter\/softaculous\/index\.live\.php/);
+    assert.equal(calls[2].init.method, 'GET');
+    assert.equal(installations[0].domain, 'dev2.testwebsitebuild.com');
+    assert.equal(installations[0].id, '26_123');
   } finally {
     globalThis.fetch = originalFetch;
   }

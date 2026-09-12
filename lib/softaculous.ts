@@ -299,11 +299,26 @@ async function request(input: {
   }
   let payload: unknown;
   try { payload = JSON.parse(text); } catch {
-    throw new SoftaculousRequestError('Softaculous returned an unreadable response.', {
-      safeToRetry: false,
-      responseWasAmbiguous: isWrite,
-      diagnostics: { phase: 'action', status: response.status, redirectPath: null, authMode: sessionRetried ? 'cpanel_session' : tokenMode ? 'cpanel_token' : 'cpanel_basic' },
-    });
+    // Inventory requests are read-only. Some cPanel hosts return a plain
+    // response to direct Basic auth even though a normal cPanel session can
+    // return the requested JSON. Retrying that read is safe; writes must never
+    // be repeated because the first response may follow an accepted action.
+    if (!isWrite && !tokenMode && !sessionRetried) {
+      const session = await createCpanelSession(input.baseUrl, input.credential);
+      response = await perform(session.securityToken, session.cookies, false, false);
+      sessionRetried = true;
+      if (response.ok && !(response.status >= 300 && response.status < 400)) {
+        text = await response.text();
+        try { payload = JSON.parse(text); } catch { /* Report the stable error below. */ }
+      }
+    }
+    if (payload === undefined) {
+      throw new SoftaculousRequestError('Softaculous returned an unreadable response.', {
+        safeToRetry: false,
+        responseWasAmbiguous: isWrite,
+        diagnostics: { phase: 'action', status: response.status, redirectPath: null, authMode: sessionRetried ? 'cpanel_session' : tokenMode ? 'cpanel_token' : 'cpanel_basic' },
+      });
+    }
   }
   const record = payload && typeof payload === 'object' ? payload as Record<string, unknown> : {};
   const errors = readableSoftaculousError(record.error ?? record.errors);
