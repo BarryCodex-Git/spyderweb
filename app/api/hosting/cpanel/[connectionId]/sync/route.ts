@@ -58,14 +58,23 @@ export async function POST(
         const byDomain = new Map(installations.map((installation) => [installation.domain, installation]));
         for (const domain of discovered.domains) {
           const installation = byDomain.get(domain.domain);
-          domain.wordpressStatus = installation ? 'installed' : 'not_installed';
-          domain.wordpressInstallationId = installation?.id ?? null;
-          domain.wordpressSiteName = installation?.siteName ?? null;
-          domain.wordpressUrl = installation?.url ?? null;
-          domain.wordpressVersion = installation?.version ?? null;
-          domain.wordpressSource = installation ? 'Softaculous connected API' : null;
+          if (installation) {
+            domain.wordpressStatus = 'installed';
+            domain.wordpressInstallationId = installation.id;
+            domain.wordpressSiteName = installation.siteName;
+            domain.wordpressUrl = installation.url;
+            domain.wordpressVersion = installation.version;
+            domain.wordpressSource = 'Softaculous connected API';
+          } else if (domain.wordpressStatus !== 'installed') {
+            domain.wordpressStatus = 'not_installed';
+            domain.wordpressInstallationId = null;
+            domain.wordpressSiteName = null;
+            domain.wordpressUrl = null;
+            domain.wordpressVersion = null;
+            domain.wordpressSource = domain.wordpressSource || 'Verified document-root inspection';
+          }
         }
-        discovered.wordpressInstallationCount = installations.length;
+        discovered.wordpressInstallationCount = discovered.domains.filter((domain) => domain.wordpressStatus === 'installed').length;
         discovered.wordpressScanStatus = 'complete';
         discovered.capabilities.wordpressInventory = true;
         discovered.capabilities.wordpressManagement = true;
@@ -121,6 +130,11 @@ export async function POST(
               THEN hosting_domains.wordpress_installation_id ELSE excluded.wordpress_installation_id END,
             wordpress_source = CASE WHEN excluded.wordpress_status = 'not_checked'
               THEN hosting_domains.wordpress_source ELSE excluded.wordpress_source END,
+            workflow_status_override = CASE
+              WHEN excluded.wordpress_status <> 'not_checked'
+                AND hosting_domains.workflow_status_override = 'Needs Inspection'
+              THEN CASE WHEN excluded.wordpress_status = 'not_installed' THEN 'Available' ELSE NULL END
+              ELSE hosting_domains.workflow_status_override END,
             wordpress_activity_at = COALESCE(excluded.wordpress_activity_at, hosting_domains.wordpress_activity_at),
             active = 1, last_seen_at = excluded.last_seen_at`)
           .bind(

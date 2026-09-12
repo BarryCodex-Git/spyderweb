@@ -14,6 +14,7 @@ import { getRequestIdentity, isSameOrigin } from '@/lib/request-auth';
 import {
   createCpanelSession, listSoftaculousBackups, listSoftaculousInstallations,
   softaculousManagedAction, softaculousErrorDetails, softaculousResponseWasAmbiguous,
+  isSoftaculousExistingFilesError,
   type OperationalCredential, type SoftaculousBackup,
 } from '@/lib/softaculous';
 
@@ -178,6 +179,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ dom
   let verificationWarning = '';
   let replacementRemoved = false;
   let replacementSiteName = '';
+  let replacementConfirmed = false;
   try {
     const body = await request.json() as Record<string, unknown>;
     action = String(body.action || '');
@@ -291,7 +293,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ dom
     const cpanelUsername = String(connection.username);
     const encryptedToken = String(connection.encryptedToken);
     const encryptionIv = String(connection.encryptionIv);
-    const replacementConfirmed = body.confirmReplacement === true;
+    replacementConfirmed = body.confirmReplacement === true;
 
     async function applyPostInstallMemoryProfile() {
       if (!record) return;
@@ -374,7 +376,11 @@ export async function POST(request: Request, { params }: { params: Promise<{ dom
       const existing = installations.find((item) => item.domain === record?.domain);
       if (!existing) {
         if (record.wordpressStatus === 'installed') {
-          throw new Error(`SpyderWeb and Softaculous disagree about the installation on ${record.domain}. Scan the hosting account again before ${operationLabel}.`);
+          requireUnlocked(record);
+          replacementSiteName = `Existing files on ${record.domain}`;
+          if (!replacementConfirmed) {
+            throw new Error(`Confirmation required: ${record.domain} contains WordPress files that are not registered in Softaculous. Confirm replacement before ${operationLabel}.`);
+          }
         }
         return null;
       }
@@ -447,8 +453,9 @@ export async function POST(request: Request, { params }: { params: Promise<{ dom
         await softaculousManagedAction({ baseUrl, credential: secrets,
           action: 'install', domain: record.domain, databaseName: freshDatabaseName(),
           adminUsername: secrets.adminUsername, adminPassword: secrets.adminPassword,
-          adminEmail: secrets.adminEmail });
+          adminEmail: secrets.adminEmail, overwriteExisting: replacementConfirmed });
       } catch (error) {
+        if (isSoftaculousExistingFilesError(error)) throw error;
         installError = error;
       }
       const refreshed = await refreshDomainWordPress(db, { ownerUserId: identity.userId, domainId: record.id,
@@ -487,7 +494,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ dom
       await prepareCleanDestination('loading the default template');
       await softaculousManagedAction({ baseUrl, credential: secrets,
         action: 'clone', domain: record.domain, sourceInstallationId: template.id,
-        databaseName: freshDatabaseName() });
+        databaseName: freshDatabaseName(), overwriteExisting: replacementConfirmed });
       const refreshed = await refreshDomainWordPress(db, { ownerUserId: identity.userId, domainId: record.id,
         domain: record.domain, baseUrl, credential: secrets, expected: 'template' });
       if (!refreshed.verified) verificationWarning = 'Softaculous accepted the clone but has not reported the destination yet. SpyderWeb marked it for inspection; scan again shortly.';
@@ -515,7 +522,11 @@ export async function POST(request: Request, { params }: { params: Promise<{ dom
       warning: Boolean(verificationWarning),
     });
   } catch (error) {
-    const cause = error instanceof Error ? error.message : 'The WordPress action could not be completed.';
+    const existingFilesNeedConfirmation = !replacementConfirmed && isSoftaculousExistingFilesError(error);
+    if (existingFilesNeedConfirmation && record) replacementSiteName = `Existing files on ${record.domain}`;
+    const cause = existingFilesNeedConfirmation
+      ? `Confirmation required: ${record?.domain || 'this domain'} already contains WordPress files that are not registered in Softaculous. Confirm replacement to overwrite those files and load the selected WordPress setup.`
+      : error instanceof Error ? error.message : 'The WordPress action could not be completed.';
     const message = replacementRemoved
       ? `The previous WordPress website was removed, but the new ${action === 'clone_template' ? 'template clone' : 'WordPress installation'} did not complete. The destination is empty. ${cause}`
       : cause;

@@ -3,6 +3,8 @@ import test from 'node:test';
 
 import {
   SoftaculousRequestError,
+  isSoftaculousExistingFilesError,
+  readableSoftaculousError,
   softaculousManagedAction,
 } from '../lib/softaculous.ts';
 
@@ -108,6 +110,33 @@ test('confirmed clone replacement sends Softaculous overwrite protection explici
   } finally {
     globalThis.fetch = originalFetch;
   }
+});
+
+test('confirmed clean install sends Softaculous overwrite protection explicitly', async () => {
+  const originalFetch = globalThis.fetch;
+  let request;
+  globalThis.fetch = async (url, init) => {
+    request = { url: String(url), init };
+    return Response.json({ done: 1 });
+  };
+  try {
+    await softaculousManagedAction({
+      baseUrl: 'https://cpanel.example:2083', credential: passwordCredential,
+      action: 'install', domain: 'dev9.mynewwebsite.co.za', databaseName: 'sw123', overwriteExisting: true,
+    });
+    const form = new URLSearchParams(request.init.body);
+    assert.equal(form.get('overwrite_existing'), '1');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('Softaculous HTML errors are readable and existing-file conflicts are detectable', () => {
+  const raw = 'Installation cannot proceed because the following files already exist:<ul><li>index.php</li><li>wp-config.php</li></ul>Please choose overwrite.';
+  const message = readableSoftaculousError(raw);
+  assert.equal(message.includes('<li>'), false);
+  assert.match(message, /index\.php; wp-config\.php/);
+  assert.equal(isSoftaculousExistingFilesError(new Error(message)), true);
 });
 
 test('install never uses a cPanel API token as a Softaculous write fallback', async () => {

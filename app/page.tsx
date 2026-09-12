@@ -224,11 +224,12 @@ function mapHostingDomains(records: HostingDomain[], connections: HostingConnect
     const rawWorkflowOverride = record.workflowStatusOverride as DomainStatus | null;
     const needsInspection = rawWorkflowOverride === 'Needs Inspection'
       || !['installed', 'not_installed'].includes(record.wordpressStatus)
+      || (installed && !record.wordpressInstallationId)
       || /(?:failed|error|attention|pending)/i.test(record.phpProfileStatus || '');
     const workflowOverride = workflowStatuses.includes(rawWorkflowOverride as DomainStatus)
       ? rawWorkflowOverride
       : null;
-    const status: DomainStatus = workflowOverride === 'Needs Inspection'
+    const status: DomainStatus = needsInspection
       ? 'Available'
       : workflowOverride
       ? workflowOverride
@@ -368,6 +369,7 @@ export default function Home() {
   const toastTimers = useRef(new Map<string, number>());
   const inventoryRequestCounter = useRef(0);
   const newestInventorySyncRef = useRef(0);
+  const automaticScanAttemptedRef = useRef(new Set<string>());
   const projectOrderSavingRef = useRef(false);
   const projectOrderRevisionRef = useRef(0);
 
@@ -539,6 +541,20 @@ export default function Home() {
   }, [loadHostingInventory]);
 
   useEffect(() => {
+    const pendingConnectionIds = [...new Set(managedDomains
+      .filter((domain) => domain.source === 'cpanel' && domain.wordpress === 'Scan pending' && domain.connectionId)
+      .map((domain) => domain.connectionId as string))]
+      .filter((connectionId) => !automaticScanAttemptedRef.current.has(connectionId));
+    if (!pendingConnectionIds.length) return;
+    pendingConnectionIds.forEach((connectionId) => automaticScanAttemptedRef.current.add(connectionId));
+    let active = true;
+    void Promise.all(pendingConnectionIds.map((connectionId) => fetch(`/api/hosting/cpanel/${connectionId}/sync`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+    }))).then(() => { if (active) void loadHostingInventory(true); }).catch(() => undefined);
+    return () => { active = false; };
+  }, [loadHostingInventory, managedDomains]);
+
+  useEffect(() => {
     let active = true;
     const refreshProjects = () => {
       if (active && document.visibilityState === 'visible') void loadProjectData();
@@ -681,6 +697,9 @@ export default function Home() {
       });
       const result = await response.json() as { error?: string; message?: string };
       if (!response.ok) throw new Error(result.error || 'The subdomain could not be created.');
+      await fetch(`/api/hosting/cpanel/${input.connectionId}/sync`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+      });
       await Promise.all([loadHostingInventory(true), loadProjectData()]);
       showActionToast({ id: toastId, status: 'success', title: 'Subdomain created',
         message: result.message || 'The new subdomain is available in Domain Management.' });
@@ -1004,6 +1023,9 @@ export default function Home() {
       if (!response.ok) throw new Error(result.error || 'WordPress Management could not be activated.');
       const passwordInput = form.elements.namedItem('password') as HTMLInputElement | null;
       if (passwordInput) passwordInput.value = '';
+      await fetch(`/api/hosting/cpanel/${connection.id}/sync`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+      });
       await loadHostingInventory();
       setWordpressActivationConnection(null);
       setSettingsHostingNotice(result.message || 'WordPress Management is active.');
@@ -1044,6 +1066,10 @@ export default function Home() {
     } finally {
       setHostingSyncingId(null);
     }
+  }
+
+  async function scanAllHostingConnections() {
+    for (const connection of hostingConnections) await syncHostingConnection(connection.id);
   }
 
   async function changeHostingMode(connection: HostingConnection) {
@@ -1221,7 +1247,7 @@ export default function Home() {
 
         {activeView === 'Dashboard' && <Dashboard domains={projectAwareDomains} onDomain={openDomain} onLaunch={openLaunch} onMoveToFinalStages={moveProjectToFinalStages} inventoryIsLive={inventoryIsLive} inventoryRefreshing={inventoryRefreshing} inventoryLastRefreshedAt={inventoryLastRefreshedAt} />}
         {activeView === 'New Project' && <LaunchProjectView connections={hostingConnections} domains={projectAwareDomains} templates={templateSlots} busy={launchBusy} onSaveTemplate={saveTemplateSlot} onLaunch={launchNewProject} onActivateWordPress={setWordpressActivationConnection} />}
-        {activeView === 'Domains' && <DomainsView connections={hostingConnections} domains={projectAwareDomains} onDomain={openDomain} onNotice={setNotice} notice={notice} inventoryIsLive={inventoryIsLive} onCreateSubdomain={createStandaloneSubdomain} />}
+        {activeView === 'Domains' && <DomainsView connections={hostingConnections} domains={projectAwareDomains} onDomain={openDomain} onNotice={setNotice} notice={notice} inventoryIsLive={inventoryIsLive} scanning={hostingSyncingId !== null} onScanAll={scanAllHostingConnections} onCreateSubdomain={createStandaloneSubdomain} />}
         {activeView === 'Projects' && <ProjectsView projects={projectRecords} activityRefreshing={projectActivityRefreshing} activityCheckedAt={projectActivityCheckedAt} onRefreshActivity={() => void refreshProjectActivity(true)} onProject={setSelectedProject} onReorder={reorderProjects} onPriority={setProjectPriority} />}
         {activeView === 'Agent Activity' && <AgentActivity auditEvents={auditEvents} projects={projectRecords} projectEvents={projectEvents} filter={activityFilter} onFilter={setActivityFilter} />}
         {activeView === 'Settings' && <SettingsView connections={hostingConnections} syncingId={hostingSyncingId} modeChangingId={hostingModeChangingId} notice={settingsHostingNotice} onSync={syncHostingConnection} onModeChange={changeHostingMode} onActivateWordPress={setWordpressActivationConnection} onConnect={(provider) => { setHostingNotice(''); setHostingProvider(provider); }} />}
@@ -1421,6 +1447,7 @@ export default function Home() {
                     <span className="ready">cPanel connected</span>
                     <span className={selectedDomainOperational ? 'ready' : ''}>{selectedDomainOperational ? 'Management active' : selectedDomain.operationalReady ? 'Operations paused' : 'Activate in Settings'}</span>
                   </div>
+                  <button className="secondary-button" disabled={wordpressActionBusy || hostingSyncingId === selectedDomain.connectionId} onClick={() => selectedDomain.connectionId && void syncHostingConnection(selectedDomain.connectionId)}>{hostingSyncingId === selectedDomain.connectionId ? 'Scanning domain…' : 'Scan this domain'}</button>
                   {selectedDomain.operationalReady && selectedDomain.connectionMode !== 'managed_write' && <button className="primary-button operations-setup-button" onClick={() => {
                     const connection = hostingConnections.find((item) => item.id === selectedDomain.connectionId);
                     if (connection) void changeHostingMode(connection);
@@ -1458,8 +1485,8 @@ export default function Home() {
             <h2>{({ install: 'Install new WordPress', clone_template: 'Load the default template', create_restore_point: 'Create a restore point', delete_oldest_backup: 'Delete the oldest backup', apply_php_profile: 'Check and fix PHP settings' } as Record<WordPressAction, string>)[wordpressAction.action]}</h2>
             <p>This will run against <strong>{wordpressAction.domain.domain}</strong> through the verified cPanel management connection.</p>
             {wordpressAction.action === 'delete_oldest_backup' && <div className="danger-callout"><strong>Delete the oldest saved restore point?</strong><span>This removes one old backup archive from the hosting account to recover server space. It does not change the live WordPress website, but the deleted restore point cannot be used again.</span></div>}
-            {wordpressAction.action === 'install' && <div className="danger-callout"><strong>This will delete “{wordpressAction.detectedSiteName || wordpressAction.domain.client || wordpressAction.domain.domain}”.</strong><span>SpyderWeb will remove the current WordPress files, database and database user, verify that the installation is gone, and only then install clean WordPress. This cannot run while the domain is soft locked.</span></div>}
-            {wordpressAction.action === 'clone_template' && <div className="danger-callout"><strong>This will delete “{wordpressAction.detectedSiteName || wordpressAction.domain.client || wordpressAction.domain.domain}”.</strong><span>SpyderWeb will remove the current WordPress files, database and database user, verify that the installation is gone, and then clone the default template directly onto the empty domain. This cannot run while the domain is soft locked.</span></div>}
+            {wordpressAction.action === 'install' && <div className="danger-callout"><strong>This will replace “{wordpressAction.detectedSiteName || wordpressAction.domain.client || wordpressAction.domain.domain}”.</strong><span>{wordpressAction.detectedSiteName?.startsWith('Existing files') ? 'Softaculous did not register the existing installation, so SpyderWeb will overwrite the target-folder files and install clean WordPress with a fresh database.' : 'SpyderWeb will remove the current WordPress files, database and database user, verify that the installation is gone, and only then install clean WordPress.'} This cannot run while the domain is soft locked.</span></div>}
+            {wordpressAction.action === 'clone_template' && <div className="danger-callout"><strong>This will replace “{wordpressAction.detectedSiteName || wordpressAction.domain.client || wordpressAction.domain.domain}”.</strong><span>{wordpressAction.detectedSiteName?.startsWith('Existing files') ? 'Softaculous did not register the existing installation, so SpyderWeb will overwrite the target-folder files and load the selected template with a fresh database.' : 'SpyderWeb will remove the current WordPress files, database and database user, verify that the installation is gone, and then clone the default template directly onto the empty domain.'} This cannot run while the domain is soft locked.</span></div>}
             {wordpressAction.action === 'apply_php_profile' && <div className="info-callout">Checks and verifies the complete PHP profile for the selected domain. SpyderWeb selects the host&apos;s recommended supported runtime (PHP 8.3 or 8.4), aligns the domain&apos;s cPanel virtual-host assignment and document-root PHP handler, then verifies 768 MB PHP memory, 512 MB post and upload sizes, 900-second execution and input times, and 5,000 input variables. When WordPress is installed, it also receives at least 512 MB normal memory and 768 MB administrative memory in wp-config.php. Existing files receive dated rollback copies before changes.</div>}
             <div className="operation-confirm-actions"><button className="text-button" type="button" disabled={wordpressActionBusy} onClick={() => setWordpressAction(null)}>Cancel</button><button className={`primary-button ${wordpressAction.action === 'delete_oldest_backup' || wordpressAction.action === 'clone_template' || wordpressAction.action === 'install' ? 'danger-button' : ''}`} type="submit" disabled={wordpressActionBusy}>{wordpressActionBusy ? 'Working…' : wordpressAction.action === 'delete_oldest_backup' ? 'Yes, delete oldest backup' : wordpressAction.action === 'install' ? 'Yes, delete it and install new WordPress' : wordpressAction.action === 'clone_template' ? 'Yes, delete it and load the template' : wordpressAction.action === 'create_restore_point' ? 'Create restore point' : 'Check and fix settings'}</button></div>
           </form>
@@ -1699,9 +1726,10 @@ function DomainCard({ domain, onClick, draggable = false, onDragStart, onDragEnd
   );
 }
 
-function DomainsView({ connections, domains, onDomain, onNotice, notice, inventoryIsLive, onCreateSubdomain }: {
+function DomainsView({ connections, domains, onDomain, onNotice, notice, inventoryIsLive, scanning, onScanAll, onCreateSubdomain }: {
   connections: HostingConnection[]; domains: Domain[]; onDomain: (domain: Domain) => void;
   onNotice: (message: string) => void; notice: string; inventoryIsLive: boolean;
+  scanning: boolean; onScanAll: () => Promise<void>;
   onCreateSubdomain: (input: { connectionId: string; parentDomain: string; subdomainLabel: string }) => Promise<void>;
 }) {
   const [subdomainOpen, setSubdomainOpen] = useState(false);
@@ -1731,7 +1759,7 @@ function DomainsView({ connections, domains, onDomain, onNotice, notice, invento
         <div><span>Needs inspection</span><strong>{attentionCount}</strong><small>WordPress data pending</small></div>
       </section>
       <section className="panel">
-        <div className="section-heading"><div><p className="eyebrow">Connected installations</p><h2>WordPress domain inventory</h2></div><div className="domain-heading-actions"><button className="primary-button" onClick={() => { setCreateError(''); setSubdomainOpen(true); }}>＋ New Subdomain</button><button className="outline-button" onClick={() => onNotice(inventoryIsLive ? 'SpyderWeb scans domains and WordPress installations automatically. Use Sync now in Settings whenever you want an immediate refresh.' : 'Connect cPanel in Settings to replace this demo inventory with live domains.')}>{inventoryIsLive ? 'Scan information' : 'Connection status'}</button></div></div>
+        <div className="section-heading"><div><p className="eyebrow">Connected installations</p><h2>WordPress domain inventory</h2></div><div className="domain-heading-actions"><button className="primary-button" onClick={() => { setCreateError(''); setSubdomainOpen(true); }}>＋ New Subdomain</button><button className="outline-button" disabled={scanning} onClick={() => inventoryIsLive ? void onScanAll() : onNotice('Connect cPanel in Settings to replace this demo inventory with live domains.')}>{inventoryIsLive ? scanning ? 'Scanning…' : 'Scan all domains' : 'Connection status'}</button></div></div>
         {notice && <p className="notice inline-notice">{notice}</p>}
         <div className="data-table domain-table">
           <div className="table-row table-head"><span>Domain</span><span>Status</span><span>WordPress</span><span>Protection</span><span>Operations</span><span>Host</span><span /></div>

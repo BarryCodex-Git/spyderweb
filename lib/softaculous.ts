@@ -106,12 +106,32 @@ function clean(value: unknown, max = 2048) {
   return String(value).replace(/[\r\n\0]+/g, ' ').trim().slice(0, max) || null;
 }
 
-function errorText(value: unknown): string {
+export function readableSoftaculousError(value: unknown): string {
   if (!value) return '';
-  if (typeof value === 'string' || typeof value === 'number') return String(value).trim();
-  if (Array.isArray(value)) return value.map(errorText).filter(Boolean).join(' ');
-  if (typeof value === 'object') return Object.values(value as Record<string, unknown>).map(errorText).filter(Boolean).join(' ');
+  if (typeof value === 'string' || typeof value === 'number') {
+    return String(value)
+      .replace(/<\s*br\s*\/?\s*>/gi, ' ')
+      .replace(/<\s*\/\s*li\s*>/gi, '; ')
+      .replace(/<\s*li(?:\s[^>]*)?>/gi, '')
+      .replace(/<[^>]*>/g, ' ')
+      .replace(/&nbsp;|&#160;/gi, ' ')
+      .replace(/&quot;|&#34;/gi, '"')
+      .replace(/&apos;|&#39;/gi, "'")
+      .replace(/&lt;|&#60;/gi, '<')
+      .replace(/&gt;|&#62;/gi, '>')
+      .replace(/&amp;|&#38;/gi, '&')
+      .replace(/\s*;\s*(?=;|$)/g, '')
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+  if (Array.isArray(value)) return value.map(readableSoftaculousError).filter(Boolean).join(' ');
+  if (typeof value === 'object') return Object.values(value as Record<string, unknown>).map(readableSoftaculousError).filter(Boolean).join(' ');
   return '';
+}
+
+export function isSoftaculousExistingFilesError(error: unknown) {
+  const message = error instanceof Error ? error.message : readableSoftaculousError(error);
+  return /installation cannot proceed[\s\S]*files already exist|files already exist in the target folder|overwrite_existing/i.test(message);
 }
 
 function domainFrom(value: unknown) {
@@ -280,7 +300,7 @@ async function request(input: {
   let payload: unknown;
   try { payload = JSON.parse(text); } catch { throw new Error('Softaculous returned an unreadable response.'); }
   const record = payload && typeof payload === 'object' ? payload as Record<string, unknown> : {};
-  const errors = errorText(record.error ?? record.errors);
+  const errors = readableSoftaculousError(record.error ?? record.errors);
   if (errors) throw new Error(errors);
   return payload;
 }
@@ -336,6 +356,7 @@ export async function softaculousAction(input: {
         admin_email: input.adminEmail || '',
         language: 'en', disable_wp_cron: '0', auto_upgrade: '0', auto_upgrade_plugins: '0',
         auto_upgrade_themes: '0', noemail: '1', plugins: '',
+        ...(input.overwriteExisting ? { overwrite_existing: '1' } : {}),
       },
     });
   }
