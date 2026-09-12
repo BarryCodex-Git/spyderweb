@@ -197,3 +197,21 @@ test('install never repeats an ambiguous non-login response', async () => {
     globalThis.fetch = originalFetch;
   }
 });
+
+test('an unreadable write response is treated as ambiguous and is never repeated', async () => {
+  const originalFetch = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = async () => {
+    calls += 1;
+    return new Response('operation accepted', { status: 200 });
+  };
+  try {
+    await assert.rejects(softaculousManagedAction({
+      baseUrl: 'https://cpanel.example:2083', credential: passwordCredential,
+      action: 'clone', domain: 'dev4.testwebsitebuild.com', sourceInstallationId: '26_template', databaseName: 'sw123',
+    }), (error) => error instanceof SoftaculousRequestError && error.responseWasAmbiguous);
+    assert.equal(calls, 1);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});

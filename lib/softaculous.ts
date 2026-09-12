@@ -298,7 +298,13 @@ async function request(input: {
     });
   }
   let payload: unknown;
-  try { payload = JSON.parse(text); } catch { throw new Error('Softaculous returned an unreadable response.'); }
+  try { payload = JSON.parse(text); } catch {
+    throw new SoftaculousRequestError('Softaculous returned an unreadable response.', {
+      safeToRetry: false,
+      responseWasAmbiguous: isWrite,
+      diagnostics: { phase: 'action', status: response.status, redirectPath: null, authMode: sessionRetried ? 'cpanel_session' : tokenMode ? 'cpanel_token' : 'cpanel_basic' },
+    });
+  }
   const record = payload && typeof payload === 'object' ? payload as Record<string, unknown> : {};
   const errors = readableSoftaculousError(record.error ?? record.errors);
   if (errors) throw new Error(errors);

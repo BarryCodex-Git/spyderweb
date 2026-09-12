@@ -13,6 +13,7 @@ import { PROJECT_DEVELOPERS, type ProjectDeveloper } from '@/lib/project-workflo
 import { getRequestIdentity, isSameOrigin } from '@/lib/request-auth';
 import {
   createCpanelSession, listSoftaculousInstallations, softaculousAction,
+  softaculousResponseWasAmbiguous,
   type OperationalCredential,
 } from '@/lib/softaculous';
 
@@ -109,6 +110,8 @@ export async function POST(request: Request) {
   const db = await ensureHostingSchema();
   let connectionId = '';
   let targetDomain = '';
+  let savedProjectId = '';
+  let intakeSaved = false;
   try {
     const body = await request.json() as Record<string, unknown>;
     const projectName = requiredText(body.projectName, 'project name', 180);
@@ -292,6 +295,8 @@ export async function POST(request: Request) {
           JSON.stringify(intake), now, now, Number(nextOrder?.nextOrder || 1));
     setupWrites.push(projectWrite);
     await db.batch(setupWrites);
+    savedProjectId = projectId;
+    intakeSaved = true;
 
     let installationId = keepExistingTemplate ? String(existingDomain?.wordpressInstallationId || '') : '';
     let verifiedUrl = keepExistingTemplate ? String(existingDomain?.wordpressUrl || `https://${targetDomain}`) : '';
@@ -309,17 +314,24 @@ export async function POST(request: Request) {
         })
       : null;
     if (!keepExistingTemplate) {
-      if (remoteTemplateSource) {
-        await softaculousAction({
-          baseUrl: String(connection.baseUrl), credential: credential!, action: 'remote_import', domain: targetDomain,
-          databaseName: softaculousDatabaseName(), sourceDomain: remoteTemplateSource.domain,
-          sourceServerHost: remoteTemplateSource.serverHost, sourceFtpUsername: remoteTemplateSource.username,
-          sourceFtpPassword: remoteTemplateSource.password, sourceFtpPath: remoteTemplateSource.path,
-        });
-      } else {
-        await softaculousAction({ baseUrl: String(connection.baseUrl), credential: credential!, action: 'clone', domain: targetDomain,
-          sourceInstallationId, databaseName: softaculousDatabaseName(),
-          overwriteExisting: body.confirmExistingOverwrite === true || body.confirmExistingOverwrite === 'true' });
+      try {
+        if (remoteTemplateSource) {
+          await softaculousAction({
+            baseUrl: String(connection.baseUrl), credential: credential!, action: 'remote_import', domain: targetDomain,
+            databaseName: softaculousDatabaseName(), sourceDomain: remoteTemplateSource.domain,
+            sourceServerHost: remoteTemplateSource.serverHost, sourceFtpUsername: remoteTemplateSource.username,
+            sourceFtpPassword: remoteTemplateSource.password, sourceFtpPath: remoteTemplateSource.path,
+          });
+        } else {
+          await softaculousAction({ baseUrl: String(connection.baseUrl), credential: credential!, action: 'clone', domain: targetDomain,
+            sourceInstallationId, databaseName: softaculousDatabaseName(),
+            overwriteExisting: body.confirmExistingOverwrite === true || body.confirmExistingOverwrite === 'true' });
+        }
+      } catch (error) {
+        // A non-JSON completion page can be returned after Softaculous has
+        // already accepted the transfer. Verify the destination instead of
+        // repeating the destructive action or abandoning the saved intake.
+        if (!softaculousResponseWasAmbiguous(error)) throw error;
       }
       const storedDocumentRoot = effectiveDocumentRoot({
         domain: targetDomain,
@@ -473,6 +485,10 @@ export async function POST(request: Request) {
         outcome, details_json, created_at) VALUES (?, ?, ?, 'project.launch', ?, 'failed', ?, ?)`)
         .bind(crypto.randomUUID(), identity.userId, connectionId, targetDomain || null, JSON.stringify({ error: error instanceof Error ? error.message : 'Launch failed' }), new Date().toISOString()).run().catch(() => undefined);
     }
-    return json({ error: error instanceof Error ? error.message : 'The project could not be launched.' }, 400);
+    return json({
+      error: error instanceof Error ? error.message : 'The project could not be launched.',
+      projectId: savedProjectId || null,
+      intakeSaved,
+    }, 400);
   }
 }

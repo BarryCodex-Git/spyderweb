@@ -678,7 +678,19 @@ export default function Home() {
     try {
       const response = await fetch('/api/launch', { method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(Object.fromEntries(formData.entries())) });
-      const result = await response.json() as { error?: string; message?: string; projectId?: string };
+      const result = await response.json() as { error?: string; message?: string; projectId?: string; intakeSaved?: boolean };
+      if (!response.ok && result.intakeSaved && result.projectId) {
+        await loadProjectData();
+        const download = document.createElement('a');
+        download.href = `/api/projects/${result.projectId}/intake?download=1`;
+        download.download = '';
+        document.body.appendChild(download);
+        download.click();
+        download.remove();
+        showActionToast({ id: 'new-project-launch', status: 'warning', title: 'Setup stopped · project details saved',
+          message: `${result.error || 'WordPress setup did not finish.'} Your complete intake is saved under Projects, a Word copy is downloading, and this form draft has been kept.` });
+        return false;
+      }
       if (!response.ok) throw new Error(result.error || 'The project could not be launched.');
       await Promise.all([loadHostingInventory(), loadProjectData(), loadTemplateSlots()]);
       if (result.projectId) {
