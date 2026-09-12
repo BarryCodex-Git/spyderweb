@@ -223,6 +223,24 @@ test('an unreadable write response is treated as ambiguous and is never repeated
   }
 });
 
+test('an empty successful write response is ambiguous and is never repeated', async () => {
+  const originalFetch = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = async () => {
+    calls += 1;
+    return new Response('', { status: 200 });
+  };
+  try {
+    await assert.rejects(softaculousManagedAction({
+      baseUrl: 'https://cpanel.example:2083', credential: passwordCredential,
+      action: 'clone', domain: 'dev3.testwebsitebuild.com', sourceInstallationId: '26_template', databaseName: 'sw123',
+    }), (error) => error instanceof SoftaculousRequestError && error.responseWasAmbiguous);
+    assert.equal(calls, 1);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test('an unreadable inventory response retries safely through a cPanel session', async () => {
   const originalFetch = globalThis.fetch;
   const calls = [];

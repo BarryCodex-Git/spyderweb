@@ -1552,7 +1552,9 @@ export default function Home() {
                 <option value="" disabled>Choose a template source</option>
                 {templateSourceDomains.map((domain) => <option key={domain.domain} value={domain.domain}>{domain.domain}{domain.domain === templateSourceConnection?.defaultTemplateDomain ? ' · Default' : ''}</option>)}
               </select>
-              <small>Configured default: <strong>{templateSourceConnection?.defaultTemplateDomain || 'Not set'}</strong></small>
+              <small>{templateSourceConnection?.defaultTemplateDomain
+                ? <>Saved default: <strong>{templateSourceConnection.defaultTemplateDomain}</strong></>
+                : <>This selection becomes the saved default: <strong>{wordpressAction.templateDomain || 'choose a template source'}</strong></>}</small>
             </label>}
             {wordpressAction.action === 'delete_oldest_backup' && <div className="danger-callout"><strong>Delete the oldest saved restore point?</strong><span>This removes one old backup archive from the hosting account to recover server space. It does not change the live WordPress website, but the deleted restore point cannot be used again.</span></div>}
             {wordpressAction.action === 'install' && <div className="danger-callout"><strong>This will replace “{wordpressAction.detectedSiteName || wordpressAction.domain.client || wordpressAction.domain.domain}”.</strong><span>{wordpressAction.detectedSiteName?.startsWith('Existing files') ? 'Softaculous did not register the existing installation, so SpyderWeb will overwrite the target-folder files and install clean WordPress with a fresh database.' : 'SpyderWeb will remove the current WordPress files, database and database user, verify that the installation is gone, and only then install clean WordPress.'} This cannot run while the domain is soft locked.</span></div>}

@@ -108,7 +108,13 @@ async function refreshDomainWordPress(
     expected: 'installed' | 'template' | 'removed';
   },
 ) {
-  const installations = await listSoftaculousInstallations(input.baseUrl, input.credential);
+  let installations: Awaited<ReturnType<typeof listSoftaculousInstallations>> = [];
+  let inventoryError: unknown = null;
+  try {
+    installations = await listSoftaculousInstallations(input.baseUrl, input.credential);
+  } catch (error) {
+    inventoryError = error;
+  }
   const installation = installations.find((item) => item.domain === input.domain);
   if (installation) {
     await db.prepare(`UPDATE hosting_domains SET wordpress_status = 'installed', wordpress_version = ?,
@@ -152,6 +158,11 @@ async function refreshDomainWordPress(
       return { installation: null, verified: true };
     }
   }
+
+  // Public WordPress metadata is a safe independent verification path for an
+  // install or clone. An unavailable Softaculous inventory cannot, however,
+  // prove that a destructive removal finished.
+  if (inventoryError && input.expected === 'removed') throw inventoryError;
 
   await db.prepare(`UPDATE hosting_domains SET wordpress_status = ?, wordpress_version = NULL,
     wordpress_site_name = NULL, wordpress_url = NULL, wordpress_installation_id = NULL,
@@ -502,6 +513,9 @@ export async function POST(request: Request, { params }: { params: Promise<{ dom
           .bind(record.connectionId, identity.userId, requestedTemplateDomain).first<Record<string, unknown>>();
         if (!selectedSource) throw new Error('Choose a template source from this connected cPanel account.');
         templateDomain = String(selectedSource.domain);
+        await db.prepare(`UPDATE hosting_connections SET default_template_domain = ?, updated_at = ?
+          WHERE id = ? AND owner_user_id = ?`)
+          .bind(templateDomain, new Date().toISOString(), record.connectionId, identity.userId).run();
       }
       if (!templateDomain) {
         const fallback = await db.prepare(`SELECT domain FROM hosting_domains
@@ -516,12 +530,25 @@ export async function POST(request: Request, { params }: { params: Promise<{ dom
       const template = liveInstallations.find((installation) => installation.domain === templateDomain);
       if (!template?.id) throw new Error(`Softaculous did not identify the template installation on ${templateDomain}. Scan the hosting account again before loading it.`);
       await prepareCleanDestination('loading the default template');
-      await softaculousManagedAction({ baseUrl, credential: secrets,
-        action: 'clone', domain: record.domain, sourceInstallationId: template.id,
-        databaseName: freshDatabaseName(), overwriteExisting: replacementConfirmed });
+      let cloneError: unknown = null;
+      try {
+        await softaculousManagedAction({ baseUrl, credential: secrets,
+          action: 'clone', domain: record.domain, sourceInstallationId: template.id,
+          databaseName: freshDatabaseName(), overwriteExisting: replacementConfirmed });
+      } catch (error) {
+        // Some Softaculous builds complete a clone but return an empty or
+        // non-JSON completion response. Never repeat the destructive request;
+        // verify the destination through inventory and the public WP endpoint.
+        if (!softaculousResponseWasAmbiguous(error)) throw error;
+        cloneError = error;
+      }
       const refreshed = await verifyDomainWordPressAfterAction(db, { ownerUserId: identity.userId, domainId: record.id,
         domain: record.domain, baseUrl, credential: secrets, expected: 'template' });
-      if (!refreshed.verified) verificationWarning = 'Softaculous accepted the clone but has not reported the destination yet. SpyderWeb marked it for inspection; scan again shortly.';
+      if (cloneError && !refreshed.verified) throw cloneError;
+      if (cloneError && refreshed.verified) {
+        verificationWarning = 'The template was loaded and independently verified. Softaculous returned an unclear completion response, so SpyderWeb did not repeat the clone.';
+      }
+      if (!refreshed.verified) verificationWarning = 'Softaculous accepted the clone but the destination could not yet be verified. SpyderWeb has not reported this as completed; scan again shortly.';
       if (refreshed.verified) {
         try {
           await applyPostInstallMemoryProfile();
