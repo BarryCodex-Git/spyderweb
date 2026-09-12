@@ -419,8 +419,14 @@ export default function Home() {
   const templateSourceConnection = wordpressAction?.action === 'clone_template'
     ? hostingConnections.find((connection) => connection.id === wordpressAction.domain.connectionId)
     : null;
+  const savedTemplateDomains = new Set(templateSlots
+    .filter((slot) => slot.connectionId === wordpressAction?.domain.connectionId && slot.sourceDomain)
+    .map((slot) => slot.sourceDomain));
   const templateSourceDomains = wordpressAction?.action === 'clone_template'
-    ? managedDomains.filter((domain) => domain.connectionId === wordpressAction.domain.connectionId && domain.domain !== wordpressAction.domain.domain)
+    ? managedDomains.filter((domain) => domain.connectionId === wordpressAction.domain.connectionId
+      && domain.domain !== wordpressAction.domain.domain
+      && domain.wordpress.startsWith('Installed')
+      && (savedTemplateDomains.size ? savedTemplateDomains.has(domain.domain) : /template/i.test(`${domain.domain} ${domain.template}`)))
     : [];
 
   const dismissActionToast = useCallback((id: string) => {
@@ -1224,7 +1230,9 @@ export default function Home() {
 
   function openTemplateClone(domain: Domain) {
     const connection = hostingConnections.find((item) => item.id === domain.connectionId);
-    const candidates = managedDomains.filter((item) => item.connectionId === domain.connectionId && item.domain !== domain.domain);
+    const savedDomains = new Set(templateSlots.filter((slot) => slot.connectionId === domain.connectionId && slot.sourceDomain).map((slot) => slot.sourceDomain));
+    const candidates = managedDomains.filter((item) => item.connectionId === domain.connectionId && item.domain !== domain.domain
+      && item.wordpress.startsWith('Installed') && (savedDomains.size ? savedDomains.has(item.domain) : /template/i.test(`${item.domain} ${item.template}`)));
     const templateDomain = connection?.defaultTemplateDomain
       || candidates.find((item) => item.domain === 'template.testwebsitebuild.com')?.domain
       || candidates.find((item) => /template/i.test(item.domain))?.domain

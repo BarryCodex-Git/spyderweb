@@ -196,6 +196,27 @@ export async function ensureHostingSchema(db = getDatabase()) {
   // verification must therefore be followed by a WordPress memory check.
   await db.prepare(`UPDATE hosting_domains SET php_profile_status = 'wordpress_memory_pending'
     WHERE wordpress_status = 'installed' AND php_profile_status = 'recommended_applied'`).run();
+  // Older connections predate the explicit default-template field. Seed it
+  // from the verified template domain already saved in that same account so
+  // the Dashboard action and New Project selector share one source of truth.
+  await db.prepare(`UPDATE hosting_connections
+    SET default_template_domain = (
+      SELECT d.domain FROM hosting_domains d
+      WHERE d.connection_id = hosting_connections.id
+        AND d.owner_user_id = hosting_connections.owner_user_id
+        AND d.active = 1 AND d.wordpress_status = 'installed'
+        AND (LOWER(d.domain) LIKE '%template%' OR LOWER(COALESCE(d.wordpress_site_name, '')) LIKE '%template%')
+      ORDER BY CASE WHEN LOWER(d.domain) LIKE 'template.%' THEN 0 ELSE 1 END, d.domain
+      LIMIT 1
+    )
+    WHERE (default_template_domain IS NULL OR TRIM(default_template_domain) = '')
+      AND EXISTS (
+        SELECT 1 FROM hosting_domains d
+        WHERE d.connection_id = hosting_connections.id
+          AND d.owner_user_id = hosting_connections.owner_user_id
+          AND d.active = 1 AND d.wordpress_status = 'installed'
+          AND (LOWER(d.domain) LIKE '%template%' OR LOWER(COALESCE(d.wordpress_site_name, '')) LIKE '%template%')
+      )`).run();
   return db;
 }
 
