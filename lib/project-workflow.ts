@@ -36,8 +36,18 @@ export function suggestedProgress(stage: ProjectStage, status: ProjectStageStatu
   return Math.min(99, base + (status === 'not_started' ? 0 : status === 'in_progress' ? 4 : 6));
 }
 
-export function domainWorkflowForStage(stage: ProjectStage) {
-  const index = PROJECT_STAGES.indexOf(stage);
+export function domainWorkflowForProject(input: {
+  stage: ProjectStage;
+  stageStatus: ProjectStageStatus;
+  progress: number;
+  assigned: boolean;
+}) {
+  const index = PROJECT_STAGES.indexOf(input.stage);
   if (index < 0) return null;
-  return index >= PROJECT_STAGES.indexOf('Review Full Build') ? 'Final Stages' : 'Busy Working';
+  const servicePagesIndex = PROJECT_STAGES.indexOf('Build All Service Pages');
+  const servicePagesComplete = index > servicePagesIndex
+    || (index === servicePagesIndex && input.stageStatus === 'completed');
+  if (servicePagesComplete && input.progress > 70) return 'Final Stages';
+  const buildWorkStarted = index >= PROJECT_STAGES.indexOf('Build Home Page');
+  return input.assigned && buildWorkStarted ? 'Busy Working' : null;
 }

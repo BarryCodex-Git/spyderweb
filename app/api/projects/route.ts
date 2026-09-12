@@ -4,7 +4,7 @@ import {
   PROJECT_DEVELOPERS,
   PROJECT_STAGES,
   PROJECT_STAGE_STATUSES,
-  domainWorkflowForStage,
+  domainWorkflowForProject,
   type ProjectBuildType,
   type ProjectDeveloper,
   type ProjectStage,
@@ -226,7 +226,12 @@ export async function POST(request: Request) {
 
     const projectId = existing?.id || crypto.randomUUID();
     const now = new Date().toISOString();
-    const workflow = domainWorkflowForStage(stage);
+    const workflow = domainWorkflowForProject({
+      stage,
+      stageStatus,
+      progress,
+      assigned: Boolean(developer),
+    }) ?? (buildType === 'Template' ? 'Template Loaded' : 'Available');
     const projectWrite = existing
       ? db.prepare(`UPDATE projects SET client_name = ?, build_type = ?, assigned_developer = ?,
           current_stage = ?, stage_status = ?, progress = ?, target_date = ?, next_action = ?,

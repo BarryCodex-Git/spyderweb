@@ -2,7 +2,7 @@
 
 import Image from 'next/image';
 import { type DragEvent, type FormEvent, useCallback, useEffect, useRef, useState } from 'react';
-import { PROJECT_STAGES, domainWorkflowForStage, suggestedProgress, type ProjectStage } from '@/lib/project-workflow';
+import { PROJECT_STAGES, domainWorkflowForProject, suggestedProgress, type ProjectStage } from '@/lib/project-workflow';
 import { isSelectableExistingDomain, suggestedSubdomainLabel } from '@/lib/launch-project';
 import { emptyClientIntake, type ClientIntake } from '@/lib/client-intake';
 import { PROJECT_PRIORITIES, sortProjectsByPriority, type ProjectPriority } from '@/lib/project-priority';
@@ -226,17 +226,14 @@ function mapHostingDomains(records: HostingDomain[], connections: HostingConnect
       || !['installed', 'not_installed'].includes(record.wordpressStatus)
       || /(?:failed|error|attention)/i.test(record.phpProfileStatus || '');
     const workflowOverride = workflowStatuses.includes(rawWorkflowOverride as DomainStatus)
+      && rawWorkflowOverride !== 'Needs Inspection'
       ? rawWorkflowOverride
       : null;
-    const status: DomainStatus = needsInspection
-      ? 'Available'
-      : workflowOverride
+    const status: DomainStatus = workflowOverride
       ? workflowOverride
       : isTemplate
         ? 'Template Loaded'
-        : installed
-          ? 'Busy Working'
-          : record.wordpressStatus === 'not_installed' ? 'Available' : 'Needs Inspection';
+        : 'Available';
     const client = status === 'Available' || record.wordpressStatus === 'not_installed'
       ? 'Ready for a new project'
       : status === 'Template Loaded'
@@ -381,13 +378,21 @@ export default function Home() {
     : [];
   const projectAwareDomains = managedDomains.map((domain) => {
     const project = projectRecords.find((item) => item.domain === domain.domain);
-    const projectWorkflow = project ? domainWorkflowForStage(project.stage as ProjectStage) : null;
+    const projectWorkflow = project ? domainWorkflowForProject({
+      stage: project.stage as ProjectStage,
+      stageStatus: project.stageStatus,
+      progress: project.progress,
+      assigned: Boolean(project.developer),
+    }) : null;
+    const projectBaseStatus: DomainStatus = project?.buildType === 'Template'
+      ? 'Template Loaded'
+      : 'Available';
     const projectNeedsInspection = domain.wordpress === 'Scan pending'
       || domain.wordpress === 'Not installed'
       || /(?:failed|error|attention)/i.test(domain.phpProfileStatus || '');
     return project
       ? { ...domain, client: project.client, developer: project.developer, stage: project.stage,
-          progress: project.progress, status: projectWorkflow ?? domain.status,
+          progress: project.progress, status: projectWorkflow ?? projectBaseStatus,
           needsInspection: projectNeedsInspection }
       : domain;
   });
