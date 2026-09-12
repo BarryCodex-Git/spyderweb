@@ -38,6 +38,6 @@ export function suggestedProgress(stage: ProjectStage, status: ProjectStageStatu
 
 export function domainWorkflowForStage(stage: ProjectStage) {
   const index = PROJECT_STAGES.indexOf(stage);
-  if (index < 1) return null;
+  if (index < 0) return null;
   return index >= PROJECT_STAGES.indexOf('Review Full Build') ? 'Final Stages' : 'Busy Working';
 }

@@ -224,8 +224,7 @@ function mapHostingDomains(records: HostingDomain[], connections: HostingConnect
     const rawWorkflowOverride = record.workflowStatusOverride as DomainStatus | null;
     const needsInspection = rawWorkflowOverride === 'Needs Inspection'
       || !['installed', 'not_installed'].includes(record.wordpressStatus)
-      || (installed && !record.wordpressInstallationId)
-      || /(?:failed|error|attention|pending)/i.test(record.phpProfileStatus || '');
+      || /(?:failed|error|attention)/i.test(record.phpProfileStatus || '');
     const workflowOverride = workflowStatuses.includes(rawWorkflowOverride as DomainStatus)
       ? rawWorkflowOverride
       : null;
@@ -383,9 +382,13 @@ export default function Home() {
   const projectAwareDomains = managedDomains.map((domain) => {
     const project = projectRecords.find((item) => item.domain === domain.domain);
     const projectWorkflow = project ? domainWorkflowForStage(project.stage as ProjectStage) : null;
+    const projectNeedsInspection = domain.wordpress === 'Scan pending'
+      || domain.wordpress === 'Not installed'
+      || /(?:failed|error|attention)/i.test(domain.phpProfileStatus || '');
     return project
       ? { ...domain, client: project.client, developer: project.developer, stage: project.stage,
-          progress: project.progress, status: projectWorkflow ?? domain.status }
+          progress: project.progress, status: projectWorkflow ?? domain.status,
+          needsInspection: projectNeedsInspection }
       : domain;
   });
   const selectedDomainProject = selectedDomain
