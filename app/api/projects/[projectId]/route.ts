@@ -3,8 +3,10 @@ import {
   PROJECT_DEVELOPERS,
   PROJECT_STAGES,
   PROJECT_STAGE_STATUSES,
+  baseDomainWorkflowForProject,
   domainWorkflowForProject,
   suggestedProgress,
+  type ProjectBuildType,
   type ProjectDeveloper,
   type ProjectStage,
   type ProjectStageStatus,
@@ -53,7 +55,8 @@ export async function PATCH(
     const db = await ensureHostingSchema();
     const current = await db.prepare(`SELECT id, domain_id AS domainId, domain, client_name AS client,
       assigned_developer AS developer, current_stage AS stage, stage_status AS stageStatus,
-      progress, target_date AS due, next_action AS nextAction, priority, build_type AS buildType
+      progress, target_date AS due, next_action AS nextAction, priority, build_type AS buildType,
+      (SELECT wordpress_status FROM hosting_domains WHERE id = projects.domain_id) AS wordpressStatus
       FROM projects WHERE id = ? AND owner_user_id = ? AND lifecycle_status != 'archived'`)
       .bind(projectId, identity.userId).first<Record<string, unknown>>();
     if (!current) return json({ error: 'This project was not found.' }, 404);
@@ -101,7 +104,10 @@ export async function PATCH(
       stageStatus,
       progress,
       assigned: Boolean(developer),
-    }) ?? (current.buildType === 'Template' ? 'Template Loaded' : 'Available');
+    }) ?? baseDomainWorkflowForProject({
+      buildType: current.buildType as ProjectBuildType,
+      wordpressInstalled: current.wordpressStatus === 'installed',
+    });
     const statements = [
       db.prepare(`UPDATE projects SET assigned_developer = ?, current_stage = ?, stage_status = ?,
         progress = ?, target_date = ?, next_action = ?, last_reported_by = 'Owner Account', updated_at = ?

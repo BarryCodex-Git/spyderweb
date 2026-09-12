@@ -4,6 +4,7 @@ import {
   PROJECT_DEVELOPERS,
   PROJECT_STAGES,
   PROJECT_STAGE_STATUSES,
+  baseDomainWorkflowForProject,
   domainWorkflowForProject,
   type ProjectBuildType,
   type ProjectDeveloper,
@@ -217,9 +218,9 @@ export async function POST(request: Request) {
     const intakeNotes = optionalText(body.intakeNotes, 4000);
     const note = optionalText(body.note, 2000) || `Project added manually at ${stage}.`;
     const db = await ensureHostingSchema();
-    const domain = await db.prepare(`SELECT id, domain FROM hosting_domains
+    const domain = await db.prepare(`SELECT id, domain, wordpress_status AS wordpressStatus FROM hosting_domains
       WHERE id = ? AND owner_user_id = ? AND active = 1`).bind(domainId, identity.userId)
-      .first<{ id: string; domain: string }>();
+      .first<{ id: string; domain: string; wordpressStatus: string }>();
     if (!domain) throw new Error('Choose a connected development domain.');
     const existing = await db.prepare(`SELECT id FROM projects WHERE owner_user_id = ? AND domain = ?
       AND lifecycle_status != 'archived' LIMIT 1`).bind(identity.userId, domain.domain).first<{ id: string }>();
@@ -231,7 +232,10 @@ export async function POST(request: Request) {
       stageStatus,
       progress,
       assigned: Boolean(developer),
-    }) ?? (buildType === 'Template' ? 'Template Loaded' : 'Available');
+    }) ?? baseDomainWorkflowForProject({
+      buildType,
+      wordpressInstalled: domain.wordpressStatus === 'installed',
+    });
     const projectWrite = existing
       ? db.prepare(`UPDATE projects SET client_name = ?, build_type = ?, assigned_developer = ?,
           current_stage = ?, stage_status = ?, progress = ?, target_date = ?, next_action = ?,

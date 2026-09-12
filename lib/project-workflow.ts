@@ -36,6 +36,15 @@ export function suggestedProgress(stage: ProjectStage, status: ProjectStageStatu
   return Math.min(99, base + (status === 'not_started' ? 0 : status === 'in_progress' ? 4 : 6));
 }
 
+export function baseDomainWorkflowForProject(input: {
+  buildType: ProjectBuildType;
+  wordpressInstalled: boolean;
+}) {
+  return input.buildType === 'Template' && input.wordpressInstalled
+    ? 'Template Loaded'
+    : 'Available';
+}
+
 export function domainWorkflowForProject(input: {
   stage: ProjectStage;
   stageStatus: ProjectStageStatus;
