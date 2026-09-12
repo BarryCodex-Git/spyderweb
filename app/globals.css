@@ -240,8 +240,9 @@ button.table-row { cursor: pointer; }.table-row:last-child { border-bottom: 0; }
 .operation-icon { width: 45px; height: 45px; display: grid; place-items: center; margin-bottom: 17px; border-radius: 13px; color: white; background: radial-gradient(circle at 25% 35%, var(--dark-purple), var(--dark-blue) 60%, var(--mid-blue)); font-weight: 900; }
 .operation-icon.danger { background: #b83a56; }
 .operation-confirm-modal label { display: grid; gap: 7px; margin-top: 14px; color: #526079; font-size: 14px; font-weight: 750; }
-.operation-confirm-modal input { width: 100%; padding: 12px 13px; border: 1px solid var(--line); border-radius: 10px; color: var(--ink); background: #fafbfe; outline: none; }
-.operation-confirm-modal input:focus { border-color: var(--mid-blue); box-shadow: 0 0 0 3px rgba(25,118,237,.09); }
+.operation-confirm-modal input, .operation-confirm-modal select { width: 100%; padding: 12px 13px; border: 1px solid var(--line); border-radius: 10px; color: var(--ink); background: #fafbfe; outline: none; }
+.operation-confirm-modal input:focus, .operation-confirm-modal select:focus { border-color: var(--mid-blue); box-shadow: 0 0 0 3px rgba(25,118,237,.09); }
+.operation-confirm-modal label small { color: var(--muted); font-size: 13px; font-weight: 500; }
 .danger-callout, .info-callout { display: grid; gap: 5px; padding: 13px; margin: 15px 0; border: 1px solid #efc6cf; border-radius: 11px; color: #883048; background: #fff4f6; font-size: 13px; line-height: 1.5; }
 .info-callout { display: block; color: #244e8f; border-color: #c9d9f2; background: #f1f6ff; }
 .operation-confirm-actions { display: flex; align-items: center; justify-content: space-between; margin-top: 22px; padding-top: 17px; border-top: 1px solid var(--line); }

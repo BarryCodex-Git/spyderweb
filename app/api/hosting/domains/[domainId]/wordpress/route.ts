@@ -167,6 +167,19 @@ async function refreshDomainWordPress(
   return { installation: null, verified: input.expected === 'removed' };
 }
 
+async function verifyDomainWordPressAfterAction(
+  db: D1Database,
+  input: Parameters<typeof refreshDomainWordPress>[1],
+) {
+  let result: Awaited<ReturnType<typeof refreshDomainWordPress>> | null = null;
+  for (const delay of [0, 1000, 2000, 4000, 6000]) {
+    if (delay) await new Promise((resolve) => setTimeout(resolve, delay));
+    result = await refreshDomainWordPress(db, input);
+    if (result.verified) return result;
+  }
+  return result!;
+}
+
 export async function POST(request: Request, { params }: { params: Promise<{ domainId: string }> }) {
   const identity = getRequestIdentity(request);
   if (!identity) return json({ error: 'Sign in as the SpyderWeb owner.' }, 401);
@@ -458,7 +471,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ dom
         if (isSoftaculousExistingFilesError(error)) throw error;
         installError = error;
       }
-      const refreshed = await refreshDomainWordPress(db, { ownerUserId: identity.userId, domainId: record.id,
+      const refreshed = await verifyDomainWordPressAfterAction(db, { ownerUserId: identity.userId, domainId: record.id,
         domain: record.domain, baseUrl, credential: secrets, expected: 'installed' });
       if (installError && !refreshed.verified) throw installError;
       if (installError && refreshed.verified) {
@@ -478,7 +491,18 @@ export async function POST(request: Request, { params }: { params: Promise<{ dom
         }
       }
     } else if (action === 'clone_template') {
-      let templateDomain = String(connection.defaultTemplateDomain || '');
+      const requestedTemplateDomain = String(body.templateDomain || '').trim().toLowerCase();
+      if (requestedTemplateDomain && !/^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/.test(requestedTemplateDomain)) {
+        throw new Error('Choose a valid template source domain.');
+      }
+      let templateDomain = requestedTemplateDomain || String(connection.defaultTemplateDomain || '');
+      if (requestedTemplateDomain) {
+        const selectedSource = await db.prepare(`SELECT domain FROM hosting_domains
+          WHERE connection_id = ? AND owner_user_id = ? AND active = 1 AND LOWER(domain) = ? LIMIT 1`)
+          .bind(record.connectionId, identity.userId, requestedTemplateDomain).first<Record<string, unknown>>();
+        if (!selectedSource) throw new Error('Choose a template source from this connected cPanel account.');
+        templateDomain = String(selectedSource.domain);
+      }
       if (!templateDomain) {
         const fallback = await db.prepare(`SELECT domain FROM hosting_domains
           WHERE connection_id = ? AND owner_user_id = ? AND active = 1 AND LOWER(domain) LIKE '%template%'
@@ -495,7 +519,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ dom
       await softaculousManagedAction({ baseUrl, credential: secrets,
         action: 'clone', domain: record.domain, sourceInstallationId: template.id,
         databaseName: freshDatabaseName(), overwriteExisting: replacementConfirmed });
-      const refreshed = await refreshDomainWordPress(db, { ownerUserId: identity.userId, domainId: record.id,
+      const refreshed = await verifyDomainWordPressAfterAction(db, { ownerUserId: identity.userId, domainId: record.id,
         domain: record.domain, baseUrl, credential: secrets, expected: 'template' });
       if (!refreshed.verified) verificationWarning = 'Softaculous accepted the clone but has not reported the destination yet. SpyderWeb marked it for inspection; scan again shortly.';
       if (refreshed.verified) {
@@ -515,7 +539,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ dom
     await audit(db, { ownerUserId: identity.userId, connectionId: record.connectionId, action: `wordpress.${action}`, target: record.domain, outcome: 'accepted' });
     const messages: Record<string, string> = {
       install: `A clean WordPress installation completed for ${record.domain} with temporary admin/admin credentials, and the live inventory was refreshed.`,
-      clone_template: `The default template clone completed for ${record.domain}, and the live inventory was refreshed.`,
+      clone_template: `The template from ${String(body.templateDomain || connection.defaultTemplateDomain || 'the configured default')} was loaded onto ${record.domain}, and the live inventory was refreshed.`,
     };
     return json({
       message: verificationWarning || messages[action] || 'The WordPress action was accepted.',
