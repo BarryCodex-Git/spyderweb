@@ -5,9 +5,15 @@ import {
   SoftaculousRequestError,
   isSoftaculousExistingFilesError,
   listSoftaculousInstallations,
+  parseSoftaculousPayload,
   readableSoftaculousError,
   softaculousManagedAction,
 } from '../lib/softaculous.ts';
+
+test('Softaculous JSON remains readable when the host prepends a PHP notice', () => {
+  const payload = parseSoftaculousPayload('PHP Warning: session notice\n{"installations":{"26_1":{"soft":"26"}}}\n');
+  assert.equal(payload.installations['26_1'].soft, '26');
+});
 
 const passwordCredential = {
   username: 'webbuilder', password: 'correct-password', authMode: 'cpanel_basic',

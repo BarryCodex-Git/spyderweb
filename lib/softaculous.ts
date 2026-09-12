@@ -141,6 +141,20 @@ function domainFrom(value: unknown) {
   catch { return null; }
 }
 
+export function parseSoftaculousPayload(text: string): unknown {
+  const cleanText = text.replace(/^\uFEFF/, '').trim();
+  try { return JSON.parse(cleanText); } catch { /* Try the API payload inside host notices or wrappers. */ }
+  const objectStart = cleanText.indexOf('{');
+  const arrayStart = cleanText.indexOf('[');
+  const start = objectStart < 0 ? arrayStart : arrayStart < 0 ? objectStart : Math.min(objectStart, arrayStart);
+  if (start >= 0) {
+    const opener = cleanText[start];
+    const end = cleanText.lastIndexOf(opener === '{' ? '}' : ']');
+    if (end > start) return JSON.parse(cleanText.slice(start, end + 1));
+  }
+  throw new Error('unreadable');
+}
+
 function collect(value: unknown, results = new Map<string, SoftaculousInstall>(), keyHint?: string) {
   if (Array.isArray(value)) { value.forEach((item) => collect(item, results)); return results; }
   if (!value || typeof value !== 'object') return results;
@@ -298,7 +312,7 @@ async function request(input: {
     });
   }
   let payload: unknown;
-  try { payload = JSON.parse(text); } catch {
+  try { payload = parseSoftaculousPayload(text); } catch {
     // Inventory requests are read-only. Some cPanel hosts return a plain
     // response to direct Basic auth even though a normal cPanel session can
     // return the requested JSON. Retrying that read is safe; writes must never
@@ -309,7 +323,7 @@ async function request(input: {
       sessionRetried = true;
       if (response.ok && !(response.status >= 300 && response.status < 400)) {
         text = await response.text();
-        try { payload = JSON.parse(text); } catch { /* Report the stable error below. */ }
+        try { payload = parseSoftaculousPayload(text); } catch { /* Report the stable error below. */ }
       }
     }
     if (payload === undefined) {

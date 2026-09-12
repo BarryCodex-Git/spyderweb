@@ -21,6 +21,18 @@ type ActionToast = {
   message: string;
 };
 
+type LaunchFeedback = {
+  status: ActionToastStatus;
+  title: string;
+  message: string;
+};
+
+type LaunchCompletion = {
+  projectId: string;
+  client: string;
+  domain: string;
+};
+
 type WordPressAction = 'install' | 'clone_template' | 'create_restore_point' | 'delete_oldest_backup' | 'apply_php_profile';
 
 type BackupStatus = {
@@ -325,6 +337,8 @@ export default function Home() {
   const [manualProjectOpen, setManualProjectOpen] = useState(false);
   const [selectedDomain, setSelectedDomain] = useState<Domain | null>(null);
   const [selectedProject, setSelectedProject] = useState<Project | null>(null);
+  const [launchFeedback, setLaunchFeedback] = useState<LaunchFeedback | null>(null);
+  const [launchCompletion, setLaunchCompletion] = useState<LaunchCompletion | null>(null);
   const [developer, setDeveloper] = useState<Developer>('Barry');
   const [launchStep, setLaunchStep] = useState(1);
   const [notice, setNotice] = useState('');
@@ -671,6 +685,9 @@ export default function Home() {
     const formData = new FormData(form);
     const keepingLoadedTemplate = formData.get('templateDecision') === 'keep';
     setLaunchBusy(true);
+    setLaunchFeedback({ status: 'progress', title: 'Launch in progress', message: keepingLoadedTemplate
+      ? 'Saving the project and preparing the Word handover document.'
+      : 'Preparing the domain, loading the selected WordPress template, and verifying the finished website. Keep this page open.' });
     showActionToast({ id: 'new-project-launch', status: 'progress', title: 'Launching new project',
       message: keepingLoadedTemplate
         ? 'Saving the project, keeping the loaded template, and preparing the Word document.'
@@ -678,7 +695,7 @@ export default function Home() {
     try {
       const response = await fetch('/api/launch', { method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(Object.fromEntries(formData.entries())) });
-      const result = await response.json() as { error?: string; message?: string; projectId?: string; intakeSaved?: boolean };
+      const result = await response.json() as { error?: string; message?: string; projectId?: string; domain?: string; intakeSaved?: boolean };
       if (!response.ok && result.intakeSaved && result.projectId) {
         await loadProjectData();
         const download = document.createElement('a');
@@ -689,10 +706,18 @@ export default function Home() {
         download.remove();
         showActionToast({ id: 'new-project-launch', status: 'warning', title: 'Setup stopped · project details saved',
           message: `${result.error || 'WordPress setup did not finish.'} Your complete intake is saved under Projects, a Word copy is downloading, and this form draft has been kept.` });
+        setLaunchFeedback({ status: 'warning', title: 'Setup did not finish',
+          message: `${result.error || 'WordPress setup did not finish.'} The project details were saved, the Word document was downloaded, and this form remains available.` });
         return false;
       }
       if (!response.ok) throw new Error(result.error || 'The project could not be launched.');
-      await Promise.all([loadHostingInventory(), loadProjectData(), loadTemplateSlots()]);
+      const [, projectData] = await Promise.all([loadHostingInventory(), loadProjectData(), loadTemplateSlots()]);
+      const launchedProject = result.projectId ? projectData?.projects.find((project) => project.id === result.projectId) : null;
+      setLaunchCompletion({ projectId: result.projectId || '', client: launchedProject?.client || String(formData.get('projectName') || 'New project'),
+        domain: result.domain || launchedProject?.domain || '' });
+      setLaunchFeedback(null);
+      setActiveView('Projects');
+      window.setTimeout(() => window.scrollTo({ top: 0, behavior: 'smooth' }), 0);
       if (result.projectId) {
         const download = document.createElement('a');
         download.href = `/api/projects/${result.projectId}/intake?download=1`;
@@ -704,11 +729,13 @@ export default function Home() {
       showActionToast({ id: 'new-project-launch', status: 'success', title: 'Project launched',
         message: `${result.message || 'The new project is ready.'} The Word project details are downloading for the manual agent handover.` });
       form.reset();
-      setActiveView('Projects');
       return true;
     } catch (error) {
+      const message = error instanceof Error ? error.message : 'The project could not be launched.';
       showActionToast({ id: 'new-project-launch', status: 'error', title: 'Project launch stopped',
-        message: error instanceof Error ? error.message : 'The project could not be launched.' });
+        message });
+      setLaunchFeedback({ status: 'error', title: 'Project was not launched',
+        message: `${message} No completed project was created. Your form remains saved on this device.` });
       return false;
     } finally { setLaunchBusy(false); }
   }
@@ -1282,9 +1309,9 @@ export default function Home() {
         </header>
 
         {activeView === 'Dashboard' && <Dashboard domains={projectAwareDomains} onDomain={openDomain} onLaunch={openLaunch} onMoveToFinalStages={moveProjectToFinalStages} inventoryIsLive={inventoryIsLive} inventoryRefreshing={inventoryRefreshing} inventoryLastRefreshedAt={inventoryLastRefreshedAt} />}
-        {activeView === 'New Project' && <LaunchProjectView connections={hostingConnections} domains={projectAwareDomains} templates={templateSlots} busy={launchBusy} onSaveTemplate={saveTemplateSlot} onLaunch={launchNewProject} onActivateWordPress={setWordpressActivationConnection} />}
+        {activeView === 'New Project' && <LaunchProjectView connections={hostingConnections} domains={projectAwareDomains} templates={templateSlots} busy={launchBusy} feedback={launchFeedback} onSaveTemplate={saveTemplateSlot} onLaunch={launchNewProject} onActivateWordPress={setWordpressActivationConnection} />}
         {activeView === 'Domains' && <DomainsView connections={hostingConnections} domains={projectAwareDomains} onDomain={openDomain} onNotice={setNotice} notice={notice} inventoryIsLive={inventoryIsLive} scanning={hostingSyncingId !== null} onScanAll={scanAllHostingConnections} onCreateSubdomain={createStandaloneSubdomain} />}
-        {activeView === 'Projects' && <ProjectsView projects={projectRecords} activityRefreshing={projectActivityRefreshing} activityCheckedAt={projectActivityCheckedAt} onRefreshActivity={() => void refreshProjectActivity(true)} onProject={setSelectedProject} onReorder={reorderProjects} onPriority={setProjectPriority} />}
+        {activeView === 'Projects' && <ProjectsView projects={projectRecords} launchCompletion={launchCompletion} onDismissLaunch={() => setLaunchCompletion(null)} activityRefreshing={projectActivityRefreshing} activityCheckedAt={projectActivityCheckedAt} onRefreshActivity={() => void refreshProjectActivity(true)} onProject={setSelectedProject} onReorder={reorderProjects} onPriority={setProjectPriority} />}
         {activeView === 'Agent Activity' && <AgentActivity auditEvents={auditEvents} projects={projectRecords} projectEvents={projectEvents} filter={activityFilter} onFilter={setActivityFilter} />}
         {activeView === 'Settings' && <SettingsView connections={hostingConnections} syncingId={hostingSyncingId} modeChangingId={hostingModeChangingId} notice={settingsHostingNotice} onSync={syncHostingConnection} onModeChange={changeHostingMode} onActivateWordPress={setWordpressActivationConnection} onConnect={(provider) => { setHostingNotice(''); setHostingProvider(provider); }} />}
       </section>
@@ -1915,8 +1942,9 @@ type LaunchProjectDraft = {
   intake: ClientIntake;
 };
 
-function LaunchProjectView({ connections, domains, templates, busy, onSaveTemplate, onLaunch, onActivateWordPress }: {
+function LaunchProjectView({ connections, domains, templates, busy, feedback, onSaveTemplate, onLaunch, onActivateWordPress }: {
   connections: HostingConnection[]; domains: Domain[]; templates: TemplateSlot[]; busy: boolean;
+  feedback: LaunchFeedback | null;
   onSaveTemplate: (slotNumber: number, name: string, sourceDomainId: string | null) => Promise<void>;
   onLaunch: (event: FormEvent<HTMLFormElement>) => Promise<boolean>;
   onActivateWordPress: (connection: HostingConnection) => void;
@@ -2012,6 +2040,7 @@ function LaunchProjectView({ connections, domains, templates, busy, onSaveTempla
         {selectedConnection && !managementReady && requiresTemplateOperation && <div className="launch-readiness-warning full-field"><span>WordPress Management needs the cPanel account password once before this account can install or replace a template.</span><button type="button" className="outline-button" onClick={() => onActivateWordPress(selectedConnection)}>Activate here</button></div>}
         <div className="launch-summary full-field"><span>1</span><p><strong>{targetMode === 'existing' ? keepingLoadedTemplate ? 'Keep the verified template' : 'Prepare the selected domain' : 'Create the new subdomain'}</strong><small>{targetMode === 'existing' ? keepingLoadedTemplate ? 'The existing WordPress installation is not deleted or changed.' : 'Any existing WordPress installation is removed only after confirmation.' : 'The launch stops if the address already exists.'}</small></p><span>2</span><p><strong>{keepingLoadedTemplate ? 'Create and assign the project' : 'Install WordPress and apply the selected template'}</strong><small>{keepingLoadedTemplate ? 'The loaded template becomes the starting point for the new project.' : 'Softaculous clones the chosen template directly to the domain root.'}</small></p><span>3</span><p><strong>Save, track and download</strong><small>The project is added to the pipeline and its Word details download for manual agent handover.</small></p></div>
         <div className="launch-draft-status full-field"><span>Draft saved automatically on this device</span><button type="button" className="text-button" onClick={() => { window.localStorage.removeItem(launchProjectDraftKey); setProjectName(''); setSubdomain(''); setSelectedExistingDomainId(''); setTemplateDecision('replace'); setSelectedTemplateSlotNumber(''); setParentDomain(''); setDeveloper('Owner Account'); setConfirmExistingOverwrite(false); setNotes(''); setIntake(emptyClientIntake); }}>Clear draft</button></div>
+        {feedback && <section className={`launch-result-panel full-field ${feedback.status}`} role={feedback.status === 'error' ? 'alert' : 'status'} aria-live="polite"><span aria-hidden="true">{feedback.status === 'progress' ? '' : feedback.status === 'success' ? '✓' : '!'}</span><div><strong>{feedback.title}</strong><p>{feedback.message}</p></div></section>}
         <button className="primary-button launch-project-submit full-field" disabled={busy || (requiresTemplateOperation && (!managementReady || !compatibleTemplates.length || !selectedTemplateSlotNumber)) || (targetMode === 'existing' && !selectedExistingDomainId)}>{busy ? keepingLoadedTemplate ? 'Saving project & preparing document…' : 'Installing WordPress & applying template…' : 'Launch Project & Download Details'}</button>
       </form>
     </section>
@@ -2033,7 +2062,7 @@ function relativeActivity(value: string) {
   return days === 0 ? 'Today' : days === 1 ? 'Yesterday' : `${days} days ago`;
 }
 
-function ProjectsView({ projects, activityRefreshing, activityCheckedAt, onRefreshActivity, onProject, onReorder, onPriority }: { projects: Project[]; activityRefreshing: boolean; activityCheckedAt: string | null; onRefreshActivity: () => void; onProject: (project: Project) => void; onReorder: (projectIds: string[]) => Promise<void>; onPriority: (project: Project, priority: ProjectPriority) => Promise<void> }) {
+function ProjectsView({ projects, launchCompletion, onDismissLaunch, activityRefreshing, activityCheckedAt, onRefreshActivity, onProject, onReorder, onPriority }: { projects: Project[]; launchCompletion: LaunchCompletion | null; onDismissLaunch: () => void; activityRefreshing: boolean; activityCheckedAt: string | null; onRefreshActivity: () => void; onProject: (project: Project) => void; onReorder: (projectIds: string[]) => Promise<void>; onPriority: (project: Project, priority: ProjectPriority) => Promise<void> }) {
   const [draggingId, setDraggingId] = useState<string | null>(null);
   const [dropTargetId, setDropTargetId] = useState<string | null>(null);
   const visibleProjects = sortProjectsByPriority(projects);
@@ -2043,6 +2072,7 @@ function ProjectsView({ projects, activityRefreshing, activityCheckedAt, onRefre
   const customProjects = projects.filter((project) => project.buildType === 'Custom').length;
   return (
     <div className="view-stack">
+      {launchCompletion && <section className="project-launch-complete" role="status"><span aria-hidden="true">✓</span><div><strong>Project launched successfully</strong><p>{launchCompletion.client} was created on {launchCompletion.domain}. WordPress and the selected template were verified, the project is in the pipeline, and the Word handover document is downloading.</p></div><button type="button" className="outline-button" onClick={() => { const project = projects.find((item) => item.id === launchCompletion.projectId); if (project) onProject(project); }}>Open project</button><button type="button" className="close-button" aria-label="Dismiss launch confirmation" onClick={onDismissLaunch}>×</button></section>}
       <section className="project-overview-strip">
         <div><span className="large-number">{projects.length}</span><span><strong>Tracked projects</strong><small>{templateProjects} template · {customProjects} custom</small></span></div>
         <div className="agent-load"><span><b>Barry</b><small>{barryProjects} project{barryProjects === 1 ? '' : 's'}</small></span><div><i style={{ width: `${Math.min(barryProjects * 20, 100)}%` }} /></div></div>
@@ -2052,7 +2082,7 @@ function ProjectsView({ projects, activityRefreshing, activityCheckedAt, onRefre
         <div className="section-heading"><div><p className="eyebrow">Current work</p><h2>Manual project pipeline</h2></div><div className="board-heading-actions"><span className="manual-mode-pill">Manual stages</span><span className="auto-project-pill">WordPress activity monitored</span><button className="outline-button compact-button" disabled={activityRefreshing} onClick={onRefreshActivity}>{activityRefreshing ? 'Checking…' : 'Refresh activity'}</button>{activityCheckedAt && <small className="activity-checked-time">Checked {new Date(activityCheckedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</small>}</div></div>
         <div className="project-card-row">
           {visibleProjects.map((project) => (
-            <article className={`project-board-card ${projectActivityClass(project)} ${project.priority ? `priority-${project.priority.toLowerCase()}` : ''} ${draggingId === project.id ? 'dragging' : ''} ${dropTargetId === project.id ? 'drop-target' : ''}`} key={project.id}
+            <article className={`project-board-card ${projectActivityClass(project)} ${project.priority ? `priority-${project.priority.toLowerCase()}` : ''} ${launchCompletion?.projectId === project.id ? 'just-launched' : ''} ${draggingId === project.id ? 'dragging' : ''} ${dropTargetId === project.id ? 'drop-target' : ''}`} key={project.id}
               onDragOver={(event) => { if (!project.priority && draggingId && draggingId !== project.id) { event.preventDefault(); event.dataTransfer.dropEffect = 'move'; if (dropTargetId !== project.id) setDropTargetId(project.id); } }}
               onDrop={(event) => { event.preventDefault(); setDropTargetId(null); if (project.priority || !draggingId || draggingId === project.id) return; const ids = projects.map((item) => item.id); const from = ids.indexOf(draggingId); const to = ids.indexOf(project.id); ids.splice(to, 0, ids.splice(from, 1)[0]); setDraggingId(null); void onReorder(ids); }}>
               <div className="project-card-header">
