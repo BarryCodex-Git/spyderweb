@@ -155,6 +155,16 @@ export function parseSoftaculousPayload(text: string): unknown {
   throw new Error('unreadable');
 }
 
+function diagnosticResponsePreview(text: string) {
+  return text.slice(0, 600)
+    .replace(/((?:pass(?:word)?|token|secret|api[_-]?key)\s*[=:]\s*)[^\s&;"']+/gi, '$1[redacted]')
+    .replace(/[A-Za-z0-9_-]{48,}/g, '[redacted]')
+    .replace(/[\r\n\t]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 360);
+}
+
 function collect(value: unknown, results = new Map<string, SoftaculousInstall>(), keyHint?: string) {
   if (Array.isArray(value)) { value.forEach((item) => collect(item, results)); return results; }
   if (!value || typeof value !== 'object') return results;
@@ -330,7 +340,13 @@ async function request(input: {
       throw new SoftaculousRequestError('Softaculous returned an unreadable response.', {
         safeToRetry: false,
         responseWasAmbiguous: isWrite,
-        diagnostics: { phase: 'action', status: response.status, redirectPath: null, authMode: sessionRetried ? 'cpanel_session' : tokenMode ? 'cpanel_token' : 'cpanel_basic' },
+        diagnostics: {
+          phase: 'action', status: response.status, redirectPath: null,
+          authMode: sessionRetried ? 'cpanel_session' : tokenMode ? 'cpanel_token' : 'cpanel_basic',
+          contentType: response.headers.get('content-type')?.slice(0, 120) || null,
+          bodyLength: text.length,
+          bodyPreview: diagnosticResponsePreview(text) || '[empty response]',
+        },
       });
     }
   }
