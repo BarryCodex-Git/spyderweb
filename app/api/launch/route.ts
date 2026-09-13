@@ -406,7 +406,12 @@ export async function POST(request: Request) {
           memoryProfileStatus = 'wordpress_memory_verified';
         } catch (error) {
           const detail = error instanceof Error ? error.message : 'The WordPress address could not be verified.';
-          throw new Error(`The template was copied, but SpyderWeb could not safely change its WordPress address to ${targetDomain}. ${detail}`);
+          // File Manager access varies between cPanel hosts and can briefly fail
+          // immediately after a clone. Do not invalidate a healthy clone solely
+          // because this secondary hardening step is unavailable. The canonical
+          // public WordPress check below remains the launch success gate.
+          memoryProfileStatus = 'failed';
+          memoryWarning = ` The project is live, but its PHP and WordPress memory profile needs inspection. ${detail}`;
         }
         try {
           let phpVersionResult: Awaited<ReturnType<typeof ensureRecommendedPhpVersion>>;
