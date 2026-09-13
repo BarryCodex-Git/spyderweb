@@ -7,7 +7,7 @@ import {
 import { effectiveDocumentRoot, reconcileCreatedSubdomain } from '@/lib/cpanel-subdomain';
 import { decryptHostingToken, decryptSecret } from '@/lib/credential-crypto';
 import { ensureHostingSchema, stableId } from '@/lib/hosting-db';
-import { normalizeSubdomainLabel, rootInstallationUrl, softaculousDatabaseName } from '@/lib/launch-project';
+import { isTemplateLoadedForLaunch, normalizeSubdomainLabel, rootInstallationUrl, softaculousDatabaseName } from '@/lib/launch-project';
 import { parseClientIntake } from '@/lib/client-intake';
 import { PROJECT_DEVELOPERS, type ProjectDeveloper } from '@/lib/project-workflow';
 import { getRequestIdentity, isSameOrigin } from '@/lib/request-auth';
@@ -157,9 +157,17 @@ export async function POST(request: Request) {
         WHERE owner_user_id = ? AND source_domain_id = ? LIMIT 1`)
         .bind(identity.userId, existingDomainId).first();
       if (masterTemplate) throw new Error('A master template domain cannot be used as a project destination.');
-      const templateDetected = String(existingDomain.wordpressStatus) === 'installed'
-        && (existingDomain.workflowStatusOverride === 'Template Loaded'
-          || /(\btemplate\b|\bnew\s+(?:client\s+)?build\b)/i.test(`${targetDomain} ${String(existingDomain.wordpressSiteName || '')}`));
+      const trackedProject = await db.prepare(`SELECT build_type AS buildType FROM projects
+        WHERE owner_user_id = ? AND domain_id = ? AND lifecycle_status != 'archived'
+        ORDER BY updated_at DESC LIMIT 1`)
+        .bind(identity.userId, existingDomainId).first<Record<string, unknown>>();
+      const templateDetected = isTemplateLoadedForLaunch({
+        wordpressStatus: String(existingDomain.wordpressStatus),
+        workflowStatusOverride: existingDomain.workflowStatusOverride ? String(existingDomain.workflowStatusOverride) : null,
+        trackedProjectBuildType: trackedProject?.buildType ? String(trackedProject.buildType) : null,
+        domain: targetDomain,
+        wordpressSiteName: existingDomain.wordpressSiteName ? String(existingDomain.wordpressSiteName) : null,
+      });
       const available = existingDomain.workflowStatusOverride === 'Available'
         || String(existingDomain.wordpressStatus) === 'not_installed';
       if (!available && !templateDetected) throw new Error('Choose a domain marked Available or Template Loaded on the Dashboard.');

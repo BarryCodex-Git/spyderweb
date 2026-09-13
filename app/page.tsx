@@ -75,6 +75,7 @@ type Domain = {
   phpProfileStatus?: string;
   wordpressActivityAt?: string | null;
   needsInspection?: boolean;
+  workflowStatusOverride?: Exclude<DomainStatus, 'Needs Inspection'> | null;
 };
 
 type HostingConnection = {
@@ -282,6 +283,7 @@ function mapHostingDomains(records: HostingDomain[], connections: HostingConnect
       phpProfileStatus: record.phpProfileStatus,
       wordpressActivityAt: record.wordpressActivityAt,
       needsInspection,
+      workflowStatusOverride: workflowOverride as Exclude<DomainStatus, 'Needs Inspection'> | null,
     };
   });
 }
@@ -406,7 +408,7 @@ export default function Home() {
       || /(?:failed|error|attention)/i.test(domain.phpProfileStatus || '');
     return project
       ? { ...domain, client: project.client, developer: project.developer, stage: project.stage,
-          progress: project.progress, status: projectWorkflow ?? projectBaseStatus,
+          progress: project.progress, status: domain.workflowStatusOverride ?? projectWorkflow ?? projectBaseStatus,
           needsInspection: projectNeedsInspection }
       : domain;
   });
@@ -959,6 +961,24 @@ export default function Home() {
     }, 'Moving project to Final Stages');
   }
 
+  async function moveDomainToDashboardColumn(domain: Domain, workflowStatus: Exclude<DomainStatus, 'Needs Inspection'>) {
+    if (domain.status === workflowStatus || typeof domain.id !== 'string') return;
+    const toastId = `domain-column-${domain.id}`;
+    showActionToast({ id: toastId, status: 'progress', title: `Moving to ${workflowStatus}`, message: `Saving ${domain.domain}'s manual dashboard position.` });
+    try {
+      const response = await fetch(`/api/hosting/domains/${domain.id}/controls`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'set_workflow_status', workflowStatus }),
+      });
+      const result = await response.json() as { error?: string; message?: string };
+      if (!response.ok) throw new Error(result.error || 'The domain could not be moved.');
+      await loadHostingInventory(true);
+      showActionToast({ id: toastId, status: 'success', title: `Moved to ${workflowStatus}`, message: result.message || `${domain.domain} was moved.` });
+    } catch (error) {
+      showActionToast({ id: toastId, status: 'error', title: 'Domain not moved', message: error instanceof Error ? error.message : 'The domain could not be moved.' });
+    }
+  }
+
   async function saveProjectUpdate(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!selectedProject) return;
@@ -1316,7 +1336,7 @@ export default function Home() {
           </div>
         </header>
 
-        {activeView === 'Dashboard' && <Dashboard domains={projectAwareDomains} onDomain={openDomain} onLaunch={openLaunch} onMoveToFinalStages={moveProjectToFinalStages} inventoryIsLive={inventoryIsLive} inventoryRefreshing={inventoryRefreshing} inventoryLastRefreshedAt={inventoryLastRefreshedAt} />}
+        {activeView === 'Dashboard' && <Dashboard domains={projectAwareDomains} onDomain={openDomain} onLaunch={openLaunch} onMoveDomain={moveDomainToDashboardColumn} inventoryIsLive={inventoryIsLive} inventoryRefreshing={inventoryRefreshing} inventoryLastRefreshedAt={inventoryLastRefreshedAt} />}
         {activeView === 'New Project' && <LaunchProjectView connections={hostingConnections} domains={projectAwareDomains} templates={templateSlots} busy={launchBusy} feedback={launchFeedback} onSaveTemplate={saveTemplateSlot} onLaunch={launchNewProject} onActivateWordPress={setWordpressActivationConnection} />}
         {activeView === 'Domains' && <DomainsView connections={hostingConnections} domains={projectAwareDomains} onDomain={openDomain} onNotice={setNotice} notice={notice} inventoryIsLive={inventoryIsLive} scanning={hostingSyncingId !== null} onScanAll={scanAllHostingConnections} onCreateSubdomain={createStandaloneSubdomain} />}
         {activeView === 'Projects' && <ProjectsView projects={projectRecords} launchCompletion={launchCompletion} onDismissLaunch={() => setLaunchCompletion(null)} activityRefreshing={projectActivityRefreshing} activityCheckedAt={projectActivityCheckedAt} onRefreshActivity={() => void refreshProjectActivity(true)} onProject={setSelectedProject} onReorder={reorderProjects} onPriority={setProjectPriority} />}
@@ -1741,7 +1761,7 @@ export default function Home() {
   );
 }
 
-function Dashboard({ domains, onDomain, onLaunch, onMoveToFinalStages, inventoryIsLive, inventoryRefreshing, inventoryLastRefreshedAt }: { domains: Domain[]; onDomain: (domain: Domain) => void; onLaunch: () => void; onMoveToFinalStages: (domain: Domain) => void; inventoryIsLive: boolean; inventoryRefreshing: boolean; inventoryLastRefreshedAt: string | null }) {
+function Dashboard({ domains, onDomain, onLaunch, onMoveDomain, inventoryIsLive, inventoryRefreshing, inventoryLastRefreshedAt }: { domains: Domain[]; onDomain: (domain: Domain) => void; onLaunch: () => void; onMoveDomain: (domain: Domain, status: Exclude<DomainStatus, 'Needs Inspection'>) => Promise<void>; inventoryIsLive: boolean; inventoryRefreshing: boolean; inventoryLastRefreshedAt: string | null }) {
   const [draggingDomainId, setDraggingDomainId] = useState<string | number | null>(null);
   const availableCount = domains.filter((domain) => domain.status === 'Available').length;
   const activeCount = domains.filter((domain) => domain.status === 'Busy Working' || domain.status === 'Final Stages').length;
@@ -1766,19 +1786,19 @@ function Dashboard({ domains, onDomain, onLaunch, onMoveToFinalStages, inventory
                 ? Number(Boolean(left.needsInspection)) - Number(Boolean(right.needsInspection))
                 : 0);
             return (
-              <div className={`kanban-column ${column === 'Final Stages' && draggingDomainId !== null ? 'drop-ready' : ''}`} key={column}
-                onDragOver={(event) => { if (column === 'Final Stages' && draggingDomainId !== null) event.preventDefault(); }}
+              <div className={`kanban-column ${draggingDomainId !== null ? 'drop-ready' : ''}`} key={column}
+                onDragOver={(event) => { if (draggingDomainId !== null) event.preventDefault(); }}
                 onDrop={(event) => {
-                  if (column !== 'Final Stages' || draggingDomainId === null) return;
+                  if (draggingDomainId === null) return;
                   event.preventDefault();
                   const domain = domains.find((item) => String(item.id) === String(draggingDomainId));
                   setDraggingDomainId(null);
-                  if (domain) void onMoveToFinalStages(domain);
+                  if (domain) void onMoveDomain(domain, column);
                 }}>
                 <div className="column-heading"><span className={`status-dot ${column.toLowerCase().replaceAll(' ', '-')}`} /><h3>{column}</h3><span>{items.length}</span></div>
                 <div className="column-stack">
-                  {items.map((domain) => <DomainCard domain={domain} key={domain.id} onClick={() => onDomain(domain)} draggable={column === 'Busy Working'} onDragStart={(event) => { event.dataTransfer.effectAllowed = 'move'; event.dataTransfer.setData('text/plain', String(domain.id)); setDraggingDomainId(domain.id); }} onDragEnd={() => setDraggingDomainId(null)} />)}
-                  {column === 'Final Stages' && draggingDomainId !== null && <div className="final-stage-drop-hint">Drop here to move into Final Stages</div>}
+                  {items.map((domain) => <DomainCard domain={domain} key={domain.id} onClick={() => onDomain(domain)} draggable onDragStart={(event) => { event.dataTransfer.effectAllowed = 'move'; event.dataTransfer.setData('text/plain', String(domain.id)); setDraggingDomainId(domain.id); }} onDragEnd={() => setDraggingDomainId(null)} />)}
+                  {draggingDomainId !== null && <div className="final-stage-drop-hint">Drop here to move into {column}</div>}
                   {column === 'Available' && <button className="empty-action" onClick={onLaunch}>＋ Start with an available domain</button>}
                 </div>
               </div>

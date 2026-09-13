@@ -4,6 +4,7 @@ import { getRequestIdentity, isSameOrigin } from '@/lib/request-auth';
 export const dynamic = 'force-dynamic';
 
 const allowedDevelopers = new Set(['Barry', 'Clive', 'Owner Account']);
+const allowedWorkflowStatuses = new Set(['Available', 'Template Loaded', 'Busy Working', 'Final Stages']);
 
 function json(body: unknown, status = 200) {
   return Response.json(body, { status, headers: { 'Cache-Control': 'no-store' } });
@@ -108,6 +109,27 @@ export async function POST(
         ),
       ]);
       return json({ message: `${String(domain.domain)} moved to Busy Working. The home-page build is now active.` });
+    }
+
+    if (body.action === 'set_workflow_status') {
+      const workflowStatus = String(body.workflowStatus || '');
+      if (!allowedWorkflowStatuses.has(workflowStatus)) {
+        return json({ error: 'Choose a valid dashboard column.' }, 400);
+      }
+      if (workflowStatus === 'Template Loaded' && domain.wordpressStatus !== 'installed') {
+        return json({ error: 'A domain must have WordPress installed before it can be placed in Template Loaded.' }, 400);
+      }
+      await db.batch([
+        db.prepare(`UPDATE hosting_domains SET workflow_status_override = ?
+          WHERE id = ? AND owner_user_id = ?`).bind(workflowStatus, domainId, identity.userId),
+        db.prepare(`INSERT INTO hosting_audit_events (
+          id, owner_user_id, connection_id, action, target, outcome, details_json, created_at
+        ) VALUES (?, ?, ?, 'domain.workflow_status_override', ?, 'success', ?, ?)`).bind(
+          crypto.randomUUID(), identity.userId, String(domain.connectionId), String(domain.domain),
+          JSON.stringify({ workflowStatus, source: 'dashboard_drag' }), now,
+        ),
+      ]);
+      return json({ message: `${String(domain.domain)} will stay in ${workflowStatus} until you move it again.` });
     }
 
     return json({ error: 'Choose a valid domain control action.' }, 400);

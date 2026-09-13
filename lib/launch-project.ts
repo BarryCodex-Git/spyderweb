@@ -33,3 +33,16 @@ export function isSelectableExistingDomain(
     && (domain.status === 'Available' || domain.status === 'Template Loaded')
     && !templateDomainIds.has(String(domain.id));
 }
+
+export function isTemplateLoadedForLaunch(input: {
+  wordpressStatus: string;
+  workflowStatusOverride?: string | null;
+  trackedProjectBuildType?: string | null;
+  domain: string;
+  wordpressSiteName?: string | null;
+}) {
+  return input.wordpressStatus === 'installed'
+    && (input.workflowStatusOverride === 'Template Loaded'
+      || input.trackedProjectBuildType === 'Template'
+      || /(\btemplate\b|\bnew\s+(?:client\s+)?build\b)/i.test(`${input.domain} ${input.wordpressSiteName || ''}`));
+}

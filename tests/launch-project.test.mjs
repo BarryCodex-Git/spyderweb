@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { isSelectableExistingDomain, normalizeSubdomainLabel, rootInstallationUrl, softaculousDatabaseName, suggestedSubdomainLabel } from '../lib/launch-project.ts';
+import { isSelectableExistingDomain, isTemplateLoadedForLaunch, normalizeSubdomainLabel, rootInstallationUrl, softaculousDatabaseName, suggestedSubdomainLabel } from '../lib/launch-project.ts';
 import { ensureWordPressSiteUrlConstants } from '../lib/wordpress-memory.ts';
 
 assert.equal(normalizeSubdomainLabel('jamies-plumbing'), 'jamies-plumbing');
@@ -19,5 +19,8 @@ assert.equal(isSelectableExistingDomain({ id: 'blank', source: 'cpanel', status:
 assert.equal(isSelectableExistingDomain({ id: 'preloaded', source: 'cpanel', status: 'Template Loaded' }, templateSources), true);
 assert.equal(isSelectableExistingDomain({ id: 'busy', source: 'cpanel', status: 'Busy Working' }, templateSources), false);
 assert.equal(isSelectableExistingDomain({ id: 'master-template', source: 'cpanel', status: 'Template Loaded' }, templateSources), false);
+assert.equal(isTemplateLoadedForLaunch({ wordpressStatus: 'installed', trackedProjectBuildType: 'Template', domain: 'dev5.example.com', wordpressSiteName: 'My Blog' }), true);
+assert.equal(isTemplateLoadedForLaunch({ wordpressStatus: 'installed', workflowStatusOverride: 'Template Loaded', domain: 'dev6.example.com' }), true);
+assert.equal(isTemplateLoadedForLaunch({ wordpressStatus: 'not_installed', trackedProjectBuildType: 'Template', domain: 'dev7.example.com' }), false);
 
 console.log('Launch project safeguards passed.');
